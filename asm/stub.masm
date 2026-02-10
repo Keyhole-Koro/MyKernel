@@ -1,0 +1,5 @@
+import f_kernel_main
+
+__START__:
+  call f_kernel_main
+  halt
