@@ -1,0 +1,70 @@
+f_debug_putc:
+  out    r5, 0
+  movi   r1, 0
+  mov    pc, lr
+
+f_debug_newline:
+  push   lr
+  movi   r5, 10
+  call   f_debug_putc
+  pop    lr
+  movi   r1, 0
+  mov    pc, lr
+
+f_debug_puts:
+  push   lr
+  mov    r6, r5
+b_debug_puts_loop:
+  loadb  r1, r6
+  movi   r2, 0
+  cmp    r1, r2
+  jz     b_debug_puts_end
+  mov    r5, r1
+  call   f_debug_putc
+  addis  r6, 1
+  jmp    b_debug_puts_loop
+b_debug_puts_end:
+  pop    lr
+  movi   r1, 0
+  mov    pc, lr
+
+f_debug_print_hex_u32:
+  push   lr
+  mov    r6, r5
+  movi   r5, 48
+  call   f_debug_putc
+  movi   r5, 120
+  call   f_debug_putc
+  movi   r7, 8
+  movi   r4, 28
+b_debug_hex_loop:
+  mov    r1, r6
+  mov    r2, r4
+b_debug_hex_shift_loop:
+  cmp    r2, 0
+  jz     b_debug_hex_shift_end
+  shr    r1
+  addis  r2, -1
+  jmp    b_debug_hex_shift_loop
+b_debug_hex_shift_end:
+  movi   r2, 15
+  and    r1, r2
+  movi   r2, 10
+  cmp    r1, r2
+  jl     b_debug_hex_digit
+  movi   r2, 55
+  add    r1, r2
+  jmp    b_debug_hex_emit
+b_debug_hex_digit:
+  movi   r2, 48
+  add    r1, r2
+b_debug_hex_emit:
+  mov    r5, r1
+  call   f_debug_putc
+  addis  r4, -4
+  addis  r7, -1
+  cmp    r7, 0
+  jnz    b_debug_hex_loop
+  pop    lr
+  movi   r1, 0
+  mov    pc, lr

@@ -1,9 +1,7 @@
+import { printtest } from "hello_debug.mln";
+
 i32 kernel_main() {
-    i32 ticks = 0;
+    printtest();
 
-    while (ticks < 3) {
-    ticks++;
-    }
-
-    return ticks;
+    return 0;
 }
