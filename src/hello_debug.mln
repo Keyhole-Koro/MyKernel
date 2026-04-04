@@ -1,0 +1,13 @@
+import { debug_puts, debug_newline, debug_print_hex_u32 } from "../asm/debug_runtime.masm";
+
+i32 printtest() {
+    i32 value = 42;
+
+    debug_puts("Hello from MyLang on MyEmulator");
+    debug_newline();
+    debug_puts("value = ");
+    debug_print_hex_u32(value);
+    debug_newline();
+
+    return value;
+}
