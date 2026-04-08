@@ -1,0 +1,129 @@
+import { debug_putc } from "debug_runtime.masm";
+
+void kprint_char(char ch) {
+    debug_putc(ch);
+}
+
+void kprint_ptr(char *s) {
+    if (s) {
+        while (*s) {
+            kprint_char(*s);
+            s = s + 1;
+        }
+    }
+}
+
+void kprint(ref char s) {
+    if (s) {
+        while (*s) {
+            kprint_char(*s);
+            s = s + 1;
+        }
+    }
+}
+
+void kprintln(ref char s) {
+    kprint(s);
+    kprint_char('\n');
+}
+
+char hex_digit(i32 nibble) {
+    char *digits = "0123456789abcdef";
+    return digits[nibble & 15];
+}
+
+void debug_print_hex_u32(i32 value) {
+    i32 shift = 28;
+    i32 started = 0;
+
+    while (shift >= 0) {
+        i32 nibble = (value >> shift) & 15;
+        if (nibble != 0 || started || shift == 0) {
+            kprint_char(hex_digit(nibble));
+            started = 1;
+        }
+        shift = shift - 4;
+    }
+}
+
+void kprintf(char *fmt, rest args) {
+    i32 arg_index = 0;
+
+    while (*fmt) {
+        if (*fmt != '%') {
+            kprint_char(*fmt);
+            fmt = fmt + 1;
+            continue;
+        }
+
+        fmt = fmt + 1;
+        if (!*fmt) {
+            kprint_char('%');
+            break;
+        }
+
+        if (*fmt == '%') {
+            kprint_char('%');
+        } else if (*fmt == 's') {
+            if (arg_index >= args.len) {
+                kprint_ptr("%<missing>");
+                break;
+            }
+            ref char s = args[arg_index];
+            arg_index = arg_index + 1;
+            if (s) {
+                kprint(s);
+            } else {
+                kprint_ptr("(null)");
+            }
+        } else if (*fmt == 'i') {
+            if (arg_index >= args.len) {
+                kprint_ptr("%<missing>");
+                break;
+            }
+            i32 value = args[arg_index];
+            arg_index = arg_index + 1;
+
+            // Handle negative numbers
+            if (value < 0) {
+                kprint_char('-');
+                value = -value;
+            }
+
+            // Convert integer to string in reverse order
+            char buffer[12]; // Enough for 32-bit int and sign
+            i32 pos = 0;
+            do {
+                buffer[pos] = (char)('0' + (value % 10));
+                value = value / 10;
+                pos = pos + 1;
+            } while (value > 0);
+
+            // Print the number in correct order
+            for (i32 i = pos - 1; i >= 0; i = i - 1) {
+                kprint_char(buffer[i]);
+            }
+        } else if (*fmt == 'c') {
+            if (arg_index >= args.len) {
+                kprint_ptr("%<missing>");
+                break;
+            }
+            i32 ch = args[arg_index];
+            arg_index = arg_index + 1;
+            kprint_char(ch);
+        } else if (*fmt == 'x') {
+            if (arg_index >= args.len) {
+                kprint_ptr("%<missing>");
+                break;
+            }
+            i32 value = args[arg_index];
+            arg_index = arg_index + 1;
+            debug_print_hex_u32(value);
+        } else {
+            kprint_char('%');
+            kprint_char(*fmt);
+        }
+
+        fmt = fmt + 1;
+    }
+}
