@@ -46,7 +46,7 @@ void debug_print_hex_u32(i32 value) {
     }
 }
 
-void kprintf(char *fmt, rest args) {
+void kprintf(ref char fmt, rest args) {
     i32 arg_index = 0;
 
     while (*fmt) {
