@@ -1,7 +1,13 @@
-import { printtest } from "hello_debug.mln";
+import { kprintln, kprintf } from "/workspaces/MyComputer-1/system/MyKernel/src/libs/print.mln";
 
 i32 kernel_main() {
-    printtest();
+    i32 boot_stage = 1000;
+    char boot_msg[] = "kernel: boot";
+    char done_msg[] = "done";
+
+    kprintln(&boot_msg[0]);
+    kprintf("kernel: stage = %i\n", boot_stage);
+    kprintln(&done_msg[0]);
 
     return 0;
 }

@@ -1,0 +1,4 @@
+f_debug_putc:
+  out    r5, 0
+  movi   r1, 0
+  mov    pc, lr
