@@ -11,7 +11,7 @@ import { heap_image_end } from "heap_sym.masm";
 // Allocated blocks keep their size word (used by free()); their next word is
 // unused while handed out. g_free_head points at the first free block.
 
-i32 HEAP_SIZE = 1048576; // 1 MiB
+i32 HEAP_SIZE = 0x100000; // 1 MiB
 i32 HDR_SIZE = 8;
 i32 ALIGN = 4;
 
