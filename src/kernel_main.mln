@@ -1,25 +1,25 @@
-import { kprintln, kprintf } from "libs/print.mln";
+import debug from "libs/debug.mln";
 
 void kernel_boot_banner() {
-    kprintln("kernel: boot");
+    debug.println("kernel: boot");
 }
 
 void kernel_arch_init() {
-    kprintln("kernel: arch init");
+    debug.println("kernel: arch init");
 }
 
 void kernel_device_init() {
-    kprintln("kernel: device init");
+    debug.println("kernel: device init");
 }
 
 void kernel_init() {
     i32 boot_stage = 1000;
 
     kernel_boot_banner();
-    kprintf("kernel: stage = %i\n", boot_stage);
+    debug.printf("kernel: stage = %i\n", boot_stage);
     kernel_arch_init();
     kernel_device_init();
-    kprintln("kernel: init complete");
+    debug.println("kernel: init complete");
 }
 
 i32 kernel_main() {
