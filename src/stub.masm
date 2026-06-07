@@ -1,5 +1,5 @@
-import { f_kernel_main } from "kernel_main.mln"
+import { kernel_main } from "kernel_main.mln"
 
 __START__:
-  call f_kernel_main
+  call kernel_main
   halt
