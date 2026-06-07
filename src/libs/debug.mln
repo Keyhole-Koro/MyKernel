@@ -1,84 +1,73 @@
-import { debug_putc } from "debug_runtime.masm";
+package debug;
 
-void kprint_char(char ch) {
-    debug_putc(ch);
-}
-
-void kprint_ptr(char *s) {
-    if (s) {
-        while (*s) {
-            kprint_char(*s);
-            s = s + 1;
-        }
-    }
-}
-
-void kprint(ref char s) {
-    if (s) {
-        while (*s) {
-            kprint_char(*s);
-            s = s + 1;
-        }
-    }
-}
-
-void kprintln(ref char s) {
-    kprint(s);
-    kprint_char('\n');
-}
+import { debug_putc } from "debug_putc.masm";
 
 char hex_digit(i32 nibble) {
     char *digits = "0123456789abcdef";
     return digits[nibble & 15];
 }
 
-void debug_print_hex_u32(i32 value) {
+export void print(ref char s) {
+    if (s) {
+        while (*s) {
+            debug_putc(*s);
+            s = s + 1;
+        }
+    }
+}
+
+export void println(ref char s) {
+    print(s);
+    debug_putc('\n');
+}
+
+export void hex(i32 value) {
     i32 shift = 28;
     i32 started = 0;
 
     while (shift >= 0) {
         i32 nibble = (value >> shift) & 15;
         if (nibble != 0 || started || shift == 0) {
-            kprint_char(hex_digit(nibble));
+            debug_putc(hex_digit(nibble));
             started = 1;
         }
         shift = shift - 4;
     }
 }
 
-void kprintf(ref char fmt, rest args) {
+export void printf(ref char fmt, rest args) {
     i32 arg_index = 0;
 
     while (*fmt) {
         if (*fmt != '%') {
-            kprint_char(*fmt);
+            debug_putc(*fmt);
             fmt = fmt + 1;
             continue;
         }
 
         fmt = fmt + 1;
         if (!*fmt) {
-            kprint_char('%');
+            debug_putc('%');
             break;
         }
 
         if (*fmt == '%') {
-            kprint_char('%');
+            debug_putc('%');
         } else if (*fmt == 's') {
             if (arg_index >= args.len) {
-                kprint_ptr("%<missing>");
+                print("%<missing>");
                 break;
             }
             ref char s = args[arg_index];
             arg_index = arg_index + 1;
             if (s) {
-                kprint(s);
+                print(s);
             } else {
-                kprint_ptr("(null)");
+                print("(null)");
             }
         } else if (*fmt == 'i') {
             if (arg_index >= args.len) {
-                kprint_ptr("%<missing>");
+                print("%<missing>");
                 break;
             }
             i32 value = args[arg_index];
@@ -86,7 +75,7 @@ void kprintf(ref char fmt, rest args) {
 
             // Handle negative numbers
             if (value < 0) {
-                kprint_char('-');
+                debug_putc('-');
                 value = -value;
             }
 
@@ -101,27 +90,27 @@ void kprintf(ref char fmt, rest args) {
 
             // Print the number in correct order
             for (i32 i = pos - 1; i >= 0; i = i - 1) {
-                kprint_char(buffer[i]);
+                debug_putc(buffer[i]);
             }
         } else if (*fmt == 'c') {
             if (arg_index >= args.len) {
-                kprint_ptr("%<missing>");
+                print("%<missing>");
                 break;
             }
             i32 ch = args[arg_index];
             arg_index = arg_index + 1;
-            kprint_char(ch);
+            debug_putc(ch);
         } else if (*fmt == 'x') {
             if (arg_index >= args.len) {
-                kprint_ptr("%<missing>");
+                print("%<missing>");
                 break;
             }
             i32 value = args[arg_index];
             arg_index = arg_index + 1;
-            debug_print_hex_u32(value);
+            hex(value);
         } else {
-            kprint_char('%');
-            kprint_char(*fmt);
+            debug_putc('%');
+            debug_putc(*fmt);
         }
 
         fmt = fmt + 1;
