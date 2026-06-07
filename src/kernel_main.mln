@@ -1,14 +1,28 @@
 import { kprintln, kprintf } from "libs/print.mln";
 
-i32 kernel_main() {
+void kernel_boot_banner() {
+    kprintln("kernel: boot");
+}
+
+void kernel_arch_init() {
+    kprintln("kernel: arch init");
+}
+
+void kernel_device_init() {
+    kprintln("kernel: device init");
+}
+
+void kernel_init() {
     i32 boot_stage = 1000;
-    char boot_msg[] = "kernel: boot";
-    char stage_fmt[] = "kernel: stage = %i\n";
-    char done_msg[] = "kernel: init complete";
 
-    kprintln(&boot_msg[0]);
-    kprintf(&stage_fmt[0], boot_stage);
-    kprintln(&done_msg[0]);
+    kernel_boot_banner();
+    kprintf("kernel: stage = %i\n", boot_stage);
+    kernel_arch_init();
+    kernel_device_init();
+    kprintln("kernel: init complete");
+}
 
+i32 kernel_main() {
+    kernel_init();
     return 0;
 }
