@@ -1,0 +1,94 @@
+package heap;
+
+import { heap_image_end } from "heap_sym.masm";
+
+// First-fit free-list allocator over the region between the loaded image
+// (`_end`, provided by heap_image_end()) and _end + HEAP_SIZE.
+//
+// Every block is laid out as an 8-byte header followed by its payload:
+//   word[h + 0] = size   (payload bytes, not counting the header)
+//   word[h + 4] = next   (address of the next FREE block header, 0 = none)
+// Allocated blocks keep their size word (used by free()); their next word is
+// unused while handed out. g_free_head points at the first free block.
+
+i32 HEAP_SIZE = 1048576; // 1 MiB
+i32 HDR_SIZE = 8;
+i32 ALIGN = 4;
+
+i32 g_free_head = 0;
+
+i32 read_word(i32 addr) {
+    i32 *p = (i32 *)addr;
+    return *p;
+}
+
+void write_word(i32 addr, i32 value) {
+    i32 *p = (i32 *)addr;
+    *p = value;
+}
+
+i32 align_up(i32 n) {
+    return (n + (ALIGN - 1)) & ~(ALIGN - 1);
+}
+
+export void init() {
+    i32 base = heap_image_end();
+    base = align_up(base);
+
+    // One big free block spanning the whole heap region.
+    i32 payload = HEAP_SIZE - HDR_SIZE;
+    write_word(base + 0, payload); // size
+    write_word(base + 4, 0);       // next
+    g_free_head = base;
+}
+
+// Returns a payload address, or 0 if no block is large enough.
+export i32 alloc(i32 size) {
+    if (size <= 0) {
+        return 0;
+    }
+    size = align_up(size);
+
+    i32 prev = 0;
+    i32 cur = g_free_head;
+
+    while (cur != 0) {
+        i32 cur_size = read_word(cur + 0);
+        i32 cur_next = read_word(cur + 4);
+
+        if (cur_size >= size) {
+            // Split if the remainder can hold another header + a little payload.
+            i32 remainder = cur_size - size;
+            if (remainder >= HDR_SIZE + ALIGN) {
+                i32 split = cur + HDR_SIZE + size;
+                write_word(split + 0, remainder - HDR_SIZE);
+                write_word(split + 4, cur_next);
+                write_word(cur + 0, size);
+                cur_next = split;
+            }
+
+            // Unlink cur from the free list.
+            if (prev == 0) {
+                g_free_head = cur_next;
+            } else {
+                write_word(prev + 4, cur_next);
+            }
+            return cur + HDR_SIZE;
+        }
+
+        prev = cur;
+        cur = cur_next;
+    }
+
+    return 0; // out of memory
+}
+
+// Returns a previously allocated block (by its payload address) to the free
+// list. No coalescing of adjacent free blocks yet.
+export void free(i32 ptr) {
+    if (ptr != 0) {
+        i32 header = ptr - HDR_SIZE;
+        write_word(header + 4, g_free_head);
+        g_free_head = header;
+    }
+}

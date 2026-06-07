@@ -1,4 +1,5 @@
 import debug from "libs/debug.mln";
+import heap from "libs/heap.mln";
 
 void kernel_boot_banner() {
     debug.println("kernel: boot");
@@ -6,6 +7,19 @@ void kernel_boot_banner() {
 
 void kernel_arch_init() {
     debug.println("kernel: arch init");
+    heap.init();
+    debug.println("kernel: heap ready");
+}
+
+void kernel_heap_smoke() {
+    i32 a = heap.alloc(64);
+    i32 b = heap.alloc(128);
+    debug.printf("kernel: heap a=%x b=%x\n", a, b);
+    heap.free(a);
+    i32 c = heap.alloc(64);
+    debug.printf("kernel: heap reuse c=%x (a freed)\n", c);
+    heap.free(b);
+    heap.free(c);
 }
 
 void kernel_device_init() {
@@ -19,6 +33,7 @@ void kernel_init() {
     debug.printf("kernel: stage = %i\n", boot_stage);
     kernel_arch_init();
     kernel_device_init();
+    kernel_heap_smoke();
     debug.println("kernel: init complete");
 }
 
