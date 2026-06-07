@@ -1,0 +1,10 @@
+; Returns the address of the `_end` symbol (end of the loaded image: text +
+; data) in r1. `_end` is synthesized by the linker. The kernel heap uses this
+; as the start of its free region.
+import _end
+
+export heap_image_end
+
+heap_image_end:
+  movi r1, _end
+  mov  pc, lr
