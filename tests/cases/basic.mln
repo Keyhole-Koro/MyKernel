@@ -1,0 +1,19 @@
+import heap from "../../src/libs/heap.mln";
+
+// alloc returns distinct, non-zero, non-overlapping blocks.
+i32 main() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(16);
+
+    if (a == 0) { return 91; }
+    if (b == 0) { return 92; }
+    if (a == b) { return 93; }
+    if (b > a) {
+        if (b - a < 16) { return 94; }
+    }
+    if (a > b) {
+        if (a - b < 16) { return 95; }
+    }
+    return 1;
+}
