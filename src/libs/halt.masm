@@ -1,0 +1,5 @@
+; Halts the machine. Used by kernel panic paths.
+export halt_cpu
+
+halt_cpu:
+  halt

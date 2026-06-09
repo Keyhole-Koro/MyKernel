@@ -1,0 +1,18 @@
+import heap from "../../src/libs/heap.mln";
+
+// Two allocations are independently writable (no aliasing).
+i32 main() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(16);
+    if (a == 0) { return 91; }
+    if (b == 0) { return 92; }
+
+    i32 *pa = (i32 *)a;
+    i32 *pb = (i32 *)b;
+    *pa = 111;
+    *pb = 222;
+    if (*pa != 111) { return 93; }
+    if (*pb != 222) { return 94; }
+    return 1;
+}

@@ -1,0 +1,15 @@
+import heap from "../../src/libs/heap.mln";
+
+// Freeing a block and allocating the same size reuses it (LIFO free list head).
+i32 main() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(16);
+    if (a == 0) { return 91; }
+    if (b == 0) { return 92; }
+
+    heap.free(a);
+    i32 c = heap.alloc(16);
+    if (c != a) { return 93; }
+    return 1;
+}

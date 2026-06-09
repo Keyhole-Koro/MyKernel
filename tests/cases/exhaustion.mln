@@ -1,0 +1,14 @@
+import heap from "../../src/libs/heap.mln";
+
+// Allocating past the heap capacity must panic (print "panic" and halt).
+// The harness asserts on serial output, since a panic stops the machine.
+// We allocate in a loop until the heap is exhausted; the failing alloc panics.
+i32 main() {
+    heap.init();
+    i32 i = 0;
+    while (i < 100000) {
+        heap.alloc(64); // 64 + 8 header; ~14000 of these exhausts 1 MiB
+        i = i + 1;
+    }
+    return 0; // unreachable once exhaustion panics
+}

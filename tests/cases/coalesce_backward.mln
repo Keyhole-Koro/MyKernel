@@ -1,0 +1,23 @@
+import heap from "../../src/libs/heap.mln";
+
+// Free in the opposite order (B then A): freeing A should merge with the
+// already-free following block B (backward case from A's perspective). The
+// merged region at A must span both blocks: 64 + 8 + 64 = 136.
+i32 main() {
+    heap.init();
+    i32 a = heap.alloc(64);
+    i32 b = heap.alloc(64);
+    i32 c = heap.alloc(64);
+    if (a == 0) { return 91; }
+    if (b == 0) { return 92; }
+    if (c == 0) { return 93; }
+    if (b != a + 72) { return 94; }
+
+    heap.free(b); // free upper block first
+    heap.free(a); // freeing A should merge with already-free B
+
+    i32 a_hdr = a - 8;
+    i32 size = *(i32 *)a_hdr;
+    if (size != 136) { return size; }
+    return 1;
+}

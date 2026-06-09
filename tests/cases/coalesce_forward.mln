@@ -1,0 +1,26 @@
+import heap from "../../src/libs/heap.mln";
+
+// Free two physically-adjacent blocks (A then B) and verify the freed region at
+// A grows to span both blocks (forward merge with the following free block).
+// Header layout: word[h]=size (payload), word[h+4]=next. Payload addr = h + 8.
+//
+// Without coalescing, A's header keeps size 64. With coalescing it becomes
+// 64 + 8 (B's header) + 64 = 136.
+i32 main() {
+    heap.init();
+    i32 a = heap.alloc(64);
+    i32 b = heap.alloc(64);
+    i32 c = heap.alloc(64); // guard so B is not the heap tail
+    if (a == 0) { return 91; }
+    if (b == 0) { return 92; }
+    if (c == 0) { return 93; }
+    if (b != a + 72) { return 94; } // sanity: B directly follows A (64+8 hdr)
+
+    heap.free(a); // free lower block first
+    heap.free(b); // freeing B should merge into A
+
+    i32 a_hdr = a - 8;
+    i32 size = *(i32 *)a_hdr;
+    if (size != 136) { return size; } // expect merged size; bare 64 means no merge
+    return 1;
+}

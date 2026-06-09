@@ -1,15 +1,18 @@
 package heap;
 
 import { heap_image_end } from "heap_sym.masm";
+import { halt_cpu } from "halt.masm";
+import debug from "debug.mln";
 
-// First-fit free-list allocator over the region between the loaded image
-// (`_end`, provided by heap_image_end()) and _end + HEAP_SIZE.
+// First-fit allocator over the region between the loaded image (`_end`, from
+// heap_image_end()) and _end + HEAP_SIZE, with an address-ordered free list and
+// coalescing of physically-adjacent free blocks.
 //
 // Every block is laid out as an 8-byte header followed by its payload:
 //   word[h + 0] = size   (payload bytes, not counting the header)
 //   word[h + 4] = next   (address of the next FREE block header, 0 = none)
-// Allocated blocks keep their size word (used by free()); their next word is
-// unused while handed out. g_free_head points at the first free block.
+// The free list is kept sorted by address so free() can merge neighbours.
+// A block's physical end is  h + HDR_SIZE + size.
 
 i32 HEAP_SIZE = 0x100000; // 1 MiB
 i32 HDR_SIZE = 8;
@@ -31,18 +34,33 @@ i32 align_up(i32 n) {
     return (n + (ALIGN - 1)) & ~(ALIGN - 1);
 }
 
+i32 block_size(i32 h) { return read_word(h + 0); }
+i32 block_next(i32 h) { return read_word(h + 4); }
+void set_size(i32 h, i32 v) { write_word(h + 0, v); }
+void set_next(i32 h, i32 v) { write_word(h + 4, v); }
+
+// Physical address just past the end of block h.
+i32 block_end(i32 h) {
+    return h + HDR_SIZE + block_size(h);
+}
+
+void panic(ref char msg) {
+    debug.print("heap panic: ");
+    debug.println(msg);
+    halt_cpu();
+}
+
 export void init() {
     i32 base = heap_image_end();
     base = align_up(base);
 
     // One big free block spanning the whole heap region.
-    i32 payload = HEAP_SIZE - HDR_SIZE;
-    write_word(base + 0, payload); // size
-    write_word(base + 4, 0);       // next
+    set_size(base, HEAP_SIZE - HDR_SIZE);
+    set_next(base, 0);
     g_free_head = base;
 }
 
-// Returns a payload address, or 0 if no block is large enough.
+// Returns a payload address. Panics if no block is large enough.
 export i32 alloc(i32 size) {
     if (size <= 0) {
         return 0;
@@ -53,17 +71,17 @@ export i32 alloc(i32 size) {
     i32 cur = g_free_head;
 
     while (cur != 0) {
-        i32 cur_size = read_word(cur + 0);
-        i32 cur_next = read_word(cur + 4);
+        i32 cur_size = block_size(cur);
+        i32 cur_next = block_next(cur);
 
         if (cur_size >= size) {
             // Split if the remainder can hold another header + a little payload.
             i32 remainder = cur_size - size;
             if (remainder >= HDR_SIZE + ALIGN) {
                 i32 split = cur + HDR_SIZE + size;
-                write_word(split + 0, remainder - HDR_SIZE);
-                write_word(split + 4, cur_next);
-                write_word(cur + 0, size);
+                set_size(split, remainder - HDR_SIZE);
+                set_next(split, cur_next);
+                set_size(cur, size);
                 cur_next = split;
             }
 
@@ -71,7 +89,7 @@ export i32 alloc(i32 size) {
             if (prev == 0) {
                 g_free_head = cur_next;
             } else {
-                write_word(prev + 4, cur_next);
+                set_next(prev, cur_next);
             }
             return cur + HDR_SIZE;
         }
@@ -80,15 +98,42 @@ export i32 alloc(i32 size) {
         cur = cur_next;
     }
 
-    return 0; // out of memory
+    panic("out of memory");
+    return 0; // unreachable
 }
 
-// Returns a previously allocated block (by its payload address) to the free
-// list. No coalescing of adjacent free blocks yet.
+// Returns a block (by payload address) to the free list, keeping the list
+// address-ordered and merging with physically-adjacent free neighbours.
 export void free(i32 ptr) {
     if (ptr != 0) {
-        i32 header = ptr - HDR_SIZE;
-        write_word(header + 4, g_free_head);
-        g_free_head = header;
+        i32 block = ptr - HDR_SIZE;
+
+        // Find the insertion point: prev < block < cur, by address.
+        i32 prev = 0;
+        i32 cur = g_free_head;
+        while (cur != 0 && cur < block) {
+            prev = cur;
+            cur = block_next(cur);
+        }
+
+        // Link block into the ordered list between prev and cur.
+        set_next(block, cur);
+        if (prev == 0) {
+            g_free_head = block;
+        } else {
+            set_next(prev, block);
+        }
+
+        // Merge forward: block is immediately before cur.
+        if (cur != 0 && block_end(block) == cur) {
+            set_size(block, block_size(block) + HDR_SIZE + block_size(cur));
+            set_next(block, block_next(cur));
+        }
+
+        // Merge backward: prev is immediately before block.
+        if (prev != 0 && block_end(prev) == block) {
+            set_size(prev, block_size(prev) + HDR_SIZE + block_size(block));
+            set_next(prev, block_next(block));
+        }
     }
 }
