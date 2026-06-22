@@ -1,0 +1,27 @@
+package irq;
+
+import { hw_irq_enable, hw_irq_disable, hw_irq_vector_target } from "interrupt.masm";
+
+// Single fixed IRQ vector slot in the I/O region (IO_BASE + 0x80). The CPU reads
+// this on a timer interrupt to find the handler. Must match IRQ_VECTOR_ADDR in
+// the emulator (runtime/MyEmulator/src/constants.rs).
+i32 IRQ_VECTOR_ADDR = 0x24000080;
+
+export void write_word(i32 addr, i32 value) {
+    i32 *p = (i32 *)addr;
+    *p = value;
+}
+
+// Install the low-level trampoline as the interrupt handler. Until this is
+// called the vector slot is 0 and the emulator suppresses timer interrupts.
+export void set_handler() {
+    write_word(IRQ_VECTOR_ADDR, hw_irq_vector_target());
+}
+
+export void enable() {
+    hw_irq_enable();
+}
+
+export void disable() {
+    hw_irq_disable();
+}

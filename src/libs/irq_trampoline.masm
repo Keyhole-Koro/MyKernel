@@ -1,0 +1,42 @@
+; Low-level interrupt trampoline. On entry the CPU has already pushed the
+; interrupted PC and SR (in that order) and jumped here via the IRQ vector.
+;
+; This trampoline:
+;   1. saves all registers (lr, bp, r0-r7)
+;   2. passes current sp to irq_handler in r1
+;   3. calls irq_handler, which returns new sp in r1
+;   4. loads new sp from r1
+;   5. restores registers (r0-r7, bp, lr)
+;   6. executes `iret` to resume the selected task
+import irq_handler
+
+export irq_trampoline
+
+irq_trampoline:
+  push lr
+  push bp
+  push r0
+  push r1
+  push r2
+  push r3
+  push r4
+  push r5
+  push r6
+  push r7
+
+  mov r5, sp
+  call irq_handler
+  mov sp, r1
+
+  pop r7
+  pop r6
+  pop r5
+  pop r4
+  pop r3
+  pop r2
+  pop r1
+  pop r0
+  pop bp
+  pop lr
+
+  iret

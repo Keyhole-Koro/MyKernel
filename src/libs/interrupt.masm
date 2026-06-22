@@ -1,0 +1,22 @@
+; Thin wrappers over the EI/DI instructions so MyLang code can enable/disable
+; interrupts. Same `export name: <instr>; mov pc,lr` pattern as halt.masm.
+;
+; irq_trampoline_addr() returns the address of the trampoline (a masm symbol
+; the linker resolves) so MyLang can install it into the IRQ vector slot.
+import { irq_trampoline } from "irq_trampoline.masm"
+
+export hw_irq_enable
+export hw_irq_disable
+export hw_irq_vector_target
+
+hw_irq_enable:
+  ei
+  mov pc, lr
+
+hw_irq_disable:
+  di
+  mov pc, lr
+
+hw_irq_vector_target:
+  movi r1, irq_trampoline
+  mov  pc, lr
