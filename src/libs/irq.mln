@@ -7,9 +7,35 @@ import { hw_irq_enable, hw_irq_disable, hw_irq_vector_target } from "interrupt.m
 // the emulator (runtime/MyEmulator/src/constants.rs).
 i32 IRQ_VECTOR_ADDR = 0x24000080;
 
+// Memory-mapped serial registers (must match constants.rs in the emulator).
+i32 SERIAL_TX_ADDR = 0x24000000;
+i32 SERIAL_RX_ADDR = 0x24000004;
+i32 SERIAL_LSR_ADDR = 0x24000005;
+i32 SERIAL_LSR_DR = 0x01;
+
 export void write_word(i32 addr, i32 value) {
     i32 *p = (i32 *)addr;
     *p = value;
+}
+
+export i32 read_word(i32 addr) {
+    i32 *p = (i32 *)addr;
+    return *p;
+}
+
+// Non-zero while a received byte is waiting in the UART.
+export i32 rx_ready() {
+    return read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR;
+}
+
+// Consume and return the next received byte (call only when rx_ready()).
+export i32 read_rx() {
+    return read_word(SERIAL_RX_ADDR) & 0xFF;
+}
+
+// Write one byte to the serial transmitter.
+export void putc(i32 c) {
+    write_word(SERIAL_TX_ADDR, c);
 }
 
 // Install the low-level trampoline as the interrupt handler. Until this is

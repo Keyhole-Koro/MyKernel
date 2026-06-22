@@ -2,6 +2,7 @@ import debug from "libs/debug.mln";
 import heap from "libs/heap.mln";
 import irq from "libs/irq.mln";
 import { get_task0_addr, get_task1_addr } from "libs/task_funcs.masm";
+import { halt_cpu } from "libs/halt.masm";
 
 // Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
@@ -15,10 +16,17 @@ i32 tasks_initialized = 0;
 // current task, and returns the stack pointer of the next task to resume.
 i32 irq_handler(i32 sp) {
     g_irq_count = g_irq_count + 1;
-    if (g_irq_count % 100 == 0) {
-        debug.printf("irq: tick %i\n", g_irq_count);
+
+    // Serial RX: drain all received bytes and echo them back. 'q' (0x71) quits.
+    while (irq.rx_ready() != 0) {
+        i32 c = irq.read_rx();
+        if (c == 113) {
+            irq.putc(10); // newline
+            halt_cpu();
+        }
+        irq.putc(c);
     }
-    
+
     if (tasks_initialized == 0) {
         return sp;
     }
@@ -105,7 +113,8 @@ void kernel_init() {
     irq.set_handler();
     irq.enable();
     debug.println("kernel: irq/task on");
-    
+    debug.println("kernel: type to echo (q to quit)");
+
     task0(); // Main loop becomes task 0
 }
 
