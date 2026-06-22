@@ -1,7 +1,8 @@
-import debug from "libs/debug.mln";
-import heap from "libs/heap.mln";
-import irq from "libs/irq.mln";
-import { get_task0_addr, get_task1_addr } from "libs/task_funcs.masm";
+import debug from "../src/libs/debug.mln";
+import heap from "../src/libs/heap.mln";
+import irq from "../src/libs/irq.mln";
+import { get_task0_addr, get_task1_addr } from "../src/libs/task_funcs.masm";
+import { halt_cpu } from "../src/libs/halt.masm";
 
 // Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
@@ -10,14 +11,12 @@ i32 task_sps[2];
 i32 current_task = 0;
 i32 tasks_initialized = 0;
 
+i32 task0_count = 0;
+i32 task1_count = 0;
+
 // Interrupt handler invoked (via irq_trampoline.masm) on each timer interrupt.
-// It receives the current stack pointer as an argument, saves it for the
-// current task, and returns the stack pointer of the next task to resume.
 i32 irq_handler(i32 sp) {
     g_irq_count = g_irq_count + 1;
-    if (g_irq_count % 100 == 0) {
-        debug.printf("irq: tick %i\n", g_irq_count);
-    }
     
     if (tasks_initialized == 0) {
         return sp;
@@ -34,30 +33,31 @@ i32 irq_handler(i32 sp) {
 }
 
 export void task0() {
-    i32 i = 0;
     while (1) {
-        if (i % 1000 == 0) {
-            debug.println("Task 0 is running...");
+        task0_count = task0_count + 1;
+        if (task0_count > 1000) {
+            if (task1_count > 1000) {
+                debug.println("Test PASSED!");
+                halt_cpu();
+            }
         }
-        i = i + 1;
     }
 }
 
 export void task1() {
-    i32 i = 0;
     while (1) {
-        if (i % 1000 == 0) {
-            debug.println("Task 1 is running...");
+        task1_count = task1_count + 1;
+        if (task1_count > 1000) {
+            if (task0_count > 1000) {
+                debug.println("Test PASSED!");
+                halt_cpu();
+            }
         }
-        i = i + 1;
     }
 }
 
 void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     i32 sp = stack_bottom;
-    
-    // Construct initial stack frame.
-    // Pushed in reverse order of pops: r7..r0, bp, lr, SR, PC.
     
     sp = sp - 4; irq.write_word(sp, func_ptr); // PC
     sp = sp - 4; irq.write_word(sp, 1);        // SR (IE=1)
@@ -75,36 +75,17 @@ void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     task_sps[task_idx] = sp;
 }
 
-void kernel_boot_banner() {
-    debug.println("kernel: boot");
-}
-
-void kernel_arch_init() {
-    debug.println("kernel: arch init");
-    heap.init();
-    debug.println("kernel: heap ready");
-}
-
 void kernel_init() {
-    kernel_boot_banner();
-    kernel_arch_init();
+    heap.init();
 
     // Set up task 1
     i32 stack1 = heap.alloc(1024);
     init_task(1, get_task1_addr(), stack1 + 1024);
     
-    // Set up task 0 (we are currently running in task 0's context conceptually,
-    // but the first interrupt will save our current state into task 0's slot!
-    // Wait! If the first interrupt happens, it will save current SP to task_sps[0].
-    // Then switch to task 1.
-    // Then we need tasks_initialized = 1 BEFORE we jump to task0.
-    // Instead of jumping to task0 manually, we can just make the main loop become task 0.
-    
     tasks_initialized = 1;
 
     irq.set_handler();
     irq.enable();
-    debug.println("kernel: irq/task on");
     
     task0(); // Main loop becomes task 0
 }

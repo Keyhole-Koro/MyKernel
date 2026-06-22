@@ -1,0 +1,13 @@
+import main_task0
+import main_task1
+
+export get_task0_addr
+export get_task1_addr
+
+get_task0_addr:
+    movi r1, main_task0
+    mov pc, lr
+
+get_task1_addr:
+    movi r1, main_task1
+    mov pc, lr
