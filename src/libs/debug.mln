@@ -1,6 +1,6 @@
 package debug;
 
-import { debug_putc } from "debug_putc.masm";
+import serial from "serial.mln";
 
 char hex_digit(i32 nibble) {
     char *digits = "0123456789abcdef";
@@ -10,7 +10,7 @@ char hex_digit(i32 nibble) {
 export void print(ref char s) {
     if (s) {
         while (*s) {
-            debug_putc(*s);
+            serial.putc(*s);
             s = s + 1;
         }
     }
@@ -18,7 +18,7 @@ export void print(ref char s) {
 
 export void println(ref char s) {
     print(s);
-    debug_putc('\n');
+    serial.putc('\n');
 }
 
 export void hex(i32 value) {
@@ -28,7 +28,7 @@ export void hex(i32 value) {
     while (shift >= 0) {
         i32 nibble = (value >> shift) & 15;
         if (nibble != 0 || started || shift == 0) {
-            debug_putc(hex_digit(nibble));
+            serial.putc(hex_digit(nibble));
             started = 1;
         }
         shift = shift - 4;
@@ -40,19 +40,19 @@ export void printf(ref char fmt, rest args) {
 
     while (*fmt) {
         if (*fmt != '%') {
-            debug_putc(*fmt);
+            serial.putc(*fmt);
             fmt = fmt + 1;
             continue;
         }
 
         fmt = fmt + 1;
         if (!*fmt) {
-            debug_putc('%');
+            serial.putc('%');
             break;
         }
 
         if (*fmt == '%') {
-            debug_putc('%');
+            serial.putc('%');
         } else if (*fmt == 's') {
             if (arg_index >= args.len) {
                 print("%<missing>");
@@ -75,7 +75,7 @@ export void printf(ref char fmt, rest args) {
 
             // Handle negative numbers
             if (value < 0) {
-                debug_putc('-');
+                serial.putc('-');
                 value = -value;
             }
 
@@ -90,7 +90,7 @@ export void printf(ref char fmt, rest args) {
 
             // Print the number in correct order
             for (i32 i = pos - 1; i >= 0; i = i - 1) {
-                debug_putc(buffer[i]);
+                serial.putc(buffer[i]);
             }
         } else if (*fmt == 'c') {
             if (arg_index >= args.len) {
@@ -99,7 +99,7 @@ export void printf(ref char fmt, rest args) {
             }
             i32 ch = args[arg_index];
             arg_index = arg_index + 1;
-            debug_putc(ch);
+            serial.putc(ch);
         } else if (*fmt == 'x') {
             if (arg_index >= args.len) {
                 print("%<missing>");
@@ -109,8 +109,8 @@ export void printf(ref char fmt, rest args) {
             arg_index = arg_index + 1;
             hex(value);
         } else {
-            debug_putc('%');
-            debug_putc(*fmt);
+            serial.putc('%');
+            serial.putc(*fmt);
         }
 
         fmt = fmt + 1;

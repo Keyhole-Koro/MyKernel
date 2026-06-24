@@ -1,0 +1,24 @@
+package serial;
+
+import mem from "mem.mln";
+
+// Memory-mapped UART registers (must match constants.rs in the emulator).
+i32 SERIAL_TX_ADDR = 0x24000000;
+i32 SERIAL_RX_ADDR = 0x24000004;
+i32 SERIAL_LSR_ADDR = 0x24000005;
+i32 SERIAL_LSR_DR = 0x01;
+
+// Transmit one byte.
+export void putc(i32 c) {
+    mem.write_word(SERIAL_TX_ADDR, c);
+}
+
+// Non-zero while a received byte is waiting.
+export i32 rx_ready() {
+    return mem.read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR;
+}
+
+// Consume and return the next received byte (call only when rx_ready()).
+export i32 read_rx() {
+    return mem.read_word(SERIAL_RX_ADDR) & 0xFF;
+}

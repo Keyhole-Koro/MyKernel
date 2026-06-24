@@ -48,8 +48,9 @@ LIB_SOURCES = [
     (LIBS / "heap.mln", "ml"),
     (LIBS / "heap_sym.masm", "masm"),
     (LIBS / "halt.masm", "masm"),
+    (LIBS / "mem.mln", "ml"),
+    (LIBS / "serial.mln", "ml"),
     (LIBS / "debug.mln", "ml"),
-    (LIBS / "debug_putc.masm", "masm"),
 ]
 
 # name -> dict describing the assertion.
