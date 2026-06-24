@@ -1,0 +1,14 @@
+package mem;
+
+// Generic word access to an absolute address. Works for RAM (e.g. building task
+// stack frames) and memory-mapped I/O alike; the bus routes by address.
+
+export void write_word(i32 addr, i32 value) {
+    i32 *p = (i32 *)addr;
+    *p = value;
+}
+
+export i32 read_word(i32 addr) {
+    i32 *p = (i32 *)addr;
+    return *p;
+}

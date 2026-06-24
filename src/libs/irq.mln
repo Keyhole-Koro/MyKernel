@@ -1,47 +1,17 @@
 package irq;
 
 import { hw_irq_enable, hw_irq_disable, hw_irq_vector_target } from "interrupt.masm";
+import mem from "mem.mln";
 
 // Single fixed IRQ vector slot in the I/O region (IO_BASE + 0x80). The CPU reads
-// this on a timer interrupt to find the handler. Must match IRQ_VECTOR_ADDR in
-// the emulator (runtime/MyEmulator/src/constants.rs).
+// this on an interrupt to find the handler. Must match IRQ_VECTOR_ADDR in the
+// emulator (runtime/MyEmulator/src/constants.rs).
 i32 IRQ_VECTOR_ADDR = 0x24000080;
 
-// Memory-mapped serial registers (must match constants.rs in the emulator).
-i32 SERIAL_TX_ADDR = 0x24000000;
-i32 SERIAL_RX_ADDR = 0x24000004;
-i32 SERIAL_LSR_ADDR = 0x24000005;
-i32 SERIAL_LSR_DR = 0x01;
-
-export void write_word(i32 addr, i32 value) {
-    i32 *p = (i32 *)addr;
-    *p = value;
-}
-
-export i32 read_word(i32 addr) {
-    i32 *p = (i32 *)addr;
-    return *p;
-}
-
-// Non-zero while a received byte is waiting in the UART.
-export i32 rx_ready() {
-    return read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR;
-}
-
-// Consume and return the next received byte (call only when rx_ready()).
-export i32 read_rx() {
-    return read_word(SERIAL_RX_ADDR) & 0xFF;
-}
-
-// Write one byte to the serial transmitter.
-export void putc(i32 c) {
-    write_word(SERIAL_TX_ADDR, c);
-}
-
 // Install the low-level trampoline as the interrupt handler. Until this is
-// called the vector slot is 0 and the emulator suppresses timer interrupts.
+// called the vector slot is 0 and the emulator suppresses interrupts.
 export void set_handler() {
-    write_word(IRQ_VECTOR_ADDR, hw_irq_vector_target());
+    mem.write_word(IRQ_VECTOR_ADDR, hw_irq_vector_target());
 }
 
 export void enable() {
