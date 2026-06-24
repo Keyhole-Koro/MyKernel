@@ -3,6 +3,7 @@ import heap from "libs/heap.mln";
 import irq from "libs/irq.mln";
 import serial from "libs/serial.mln";
 import mem from "libs/mem.mln";
+import dom from "libs/dom.mln";
 import { get_task0_addr, get_task1_addr } from "libs/task_funcs.masm";
 import { halt_cpu } from "libs/halt.masm";
 
@@ -98,6 +99,10 @@ void kernel_arch_init() {
 void kernel_init() {
     kernel_boot_banner();
     kernel_arch_init();
+
+    dom.init();
+    debug.println("kernel: dom ready");
+    dom.dump();
 
     // Set up task 1
     i32 stack1 = heap.alloc(1024);
