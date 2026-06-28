@@ -55,7 +55,7 @@ def main() -> int:
         return 1
 
     proc = subprocess.run(
-        [str(MYEMU), "-i", str(KERNEL_IMAGE), "--step", STEP_LIMIT],
+        [str(MYEMU), "-i", str(KERNEL_IMAGE), "--headless", "--step", STEP_LIMIT],
         input=INPUT, capture_output=True, text=True, timeout=30,
     )
     out = proc.stdout
