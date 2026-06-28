@@ -4,6 +4,7 @@ import irq from "libs/irq.mln";
 import serial from "libs/serial.mln";
 import mem from "libs/mem.mln";
 import dom from "libs/dom.mln";
+import graphics from "libs/graphics.mln";
 import { get_task0_addr, get_task1_addr } from "libs/task_funcs.masm";
 import { halt_cpu } from "libs/halt.masm";
 
@@ -103,6 +104,17 @@ void kernel_init() {
     dom.init();
     debug.println("kernel: dom ready");
     dom.dump();
+
+    // Draw background (blue)
+    graphics.fill_rect(0, 0, 320, 240, graphics.rgb(0, 0, 255));
+    // Draw a window (white with gray border)
+    graphics.fill_rect(50, 50, 200, 100, graphics.rgb(255, 255, 255));
+    graphics.draw_rect(50, 50, 200, 100, graphics.rgb(136, 136, 136));
+    // Draw a button inside
+    graphics.fill_rect(70, 80, 60, 20, graphics.rgb(204, 204, 204));
+    graphics.draw_rect(70, 80, 60, 20, 0);
+
+    debug.println("graphics ready");
 
     // Set up task 1
     i32 stack1 = heap.alloc(1024);

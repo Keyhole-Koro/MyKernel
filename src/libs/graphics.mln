@@ -1,0 +1,49 @@
+package graphics;
+
+export i32 VRAM_BASE = 0x30000000;
+export i32 DISPLAY_WIDTH = 320;
+export i32 DISPLAY_HEIGHT = 240;
+
+export i32 rgb(i32 r, i32 g, i32 b) {
+    return r * 65536 + g * 256 + b;
+}
+
+export void fill_rect(i32 x, i32 y, i32 w, i32 h, i32 color) {
+    if (x < DISPLAY_WIDTH) {
+        if (y < DISPLAY_HEIGHT) {
+            if (x < 0) {
+                w = w + x;
+                x = 0;
+            }
+            if (y < 0) {
+                h = h + y;
+                y = 0;
+            }
+            if (x + w > DISPLAY_WIDTH) { w = DISPLAY_WIDTH - x; }
+            if (y + h > DISPLAY_HEIGHT) { h = DISPLAY_HEIGHT - y; }
+            
+            if (w > 0) {
+                if (h > 0) {
+                    i32 i = 0;
+                    while (i < h) {
+                        i32 j = 0;
+                        i32 row_addr = VRAM_BASE + ((y + i) * DISPLAY_WIDTH + x) * 4;
+                        while (j < w) {
+                            i32* ptr = (i32*)(row_addr + j * 4);
+                            *ptr = color;
+                            j = j + 1;
+                        }
+                        i = i + 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export void draw_rect(i32 x, i32 y, i32 w, i32 h, i32 color) {
+    fill_rect(x, y, w, 1, color);
+    fill_rect(x, y + h - 1, w, 1, color);
+    fill_rect(x, y, 1, h, color);
+    fill_rect(x + w - 1, y, 1, h, color);
+}
