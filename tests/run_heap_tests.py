@@ -131,7 +131,7 @@ def build_and_run(name, work):
         return None, f"link failed:\n{r.stdout}"
 
     # Run with cwd=work so the emulator's memory_dump.txt lands in the temp dir.
-    r = run([MYEMU, "-i", linked, "--reg", "R1"], work)
+    r = run([MYEMU, "-i", linked, "--reg", "R1", "--headless"], work)
     if r.returncode != 0:
         return None, f"emulator failed:\n{r.stdout}"
     return r.stdout, None

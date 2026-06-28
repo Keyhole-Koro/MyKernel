@@ -1,6 +1,7 @@
 import debug from "../src/libs/debug.mln";
 import heap from "../src/libs/heap.mln";
 import irq from "../src/libs/irq.mln";
+import mem from "../src/libs/mem.mln";
 import { get_task0_addr, get_task1_addr } from "../src/libs/task_funcs.masm";
 import { halt_cpu } from "../src/libs/halt.masm";
 
@@ -59,18 +60,18 @@ export void task1() {
 void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     i32 sp = stack_bottom;
     
-    sp = sp - 4; irq.write_word(sp, func_ptr); // PC
-    sp = sp - 4; irq.write_word(sp, 1);        // SR (IE=1)
-    sp = sp - 4; irq.write_word(sp, 0);        // lr
-    sp = sp - 4; irq.write_word(sp, stack_bottom); // bp
-    sp = sp - 4; irq.write_word(sp, 0);        // r0
-    sp = sp - 4; irq.write_word(sp, 0);        // r1
-    sp = sp - 4; irq.write_word(sp, 0);        // r2
-    sp = sp - 4; irq.write_word(sp, 0);        // r3
-    sp = sp - 4; irq.write_word(sp, 0);        // r4
-    sp = sp - 4; irq.write_word(sp, 0);        // r5
-    sp = sp - 4; irq.write_word(sp, 0);        // r6
-    sp = sp - 4; irq.write_word(sp, 0);        // r7
+    sp = sp - 4; mem.write_word(sp, func_ptr); // PC
+    sp = sp - 4; mem.write_word(sp, 1);        // SR (IE=1)
+    sp = sp - 4; mem.write_word(sp, 0);        // lr
+    sp = sp - 4; mem.write_word(sp, stack_bottom); // bp
+    sp = sp - 4; mem.write_word(sp, 0);        // r0
+    sp = sp - 4; mem.write_word(sp, 0);        // r1
+    sp = sp - 4; mem.write_word(sp, 0);        // r2
+    sp = sp - 4; mem.write_word(sp, 0);        // r3
+    sp = sp - 4; mem.write_word(sp, 0);        // r4
+    sp = sp - 4; mem.write_word(sp, 0);        // r5
+    sp = sp - 4; mem.write_word(sp, 0);        // r6
+    sp = sp - 4; mem.write_word(sp, 0);        // r7
     
     task_sps[task_idx] = sp;
 }
