@@ -1,0 +1,39 @@
+package test;
+
+import debug from "../../src/libs/debug.mln";
+import serial from "../../src/libs/serial.mln";
+import { halt_cpu } from "../../src/libs/halt.masm";
+
+export void pass() {
+    debug.println("TEST_PASS");
+    halt_cpu();
+}
+
+export void fail(ref char reason) {
+    debug.print("TEST_FAIL:");
+    debug.println(reason);
+    halt_cpu();
+}
+
+export void assert_eq_i32(i32 got, i32 expected, ref char reason) {
+    if (got != expected) {
+        fail(reason);
+    }
+}
+
+export i32 wait_serial_rx(i32 timeout, ref char reason) {
+    i32 spin = 0;
+    while (serial.rx_ready() == 0) {
+        spin = spin + 1;
+        if (spin > timeout) {
+            fail(reason);
+        }
+    }
+    return serial.read_rx();
+}
+
+export void expect_serial_byte(i32 expected, i32 timeout, ref char reason) {
+    i32 got = wait_serial_rx(timeout, reason);
+    serial.putc(got);
+    assert_eq_i32(got, expected, reason);
+}
