@@ -1,18 +1,14 @@
-test {
-    name: "serial_rx";
+import test from "libs/test.mln";
+
+test("serial_rx", {
     stdin: "PINGq";
     expect: "TEST_PASS";
     step: 10000000;
-}
-
-import test from "libs/test.mln";
-
-i32 kernel_main() {
+}, () => {
     test.expect_serial_byte(80, 1000000, "serial_rx:P");
     test.expect_serial_byte(73, 1000000, "serial_rx:I");
     test.expect_serial_byte(78, 1000000, "serial_rx:N");
     test.expect_serial_byte(71, 1000000, "serial_rx:G");
     test.expect_serial_byte(113, 1000000, "serial_rx:q");
     test.pass();
-    return 0;
-}
+});
