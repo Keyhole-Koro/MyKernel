@@ -1,14 +1,40 @@
 import test from "libs/test.mln";
+import debug from "../src/libs/debug.mln";
+import heap from "../src/libs/heap.mln";
+import irq from "../src/libs/irq.mln";
+import serial from "../src/libs/serial.mln";
+
+i32 g_irq_count = 0;
+
+i32 irq_handler(i32 sp) {
+    g_irq_count = g_irq_count + 1;
+
+    while (serial.rx_ready() != 0) {
+        i32 c = serial.read_rx();
+        if (c == 113) {
+            serial.putc(10);
+            test.pass();
+        }
+        serial.putc(c);
+    }
+
+    return sp;
+}
 
 test("serial_rx", {
     stdin: "PINGq";
-    expect: "TEST_PASS";
+    expect: "kernel: heap ready\nPING\nTEST_PASS";
     step: 10000000;
 }, () => {
-    test.expect_serial_byte(80, 1000000, "serial_rx:P");
-    test.expect_serial_byte(73, 1000000, "serial_rx:I");
-    test.expect_serial_byte(78, 1000000, "serial_rx:N");
-    test.expect_serial_byte(71, 1000000, "serial_rx:G");
-    test.expect_serial_byte(113, 1000000, "serial_rx:q");
-    test.pass();
+    debug.println("kernel: boot");
+    debug.println("kernel: arch init");
+    heap.init();
+    debug.println("kernel: heap ready");
+
+    irq.set_handler();
+    irq.enable();
+    debug.println("kernel: type to echo (q to quit)");
+
+    while (1) {
+    }
 });
