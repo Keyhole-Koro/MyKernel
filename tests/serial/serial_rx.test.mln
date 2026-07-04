@@ -1,3 +1,5 @@
+package scheduler;
+
 import test from "../libs/test.mln";
 import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
@@ -6,7 +8,7 @@ import serial from "../../src/io/serial.mln";
 
 i32 g_irq_count = 0;
 
-i32 irq_handler(i32 sp) {
+export i32 irq_handler(i32 sp) {
     g_irq_count = g_irq_count + 1;
 
     while (serial.rx_ready() != 0) {

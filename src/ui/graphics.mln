@@ -1,8 +1,8 @@
 package graphics;
 
 export i32 VRAM_BASE = 0x30000000;
-export i32 DISPLAY_WIDTH = 320;
-export i32 DISPLAY_HEIGHT = 240;
+export i32 DISPLAY_WIDTH = 1024;
+export i32 DISPLAY_HEIGHT = 768;
 
 export i32 rgb(i32 r, i32 g, i32 b) {
     return r * 65536 + g * 256 + b;
