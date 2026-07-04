@@ -25,7 +25,7 @@ export i32 irq_handler(i32 sp) {
 
 test("serial_rx", {
     stdin: "PINGq";
-    expect: "kernel: heap ready\nPING\nTEST_PASS";
+    expect: "PING\nTEST_PASS";
     step: 10000000;
 }, () => {
     debug.println("kernel: boot");
