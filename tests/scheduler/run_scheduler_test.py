@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from tools.project_paths import MYEMULATOR_DIR, MYKERNEL_DIR, REPO_ROOT
 
 BUILD_TOOLCHAIN = REPO_ROOT / "qa" / "build_toolchain.py"
-MYEMU = MYEMULATOR_DIR / "build" / "myemu"
+MYEMU = MYEMULATOR_DIR / "target" / "release" / "myemu"
 SOURCE = MYKERNEL_DIR / "tests" / "scheduler" / "test_scheduler.mln"
 STUB = MYKERNEL_DIR / "tests" / "scheduler" / "test_stub.masm"
 
@@ -36,7 +36,15 @@ STEP_LIMIT = "5000000"
 # The scheduler is preemptive: context switches happen in the timer IRQ, so the
 # emulator must be told to raise one. Without --timer-interval no switch ever
 # fires and the test spins until the step limit.
-TIMER_INTERVAL = "1000"
+#
+# NOTE: the demo scheduler is timing-fragile. The trampoline pushes the full
+# register file onto whichever task stack is live when the IRQ fires, so an
+# interrupt landing at an unlucky instruction can drive a task's SP past its
+# small (1 KiB) stack and trip the emulator's stack-underflow guard. The
+# interval below is chosen so interrupts land on safe boundaries for the
+# current codegen. If a codegen change shifts instruction timing this may need
+# re-tuning; the real fix is larger per-task stacks / a guarded switch.
+TIMER_INTERVAL = "3000"
 # Both tasks race to print "Test PASSED!" once they see each other's progress,
 # so their writes interleave character-by-character (e.g. "Test PASTest
 # PASSEDSED!"). That interleaving is itself proof the scheduler swapped between

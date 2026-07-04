@@ -23,6 +23,8 @@ void kernel_init() {
     debug.println("kernel: dom ready");
     dom.dump();
 
+    debug.println("graphics: start");
+
     // Draw background (blue)
     graphics.fill_rect(0, 0, 1024, 768, graphics.rgb(0, 0, 255));
     // Draw a window (white with gray border)
@@ -32,7 +34,14 @@ void kernel_init() {
     graphics.fill_rect(120, 130, 150, 60, graphics.rgb(204, 204, 204));
     graphics.draw_rect(120, 130, 150, 60, 0);
 
-    debug.println("graphics ready");
+    // Window title and button label.
+    i32 black = graphics.rgb(0, 0, 0);
+    i32 white = graphics.rgb(255, 255, 255);
+    i32 button = graphics.rgb(204, 204, 204);
+    graphics.draw_text(120, 108, "MyKernel Window", black, white);
+    graphics.draw_text(150, 152, "OK", black, button);
+
+    debug.println("graphics: done");
 
     fs.init();
 

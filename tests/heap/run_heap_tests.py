@@ -35,7 +35,7 @@ from tools.project_paths import (
 MLC = MYLANGCOMPILER_DIR / "mlc"
 MYAS = MYASSEMBLER_DIR / "build" / "myas"
 MLLINKER = MYLINKER_DIR / "mllinker"
-MYEMU = MYEMULATOR_DIR / "build" / "myemu"
+MYEMU = MYEMULATOR_DIR / "target" / "release" / "myemu"
 
 SRC = MYKERNEL_DIR / "src"
 CASES_DIR = Path(__file__).resolve().parent / "cases"
