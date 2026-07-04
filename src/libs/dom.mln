@@ -130,6 +130,9 @@ export void init() {
     i32 dev = create_node(NODE_DEVICE, "device");
     append_child(sys, dev);
 
+    i32 fs_node = create_node(NODE_DIRECTORY, "fs");
+    append_child(dev, fs_node);
+
     i32 ui = create_node(NODE_UI, "ui");
     append_child(sys, ui);
     
