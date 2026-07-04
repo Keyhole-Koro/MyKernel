@@ -5,6 +5,7 @@ import serial from "libs/serial.mln";
 import mem from "libs/mem.mln";
 import dom from "libs/dom.mln";
 import graphics from "libs/graphics.mln";
+import fs from "libs/fs.mln";
 import { get_task0_addr, get_task1_addr } from "libs/task_funcs.masm";
 import { halt_cpu } from "libs/halt.masm";
 
@@ -115,6 +116,8 @@ void kernel_init() {
     graphics.draw_rect(70, 80, 60, 20, 0);
 
     debug.println("graphics ready");
+
+    fs.init();
 
     // Set up task 1
     i32 stack1 = heap.alloc(1024);
