@@ -11,14 +11,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tools.project_paths import MYEMULATOR_DIR, MYKERNEL_DIR, REPO_ROOT
 
 BUILD_TOOLCHAIN = REPO_ROOT / "qa" / "build_toolchain.py"
 MYEMU = MYEMULATOR_DIR / "build" / "myemu"
-SOURCE = MYKERNEL_DIR / "tests" / "test_fs_smoke.mln"
-STUB = MYKERNEL_DIR / "tests" / "test_fs_smoke_stub.masm"
+SOURCE = MYKERNEL_DIR / "tests" / "fs" / "test_fs_smoke.mln"
+STUB = MYKERNEL_DIR / "tests" / "fs" / "test_fs_smoke_stub.masm"
 
 STEP_LIMIT = "50000000"
 MARKER = "Test PASSED!"

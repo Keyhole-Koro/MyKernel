@@ -1,8 +1,8 @@
-import debug from "../src/libs/debug.mln";
-import heap from "../src/libs/heap.mln";
-import fs from "../src/libs/fs.mln";
-import serial from "../src/libs/serial.mln";
-import { halt_cpu } from "../src/libs/halt.masm";
+import debug from "../../src/debug/debug.mln";
+import heap from "../../src/mm/heap.mln";
+import fs from "../../src/fs/fs.mln";
+import serial from "../../src/io/serial.mln";
+import { halt_cpu } from "../../src/arch/halt.masm";
 
 // Write one byte to a plain byte buffer (caller buffers are byte arrays).
 void set_byte(i32 addr, i32 value) {

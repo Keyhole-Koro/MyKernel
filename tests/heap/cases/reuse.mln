@@ -1,4 +1,4 @@
-import heap from "../../src/libs/heap.mln";
+import heap from "../../../src/mm/heap.mln";
 
 // Freeing a block and allocating the same size reuses it (LIFO free list head).
 i32 main() {

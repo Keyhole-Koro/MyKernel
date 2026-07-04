@@ -1,8 +1,8 @@
 package dom;
 
-import debug from "debug.mln";
-import heap from "heap.mln";
-import { halt_cpu } from "halt.masm";
+import debug from "../debug/debug.mln";
+import heap from "../mm/heap.mln";
+import { halt_cpu } from "../arch/halt.masm";
 
 export u16 NODE_ROOT      = 0;
 export u16 NODE_SYSTEM    = 1;

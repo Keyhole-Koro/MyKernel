@@ -1,6 +1,6 @@
 package ssd;
 
-import mem from "mem.mln";
+import mem from "../mm/mem.mln";
 
 // Block-device driver for the emulated SSD. Memory-mapped registers must match
 // constants.rs in the emulator. A command is issued by latching the block

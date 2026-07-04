@@ -3,12 +3,12 @@
 ;
 ; This trampoline:
 ;   1. saves all registers (lr, bp, r0-r7)
-;   2. passes current sp to irq_handler in r1
-;   3. calls irq_handler, which returns new sp in r1
+;   2. passes current sp to scheduler_irq_handler in r1
+;   3. calls scheduler_irq_handler, which returns new sp in r1
 ;   4. loads new sp from r1
 ;   5. restores registers (r0-r7, bp, lr)
 ;   6. executes `iret` to resume the selected task
-import irq_handler
+import scheduler_irq_handler
 
 export irq_trampoline
 
@@ -25,7 +25,7 @@ irq_trampoline:
   push r7
 
   mov r5, sp
-  call irq_handler
+  call scheduler_irq_handler
   mov sp, r1
 
   pop r7

@@ -1,7 +1,7 @@
 package irq;
 
 import { hw_irq_enable, hw_irq_disable, hw_irq_vector_target } from "interrupt.masm";
-import mem from "mem.mln";
+import mem from "../mm/mem.mln";
 
 // Single fixed IRQ vector slot in the I/O region (IO_BASE + 0x80). The CPU reads
 // this on an interrupt to find the handler. Must match IRQ_VECTOR_ADDR in the

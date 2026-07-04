@@ -1,6 +1,6 @@
 package debug;
 
-import serial from "serial.mln";
+import serial from "../io/serial.mln";
 
 char hex_digit(i32 nibble) {
     char *digits = "0123456789abcdef";

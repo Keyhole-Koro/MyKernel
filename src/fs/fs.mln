@@ -1,9 +1,9 @@
 package fs;
 
-import debug from "debug.mln";
-import heap from "heap.mln";
-import mem from "mem.mln";
-import serial from "serial.mln";
+import debug from "../debug/debug.mln";
+import heap from "../mm/heap.mln";
+import mem from "../mm/mem.mln";
+import serial from "../io/serial.mln";
 import ssd from "ssd.mln";
 
 // MyFileSystem (MFS): a flat, FAT-like filesystem over the SSD block device.

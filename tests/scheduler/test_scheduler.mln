@@ -1,9 +1,11 @@
-import debug from "../src/libs/debug.mln";
-import heap from "../src/libs/heap.mln";
-import irq from "../src/libs/irq.mln";
-import mem from "../src/libs/mem.mln";
-import { get_task0_addr, get_task1_addr } from "../src/libs/task_funcs.masm";
-import { halt_cpu } from "../src/libs/halt.masm";
+package scheduler;
+
+import debug from "../../src/debug/debug.mln";
+import heap from "../../src/mm/heap.mln";
+import irq from "../../src/arch/irq.mln";
+import mem from "../../src/mm/mem.mln";
+import { get_task0_addr, get_task1_addr } from "../../src/arch/task_funcs.masm";
+import { halt_cpu } from "../../src/arch/halt.masm";
 
 // Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
@@ -16,7 +18,8 @@ i32 task0_count = 0;
 i32 task1_count = 0;
 
 // Interrupt handler invoked (via irq_trampoline.masm) on each timer interrupt.
-i32 irq_handler(i32 sp) {
+// Exported so it mangles to `scheduler_irq_handler`, matching irq_trampoline.masm.
+export i32 irq_handler(i32 sp) {
     g_irq_count = g_irq_count + 1;
     
     if (tasks_initialized == 0) {

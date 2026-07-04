@@ -1,4 +1,4 @@
-import heap from "../../src/libs/heap.mln";
+import heap from "../../../src/mm/heap.mln";
 
 // Allocating past the heap capacity must panic (print "panic" and halt).
 // The harness asserts on serial output, since a panic stops the machine.

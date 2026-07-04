@@ -1,13 +1,12 @@
-import debug from "libs/debug.mln";
-import heap from "libs/heap.mln";
-import irq from "libs/irq.mln";
-import serial from "libs/serial.mln";
-import mem from "libs/mem.mln";
-import dom from "libs/dom.mln";
-import graphics from "libs/graphics.mln";
-import fs from "libs/fs.mln";
-import { get_task0_addr, get_task1_addr } from "libs/task_funcs.masm";
-import { halt_cpu } from "libs/halt.masm";
+package scheduler;
+
+import debug from "../debug/debug.mln";
+import serial from "../io/serial.mln";
+import mem from "../mm/mem.mln";
+import heap from "../mm/heap.mln";
+import irq from "../arch/irq.mln";
+import { get_task0_addr, get_task1_addr } from "../arch/task_funcs.masm";
+import { halt_cpu } from "../arch/halt.masm";
 
 // Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
@@ -19,7 +18,10 @@ i32 tasks_initialized = 0;
 // Interrupt handler invoked (via irq_trampoline.masm) on each timer interrupt.
 // It receives the current stack pointer as an argument, saves it for the
 // current task, and returns the stack pointer of the next task to resume.
-i32 irq_handler(i32 sp) {
+//
+// Exported so the trampoline can resolve the label; MyLang mangles it to
+// `scheduler_irq_handler`, which irq_trampoline.masm imports.
+export i32 irq_handler(i32 sp) {
     g_irq_count = g_irq_count + 1;
 
     // Serial RX: drain all received bytes and echo them back. 'q' (0x71) quits.
@@ -46,6 +48,8 @@ i32 irq_handler(i32 sp) {
     return task_sps[current_task];
 }
 
+// Demo tasks. Exported so task_funcs.masm can take their addresses; MyLang
+// mangles them to `scheduler_task0` / `scheduler_task1`.
 export void task0() {
     i32 i = 0;
     while (1) {
@@ -68,10 +72,10 @@ export void task1() {
 
 void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     i32 sp = stack_bottom;
-    
+
     // Construct initial stack frame.
     // Pushed in reverse order of pops: r7..r0, bp, lr, SR, PC.
-    
+
     sp = sp - 4; mem.write_word(sp, func_ptr); // PC
     sp = sp - 4; mem.write_word(sp, 1);        // SR (IE=1)
     sp = sp - 4; mem.write_word(sp, 0);        // lr
@@ -84,52 +88,20 @@ void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     sp = sp - 4; mem.write_word(sp, 0);        // r5
     sp = sp - 4; mem.write_word(sp, 0);        // r6
     sp = sp - 4; mem.write_word(sp, 0);        // r7
-    
+
     task_sps[task_idx] = sp;
 }
 
-void kernel_boot_banner() {
-    debug.println("kernel: boot");
-}
-
-void kernel_arch_init() {
-    debug.println("kernel: arch init");
-    heap.init();
-    debug.println("kernel: heap ready");
-}
-
-void kernel_init() {
-    kernel_boot_banner();
-    kernel_arch_init();
-
-    dom.init();
-    debug.println("kernel: dom ready");
-    dom.dump();
-
-    // Draw background (blue)
-    graphics.fill_rect(0, 0, 320, 240, graphics.rgb(0, 0, 255));
-    // Draw a window (white with gray border)
-    graphics.fill_rect(50, 50, 200, 100, graphics.rgb(255, 255, 255));
-    graphics.draw_rect(50, 50, 200, 100, graphics.rgb(136, 136, 136));
-    // Draw a button inside
-    graphics.fill_rect(70, 80, 60, 20, graphics.rgb(204, 204, 204));
-    graphics.draw_rect(70, 80, 60, 20, 0);
-
-    debug.println("graphics ready");
-
-    fs.init();
-
-    // Set up task 1
+// Set up the demo tasks, enable interrupts, and turn the current thread of
+// execution into task 0. Never returns.
+export void start() {
+    // Set up task 1.
     i32 stack1 = heap.alloc(1024);
     init_task(1, get_task1_addr(), stack1 + 1024);
-    
-    // Set up task 0 (we are currently running in task 0's context conceptually,
-    // but the first interrupt will save our current state into task 0's slot!
-    // Wait! If the first interrupt happens, it will save current SP to task_sps[0].
-    // Then switch to task 1.
-    // Then we need tasks_initialized = 1 BEFORE we jump to task0.
-    // Instead of jumping to task0 manually, we can just make the main loop become task 0.
-    
+
+    // Task 0 is the current context: the first timer interrupt saves our SP
+    // into task_sps[0], so tasks_initialized must be set before we enter the
+    // loop below.
     tasks_initialized = 1;
 
     irq.set_handler();
@@ -137,10 +109,5 @@ void kernel_init() {
     debug.println("kernel: irq/task on");
     debug.println("kernel: type to echo (q to quit)");
 
-    task0(); // Main loop becomes task 0
-}
-
-i32 kernel_main() {
-    kernel_init();
-    return 0;
+    task0(); // Main loop becomes task 0.
 }

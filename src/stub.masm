@@ -1,5 +1,0 @@
-import { kernel_main } from "kernel_main.mln"
-
-__START__:
-  call kernel_main
-  halt
