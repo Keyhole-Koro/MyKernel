@@ -1,4 +1,4 @@
-import heap from "../../src/libs/heap.mln";
+import heap from "../../../src/mm/heap.mln";
 
 // Free in the opposite order (B then A): freeing A should merge with the
 // already-free following block B (backward case from A's perspective). The

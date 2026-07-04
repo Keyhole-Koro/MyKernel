@@ -1,4 +1,4 @@
-import heap from "../../src/libs/heap.mln";
+import heap from "../../../src/mm/heap.mln";
 
 // alloc returns distinct, non-zero, non-overlapping blocks.
 i32 main() {

@@ -1,8 +1,8 @@
-import test from "libs/test.mln";
-import debug from "../src/libs/debug.mln";
-import heap from "../src/libs/heap.mln";
-import irq from "../src/libs/irq.mln";
-import serial from "../src/libs/serial.mln";
+import test from "../libs/test.mln";
+import debug from "../../src/debug/debug.mln";
+import heap from "../../src/mm/heap.mln";
+import irq from "../../src/arch/irq.mln";
+import serial from "../../src/io/serial.mln";
 
 i32 g_irq_count = 0;
 

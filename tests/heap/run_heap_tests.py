@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tools.project_paths import (
     MYASSEMBLER_DIR,
@@ -37,7 +37,7 @@ MYAS = MYASSEMBLER_DIR / "build" / "myas"
 MLLINKER = MYLINKER_DIR / "mllinker"
 MYEMU = MYEMULATOR_DIR / "build" / "myemu"
 
-LIBS = MYKERNEL_DIR / "src" / "libs"
+SRC = MYKERNEL_DIR / "src"
 CASES_DIR = Path(__file__).resolve().parent / "cases"
 
 GREEN, RED, CYAN, YELLOW = "32", "31", "36", "33"
@@ -45,12 +45,12 @@ GREEN, RED, CYAN, YELLOW = "32", "31", "36", "33"
 # Shared library sources linked into every heap test.
 #   (path, kind)  kind: "ml" compiles via mlc, "masm" assembles directly.
 LIB_SOURCES = [
-    (LIBS / "heap.mln", "ml"),
-    (LIBS / "heap_sym.masm", "masm"),
-    (LIBS / "halt.masm", "masm"),
-    (LIBS / "mem.mln", "ml"),
-    (LIBS / "serial.mln", "ml"),
-    (LIBS / "debug.mln", "ml"),
+    (SRC / "mm" / "heap.mln", "ml"),
+    (SRC / "mm" / "heap_sym.masm", "masm"),
+    (SRC / "arch" / "halt.masm", "masm"),
+    (SRC / "mm" / "mem.mln", "ml"),
+    (SRC / "io" / "serial.mln", "ml"),
+    (SRC / "debug" / "debug.mln", "ml"),
 ]
 
 # name -> dict describing the assertion.

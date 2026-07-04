@@ -1,0 +1,47 @@
+import debug from "../debug/debug.mln";
+import heap from "../mm/heap.mln";
+import dom from "../ui/dom.mln";
+import graphics from "../ui/graphics.mln";
+import fs from "../fs/fs.mln";
+import scheduler from "scheduler.mln";
+
+void kernel_boot_banner() {
+    debug.println("kernel: boot");
+}
+
+void kernel_arch_init() {
+    debug.println("kernel: arch init");
+    heap.init();
+    debug.println("kernel: heap ready");
+}
+
+void kernel_init() {
+    kernel_boot_banner();
+    kernel_arch_init();
+
+    dom.init();
+    debug.println("kernel: dom ready");
+    dom.dump();
+
+    // Draw background (blue)
+    graphics.fill_rect(0, 0, 320, 240, graphics.rgb(0, 0, 255));
+    // Draw a window (white with gray border)
+    graphics.fill_rect(50, 50, 200, 100, graphics.rgb(255, 255, 255));
+    graphics.draw_rect(50, 50, 200, 100, graphics.rgb(136, 136, 136));
+    // Draw a button inside
+    graphics.fill_rect(70, 80, 60, 20, graphics.rgb(204, 204, 204));
+    graphics.draw_rect(70, 80, 60, 20, 0);
+
+    debug.println("graphics ready");
+
+    fs.init();
+
+    // Hand off to the scheduler: it sets up the demo tasks, enables
+    // interrupts, and turns this thread into task 0 (never returns).
+    scheduler.start();
+}
+
+i32 kernel_main() {
+    kernel_init();
+    return 0;
+}

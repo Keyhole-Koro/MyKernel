@@ -1,4 +1,4 @@
-import heap from "../../src/libs/heap.mln";
+import heap from "../../../src/mm/heap.mln";
 
 // Allocating a small block splits the big free block; the remainder is still
 // usable for a subsequent allocation.

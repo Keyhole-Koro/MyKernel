@@ -1,4 +1,4 @@
-import heap from "../../src/libs/heap.mln";
+import heap from "../../../src/mm/heap.mln";
 
 // Free two physically-adjacent blocks (A then B) and verify the freed region at
 // A grows to span both blocks (forward merge with the following free block).
