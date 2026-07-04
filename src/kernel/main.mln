@@ -41,6 +41,21 @@ void kernel_init() {
     graphics.draw_text(120, 108, "MyKernel Window", black, white);
     graphics.draw_text(150, 152, "OK", black, button);
 
+    // Showcase the new primitives inside the window.
+    i32 red = graphics.rgb(220, 40, 40);
+    i32 green = graphics.rgb(40, 180, 40);
+    i32 blue = graphics.rgb(40, 90, 220);
+
+    // A diagonal line and a filled + outlined circle.
+    graphics.draw_line(320, 140, 660, 300, red);
+    graphics.fill_circle(420, 260, 50, green);
+    graphics.draw_circle(560, 260, 60, blue);
+
+    // Scaled heading and a live counter value.
+    graphics.draw_text_scaled(320, 340, "GRAPHICS", blue, white, 3);
+    graphics.draw_text(320, 400, "irq count:", black, white);
+    graphics.draw_int(410, 400, 12345, red, white);
+
     debug.println("graphics: done");
 
     fs.init();
