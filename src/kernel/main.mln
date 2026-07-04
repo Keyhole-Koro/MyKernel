@@ -24,13 +24,13 @@ void kernel_init() {
     dom.dump();
 
     // Draw background (blue)
-    graphics.fill_rect(0, 0, 320, 240, graphics.rgb(0, 0, 255));
+    graphics.fill_rect(0, 0, 1024, 768, graphics.rgb(0, 0, 255));
     // Draw a window (white with gray border)
-    graphics.fill_rect(50, 50, 200, 100, graphics.rgb(255, 255, 255));
-    graphics.draw_rect(50, 50, 200, 100, graphics.rgb(136, 136, 136));
+    graphics.fill_rect(100, 100, 600, 400, graphics.rgb(255, 255, 255));
+    graphics.draw_rect(100, 100, 600, 400, graphics.rgb(136, 136, 136));
     // Draw a button inside
-    graphics.fill_rect(70, 80, 60, 20, graphics.rgb(204, 204, 204));
-    graphics.draw_rect(70, 80, 60, 20, 0);
+    graphics.fill_rect(120, 130, 150, 60, graphics.rgb(204, 204, 204));
+    graphics.draw_rect(120, 130, 150, 60, 0);
 
     debug.println("graphics ready");
 
