@@ -44,7 +44,7 @@ i32 block_end(i32 h) {
     return h + HDR_SIZE + block_size(h);
 }
 
-void panic(ref char msg) {
+void panic(char* msg) {
     debug.print("heap panic: ");
     debug.println(msg);
     halt_cpu();

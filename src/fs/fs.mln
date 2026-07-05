@@ -162,7 +162,7 @@ i32 load_entry(i32 idx) {
 
 // Compare the name stored at buffer offset `off` with `name`.
 // Returns 1 if equal, 0 otherwise.
-i32 name_match(i32 off, ref char name) {
+i32 name_match(i32 off, char* name) {
     i32 i = 0;
     while (i < NAME_MAX) {
         i32 c = buf_byte(off + i);
@@ -178,7 +178,7 @@ i32 name_match(i32 off, ref char name) {
     return 1;
 }
 
-void store_name(i32 off, ref char name) {
+void store_name(i32 off, char* name) {
     i32 i = 0;
     while (i < NAME_MAX) {
         i32 n = (i32)name[i] & 0xFF;
@@ -197,7 +197,7 @@ void store_name(i32 off, ref char name) {
 
 // Find the entry index for `name`. Returns index, or -1 if not found.
 // The whole entry table is one block, so read it once and scan in memory.
-i32 find_entry_by_name(ref char name) {
+i32 find_entry_by_name(char* name) {
     ssd.read_block(ENTRY_BLOCK, g_buf);
     i32 idx = 0;
     while (idx < MAX_FILES) {
@@ -293,7 +293,7 @@ export void init() {
 // --- file operations ---
 
 // Create a file. Returns an fd, or -1 on failure (duplicate / table full).
-export i32 create(ref char filename) {
+export i32 create(char* filename) {
     if (g_enabled == 0) { return -1; }
     if (find_entry_by_name(filename) != -1) {
         return -1; // already exists
@@ -324,7 +324,7 @@ export i32 create(ref char filename) {
 }
 
 // Open an existing file. Returns an fd, or -1 if not found / no free fd.
-export i32 open(ref char filename) {
+export i32 open(char* filename) {
     if (g_enabled == 0) { return -1; }
     i32 idx = find_entry_by_name(filename);
     if (idx == -1) {
@@ -478,7 +478,7 @@ i32 finish_write(i32 fd, i32 new_size) {
 }
 
 // Remove a file by name. Returns 0 on success, -1 if not found.
-export i32 remove(ref char filename) {
+export i32 remove(char* filename) {
     i32 idx = find_entry_by_name(filename);
     if (idx == -1) {
         return -1;

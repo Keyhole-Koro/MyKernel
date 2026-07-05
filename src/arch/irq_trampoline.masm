@@ -8,7 +8,7 @@
 ;   4. loads new sp from r1
 ;   5. restores registers (r0-r7, bp, lr)
 ;   6. executes `iret` to resume the selected task
-import scheduler_irq_handler
+import irq_dispatch_dispatch
 
 export irq_trampoline
 
@@ -25,7 +25,7 @@ irq_trampoline:
   push r7
 
   mov r5, sp
-  call scheduler_irq_handler
+  call irq_dispatch_dispatch
   mov sp, r1
 
   pop r7
