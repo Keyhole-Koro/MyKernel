@@ -1,19 +1,30 @@
 package scheduler;
 
 import debug from "../debug/debug.mln";
-import serial from "../io/serial.mln";
 import mem from "../mm/mem.mln";
 import heap from "../mm/heap.mln";
-import irq from "../arch/irq.mln";
-import { get_task0_addr, get_task1_addr } from "../arch/task_funcs.masm";
+import serial from "../io/serial.mln";
+import mouse from "../io/mouse.mln";
 import { halt_cpu } from "../arch/halt.masm";
 
 // Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
 
-i32 task_sps[2];
+i32 MAX_TASKS = 256;
+i32 task_sps[256];
 i32 current_task = 0;
 i32 tasks_initialized = 0;
+
+// Task state constants
+enum TaskState {
+    TASK_RUNNABLE = 0,
+    TASK_SLEEPING = 1,
+    TASK_EMPTY = 2
+}
+
+// Task state management
+i32 task_state[256];      
+i32 task_wake_tick[256];  // Tick when the task should wake up
 
 // Interrupt handler invoked (via irq_trampoline.masm) on each timer interrupt.
 // It receives the current stack pointer as an argument, saves it for the
@@ -24,11 +35,14 @@ i32 tasks_initialized = 0;
 export i32 irq_handler(i32 sp) {
     g_irq_count = g_irq_count + 1;
 
+    // Record hardware state into queue
+    mouse.irq_push();
+
     // Serial RX: drain all received bytes and echo them back. 'q' (0x71) quits.
     while (serial.rx_ready() != 0) {
         i32 c = serial.read_rx();
-        if (c == 113) {
-            serial.putc(10); // newline
+        if (c == 'q') {
+            serial.putc('\n'); // newline
             halt_cpu();
         }
         serial.putc(c);
@@ -38,37 +52,52 @@ export i32 irq_handler(i32 sp) {
         return sp;
     }
 
+    // Check if any sleeping tasks should be woken up
+    i32 i = 0;
+    while (i < MAX_TASKS) {
+        if (task_state[i] == TASK_SLEEPING) {
+            if (g_irq_count >= task_wake_tick[i]) {
+                task_state[i] = TASK_RUNNABLE; // Wake up!
+            }
+        }
+        i = i + 1;
+    }
+
     // Save current task's SP
     task_sps[current_task] = sp;
 
-    // Switch to next task
-    current_task = (current_task + 1) % 2;
+    // Decide which task to run next
+    i32 next_task = (current_task + 1) % MAX_TASKS;
+    i32 checked = 0;
+    while (checked < MAX_TASKS) {
+        if (task_state[next_task] == TASK_RUNNABLE) {
+            current_task = next_task; // Switch to next task
+            checked = MAX_TASKS;      // break
+        } else {
+            next_task = (next_task + 1) % MAX_TASKS;
+            checked = checked + 1;
+        }
+    }
 
     // Return new task's SP
     return task_sps[current_task];
 }
 
-// Demo tasks. Exported so task_funcs.masm can take their addresses; MyLang
-// mangles them to `scheduler_task0` / `scheduler_task1`.
-export void task0() {
-    i32 i = 0;
-    while (1) {
-        if (i % 1000 == 0) {
-            debug.println("Task 0 is running...");
-        }
-        i = i + 1;
+// Voluntarily sleep for `ticks` timer interrupts
+export void sleep(i32 ticks) {
+    i32 target = g_irq_count + ticks;
+    task_wake_tick[current_task] = target;
+    task_state[current_task] = TASK_SLEEPING; // Set state to SLEEPING
+
+    // Busy-wait until the scheduler wakes us up.
+    // The first timer interrupt that hits while we are in this loop
+    // will see that we are SLEEPING, and will stop giving us CPU time!
+    while (task_state[current_task] == TASK_SLEEPING) {
+        // Just spin. CPU time is given to other tasks.
     }
 }
 
-export void task1() {
-    i32 i = 0;
-    while (1) {
-        if (i % 1000 == 0) {
-            debug.println("Task 1 is running...");
-        }
-        i = i + 1;
-    }
-}
+// (Demo tasks have been removed. You can use spawn_task() to launch apps here!)
 
 void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     i32 sp = stack_bottom;
@@ -92,22 +121,41 @@ void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     task_sps[task_idx] = sp;
 }
 
-// Set up the demo tasks, enable interrupts, and turn the current thread of
-// execution into task 0. Never returns.
-export void start() {
-    // Set up task 1.
-    i32 stack1 = heap.alloc(1024);
-    init_task(1, get_task1_addr(), stack1 + 1024);
+// Spawns a new task. Returns the task ID on success, or -1 if slots are exhausted.
+export i32 spawn_task(i32 func_ptr) {
+    i32 i = 0;
+    while (i < MAX_TASKS) {
+        if (task_state[i] == TASK_EMPTY) {
+            i32 stack = heap.alloc(1024);
+            if (stack == 0) {
+                debug.println("Error: Out of memory for task stack!");
+                return -1;
+            }
+            init_task(i, func_ptr, stack + 1024);
+            task_state[i] = TASK_RUNNABLE;
+            return i;
+        }
+        i = i + 1;
+    }
+    
+    debug.println("Error: Task slots exhausted! (MAX_TASKS reached)");
+    return -1;
+}
+
+// Initializes the scheduler. Marks the current execution context as Task 0.
+export void init() {
+    // Initialize task states to EMPTY
+    i32 i = 0;
+    while (i < MAX_TASKS) {
+        task_state[i] = TASK_EMPTY;
+        i = i + 1;
+    }
 
     // Task 0 is the current context: the first timer interrupt saves our SP
-    // into task_sps[0], so tasks_initialized must be set before we enter the
-    // loop below.
+    // into task_sps[0], so tasks_initialized must be set before we enter the loop.
+    task_state[0] = TASK_RUNNABLE;
+    current_task = 0;
     tasks_initialized = 1;
 
-    irq.set_handler();
-    irq.enable();
-    debug.println("kernel: irq/task on");
-    debug.println("kernel: type to echo (q to quit)");
-
-    task0(); // Main loop becomes task 0.
+    // Interrupts can now safely context-switch!
 }
