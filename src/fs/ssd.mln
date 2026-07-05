@@ -12,9 +12,14 @@ i32 SSD_BLOCK_ADDR  = 0x24000014; // W: block number
 i32 SSD_ADDR_ADDR   = 0x24000018; // W: RAM buffer address
 i32 SSD_STATUS_ADDR = 0x2400001C; // R: 0=idle, 2=done, 0xFF=error
 
-i32 SSD_CMD_READ    = 1;
-i32 SSD_CMD_WRITE   = 2;
-i32 SSD_STATUS_DONE = 2;
+enum SsdCommand {
+    SSD_CMD_READ    = 1,
+    SSD_CMD_WRITE   = 2
+}
+
+enum SsdStatus {
+    SSD_STATUS_DONE = 2
+}
 
 export i32 BLOCK_SIZE = 65536;
 
