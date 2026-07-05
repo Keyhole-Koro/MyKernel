@@ -1,0 +1,95 @@
+package mouse;
+
+import mem from "../mm/mem.mln";
+
+// Memory-mapped mouse registers (must match constants.rs in the emulator).
+// The emulator refreshes these once per display frame and raises an IRQ when
+// the position or button state changes.
+i32 MOUSE_X_ADDR = 0x24000040;
+i32 MOUSE_Y_ADDR = 0x24000044;
+i32 MOUSE_BUTTONS_ADDR = 0x24000048;
+
+i32 MOUSE_BUTTON_LEFT = 0x1;
+
+// Tracks the previous left-button state so pressed() can report the edge
+// (the frame the button goes from up to down), i.e. a fresh click.
+i32 g_prev_left = 0;
+
+export i32 x() {
+    return mem.read_word(MOUSE_X_ADDR);
+}
+
+export i32 y() {
+    return mem.read_word(MOUSE_Y_ADDR);
+}
+
+// Raw button bitmask (bit0 = left).
+export i32 buttons() {
+    return mem.read_word(MOUSE_BUTTONS_ADDR);
+}
+
+// Non-zero while the left button is held down.
+export i32 left_down() {
+    return buttons() & MOUSE_BUTTON_LEFT;
+}
+
+// Returns non-zero exactly once per click: on the transition from not-pressed
+// to pressed. Call once per polling pass; it latches the previous state.
+export i32 clicked() {
+    i32 now = buttons() & MOUSE_BUTTON_LEFT;
+    i32 edge = 0;
+    if (now != 0) {
+        if (g_prev_left == 0) {
+            edge = 1;
+        }
+    }
+    g_prev_left = now;
+    return edge;
+}
+
+// --- Event Queue Implementation ---
+i32 QUEUE_SIZE = 64;
+i32 q_x[64];
+i32 q_y[64];
+i32 q_btn[64];
+i32 q_head = 0;
+i32 q_tail = 0;
+
+// Called by the IRQ handler to push hardware state into the queue.
+export void irq_push() {
+    i32 nx = mem.read_word(MOUSE_X_ADDR);
+    i32 ny = mem.read_word(MOUSE_Y_ADDR);
+    i32 nb = mem.read_word(MOUSE_BUTTONS_ADDR);
+    
+    i32 next = (q_tail + 1) % QUEUE_SIZE;
+    if (next != q_head) { // If queue is not full
+        q_x[q_tail] = nx;
+        q_y[q_tail] = ny;
+        q_btn[q_tail] = nb;
+        q_tail = next;
+    }
+}
+
+export i32 has_event() {
+    if (q_head == q_tail) { return 0; }
+    return 1;
+}
+
+export i32 event_x() { return q_x[q_head]; }
+export i32 event_y() { return q_y[q_head]; }
+export i32 event_btn() { return q_btn[q_head]; }
+
+export void pop_event() {
+    if (q_head != q_tail) {
+        q_head = (q_head + 1) % QUEUE_SIZE;
+    }
+}
+
+// True if point (px, py) lies inside the rectangle (rx, ry, rw, rh).
+export i32 in_rect(i32 px, i32 py, i32 rx, i32 ry, i32 rw, i32 rh) {
+    if (px < rx) { return 0; }
+    if (py < ry) { return 0; }
+    if (px >= rx + rw) { return 0; }
+    if (py >= ry + rh) { return 0; }
+    return 1;
+}

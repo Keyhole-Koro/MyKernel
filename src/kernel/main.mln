@@ -2,8 +2,11 @@ import debug from "../debug/debug.mln";
 import heap from "../mm/heap.mln";
 import dom from "../ui/dom.mln";
 import graphics from "../ui/graphics.mln";
+import mouse from "../io/mouse.mln";
 import fs from "../fs/fs.mln";
 import scheduler from "scheduler.mln";
+import irq_dispatch from "irq_dispatch.mln";
+import irq from "../arch/irq.mln";
 
 void kernel_boot_banner() {
     debug.println("kernel: boot");
@@ -15,6 +18,94 @@ void kernel_arch_init() {
     debug.println("kernel: heap ready");
 }
 
+// Clickable button geometry.
+i32 BTN_X = 120;
+i32 BTN_Y = 130;
+i32 BTN_W = 150;
+i32 BTN_H = 60;
+
+// Draw the whole scene. `clicks` is the running click counter; `hover` is
+// non-zero when the pointer is over the button (draws a highlighted border).
+void render_scene(i32 clicks, i32 hover) {
+    i32 black = graphics.rgb(0, 0, 0);
+    i32 white = graphics.rgb(255, 255, 255);
+    i32 blue = graphics.rgb(40, 90, 220);
+
+    // Background + window.
+    graphics.fill_rect(0, 0, 1024, 768, graphics.rgb(0, 0, 255));
+    graphics.fill_rect(100, 100, 600, 400, white);
+    graphics.draw_rect(100, 100, 600, 400, graphics.rgb(136, 136, 136));
+    graphics.draw_text(120, 108, "MyKernel Window", black, white);
+
+    // Button: lighter when hovered, with a thicker border.
+    i32 face = graphics.rgb(204, 204, 204);
+    if (hover != 0) { face = graphics.rgb(180, 210, 255); }
+    graphics.fill_rect(BTN_X, BTN_Y, BTN_W, BTN_H, face);
+    graphics.draw_rect(BTN_X, BTN_Y, BTN_W, BTN_H, black);
+    if (hover != 0) {
+        graphics.draw_rect(BTN_X - 1, BTN_Y - 1, BTN_W + 2, BTN_H + 2, blue);
+    }
+    graphics.draw_text(BTN_X + 30, BTN_Y + 22, "CLICK ME", black, face);
+
+    // Click counter readout.
+    graphics.draw_text(320, 150, "clicks:", black, white);
+    graphics.draw_int(400, 150, clicks, blue, white);
+}
+
+// Draw a small arrow cursor at (mx, my).
+void draw_cursor(i32 mx, i32 my) {
+    i32 black = graphics.rgb(0, 0, 0);
+    i32 white = graphics.rgb(255, 255, 255);
+    // A short diagonal with a white edge for visibility on any background.
+    graphics.draw_line(mx, my, mx + 10, my + 10, white);
+    graphics.draw_line(mx, my, mx + 8, my + 12, black);
+    graphics.draw_line(mx, my, mx + 12, my + 8, black);
+    graphics.fill_rect(mx, my, 2, 2, black);
+}
+
+// Interactive loop: sleep until an interrupt fires, drain the event queue,
+// re-render if anything changed, and count clicks. Never returns.
+void ui_loop() {
+    i32 clicks = 0;
+    i32 mx = 0;
+    i32 my = 0;
+    i32 hover = 0;
+    i32 prev_btn = 0;
+
+    while (1) {
+        i32 dirty = 0;
+
+        // Drain the event queue completely
+        while (mouse.has_event() != 0) {
+            mx = mouse.event_x();
+            my = mouse.event_y();
+            i32 btn = mouse.event_btn();
+            mouse.pop_event();
+
+            hover = mouse.in_rect(mx, my, BTN_X, BTN_Y, BTN_W, BTN_H);
+
+            i32 left_down = btn & 1;
+            if (left_down != 0) {
+                if (prev_btn == 0) { // Edge detected (fresh click)
+                    if (hover != 0) {
+                        clicks = clicks + 1;
+                        debug.printf("click! total=%d\n", clicks);
+                    }
+                }
+            }
+            prev_btn = left_down;
+            dirty = 1;
+        }
+
+        // Only re-render and present if we actually processed some events
+        if (dirty != 0) {
+            render_scene(clicks, hover);
+            draw_cursor(mx, my);
+            graphics.present();
+        }
+    }
+}
+
 void kernel_init() {
     kernel_boot_banner();
     kernel_arch_init();
@@ -23,46 +114,15 @@ void kernel_init() {
     debug.println("kernel: dom ready");
     dom.dump();
 
-    debug.println("graphics: start");
-
-    // Draw background (blue)
-    graphics.fill_rect(0, 0, 1024, 768, graphics.rgb(0, 0, 255));
-    // Draw a window (white with gray border)
-    graphics.fill_rect(100, 100, 600, 400, graphics.rgb(255, 255, 255));
-    graphics.draw_rect(100, 100, 600, 400, graphics.rgb(136, 136, 136));
-    // Draw a button inside
-    graphics.fill_rect(120, 130, 150, 60, graphics.rgb(204, 204, 204));
-    graphics.draw_rect(120, 130, 150, 60, 0);
-
-    // Window title and button label.
-    i32 black = graphics.rgb(0, 0, 0);
-    i32 white = graphics.rgb(255, 255, 255);
-    i32 button = graphics.rgb(204, 204, 204);
-    graphics.draw_text(120, 108, "MyKernel Window", black, white);
-    graphics.draw_text(150, 152, "OK", black, button);
-
-    // Showcase the new primitives inside the window.
-    i32 red = graphics.rgb(220, 40, 40);
-    i32 green = graphics.rgb(40, 180, 40);
-    i32 blue = graphics.rgb(40, 90, 220);
-
-    // A diagonal line and a filled + outlined circle.
-    graphics.draw_line(320, 140, 660, 300, red);
-    graphics.fill_circle(420, 260, 50, green);
-    graphics.draw_circle(560, 260, 60, blue);
-
-    // Scaled heading and a live counter value.
-    graphics.draw_text_scaled(320, 340, "GRAPHICS", blue, white, 3);
-    graphics.draw_text(320, 400, "irq count:", black, white);
-    graphics.draw_int(410, 400, 12345, red, white);
-
-    debug.println("graphics: done");
-
     fs.init();
 
-    // Hand off to the scheduler: it sets up the demo tasks, enables
-    // interrupts, and turns this thread into task 0 (never returns).
-    scheduler.start();
+    debug.println("kernel: enabling interrupts for event queue");
+    scheduler.init();
+    irq.set_handler();
+    irq.enable();
+
+    debug.println("ui: click the button (window must have focus)");
+    ui_loop();
 }
 
 i32 kernel_main() {

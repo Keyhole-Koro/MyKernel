@@ -1,0 +1,41 @@
+package irq_dispatch;
+
+import mem from "../mm/mem.mln";
+import scheduler from "scheduler.mln";
+import mouse from "../io/mouse.mln";
+import serial from "../io/serial.mln";
+import { halt_cpu } from "../arch/halt.masm";
+
+i32 IRQ_CAUSE_ADDR = 0x24000084;
+i32 IRQ_CAUSE_TIMER  = 1;
+i32 IRQ_CAUSE_MOUSE  = 2;
+i32 IRQ_CAUSE_SERIAL = 4;
+
+export i32 dispatch(i32 sp) {
+    i32 cause = mem.read_word(IRQ_CAUSE_ADDR);
+    
+    // Ack the handled interrupts to hardware
+    mem.write_word(IRQ_CAUSE_ADDR, cause);
+
+    if ((cause & IRQ_CAUSE_SERIAL) != 0) {
+        // Read serial buffer until empty
+        while (serial.rx_ready() != 0) {
+            i32 c = serial.read_rx();
+            if (c == 'q') {
+                serial.putc('\n'); // newline
+                halt_cpu();
+            }
+            serial.putc(c);
+        }
+    }
+
+    if ((cause & IRQ_CAUSE_MOUSE) != 0) {
+        mouse.irq_push();
+    }
+
+    if ((cause & IRQ_CAUSE_TIMER) != 0) {
+        sp = scheduler.tick(sp);
+    }
+
+    return sp;
+}

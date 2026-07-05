@@ -96,7 +96,7 @@ void dump_node(i32 node_id, i32 depth) {
         print_indent(depth);
         debug.printf("Node(id=%i, kind=%i) ", (i32)n->id, (i32)n->kind);
         if ((i32)n->name != 0) {
-            debug.print((ref char)n->name);
+            debug.print((char*)n->name);
         } else {
             debug.print("?");
         }

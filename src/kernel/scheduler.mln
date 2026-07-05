@@ -32,21 +32,8 @@ i32 task_wake_tick[256];  // Tick when the task should wake up
 //
 // Exported so the trampoline can resolve the label; MyLang mangles it to
 // `scheduler_irq_handler`, which irq_trampoline.masm imports.
-export i32 irq_handler(i32 sp) {
+export i32 tick(i32 sp) {
     g_irq_count = g_irq_count + 1;
-
-    // Record hardware state into queue
-    mouse.irq_push();
-
-    // Serial RX: drain all received bytes and echo them back. 'q' (0x71) quits.
-    while (serial.rx_ready() != 0) {
-        i32 c = serial.read_rx();
-        if (c == 'q') {
-            serial.putc('\n'); // newline
-            halt_cpu();
-        }
-        serial.putc(c);
-    }
 
     if (tasks_initialized == 0) {
         return sp;

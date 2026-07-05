@@ -7,7 +7,7 @@ char hex_digit(i32 nibble) {
     return digits[nibble & 15];
 }
 
-export void print(ref char s) {
+export void print(char* s) {
     if (s) {
         while (*s) {
             serial.putc(*s);
@@ -16,7 +16,7 @@ export void print(ref char s) {
     }
 }
 
-export void println(ref char s) {
+export void println(char* s) {
     print(s);
     serial.putc('\n');
 }
@@ -35,7 +35,7 @@ export void hex(i32 value) {
     }
 }
 
-export void printf(ref char fmt, rest args) {
+export void printf(char* fmt, rest args) {
     i32 arg_index = 0;
 
     while (*fmt) {
@@ -58,7 +58,7 @@ export void printf(ref char fmt, rest args) {
                 print("%<missing>");
                 break;
             }
-            ref char s = args[arg_index];
+            char* s = args[arg_index];
             arg_index = arg_index + 1;
             if (s) {
                 print(s);
