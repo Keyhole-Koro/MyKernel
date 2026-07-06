@@ -8,7 +8,7 @@
 ;   4. loads new sp from r1
 ;   5. restores registers (r0-r7, bp, lr)
 ;   6. executes `iret` to resume the selected task
-import irq_dispatch_dispatch
+import { irq_dispatch_dispatch } from "../kernel/irq_dispatch.mln"
 
 export irq_trampoline
 
