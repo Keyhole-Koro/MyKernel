@@ -24,8 +24,13 @@ irq_trampoline:
   push r6
   push r7
 
+  ; Pass current sp to the dispatcher (so it can save it for the current task)
   mov r5, sp
   call irq_dispatch_dispatch
+
+  ; THE MAGIC HAPPENS HERE:
+  ; The dispatcher returned the saved stack pointer of the NEXT task to run in r1.
+  ; By changing sp here, we completely switch which task's stack we are using!
   mov sp, r1
 
   pop r7
