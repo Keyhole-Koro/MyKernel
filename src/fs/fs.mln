@@ -112,9 +112,13 @@ void bitmap_set(i32 block_num, i32 value) {
     i32 byte_off = block_num / 8;
     i32 bit = block_num % 8;
     i32 b = buf_byte(byte_off);
+
+    // Manipulate only the specific target bit without affecting others
     if (value != 0) {
+        // Set the bit to 1 using bitwise OR (|) with a mask (1 << bit)
         b = b | (1 << bit);
     } else {
+        // Clear the bit to 0 using bitwise AND (&) with an inverted mask (~)
         b = b & ~(1 << bit);
     }
     set_buf_byte(byte_off, b);

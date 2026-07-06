@@ -17,6 +17,11 @@ hw_irq_disable:
   di
   mov pc, lr
 
+; Returns the address of the trampoline. This is a normal synchronous
+; function call during OS init, not an interrupt handler. It is perfectly
+; safe to overwrite r1 here (standard MyLang ABI return register).
+; Actual unexpected hardware interrupts are handled by `irq_trampoline`,
+; which correctly saves and restores r1 and other registers to the stack.
 hw_irq_vector_target:
   movi r1, irq_trampoline
   mov  pc, lr
