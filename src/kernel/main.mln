@@ -7,6 +7,7 @@ import fs from "../../../MyOS/src/fs/fs.mln";
 import scheduler from "scheduler.mln";
 import irq_dispatch from "irq_dispatch.mln";
 import irq from "../arch/irq.mln";
+import shell from "../../../MyOS/src/apps/shell.mln";
 
 void kernel_boot_banner() {
     debug.println("kernel: boot");
@@ -71,6 +72,10 @@ void ui_loop() {
     i32 my = 0;
     i32 hover = 0;
     i32 prev_btn = 0;
+    // Initial render
+    render_scene(clicks, hover);
+    draw_cursor(mx, my);
+    graphics.present();
 
     while (1) {
         i32 dirty = 0;
@@ -120,6 +125,8 @@ void kernel_init() {
     scheduler.init();
     irq.set_handler();
     irq.enable();
+    debug.println("kernel: spawning shell task");
+    scheduler.spawn_task(shell.run);
 
     debug.println("ui: click the button (window must have focus)");
     ui_loop();
