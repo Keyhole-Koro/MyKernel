@@ -5,6 +5,7 @@ import mem from "../mm/mem.mln";
 import heap from "../mm/heap.mln";
 import serial from "../io/serial.mln";
 import mouse from "../io/mouse.mln";
+import { wfi_cpu } from "../arch/wfi.masm";
 import { halt_cpu } from "../arch/halt.masm";
 
 // Bumped by the timer interrupt handler.
@@ -23,8 +24,23 @@ enum TaskState {
 }
 
 // Task state management
-i32 task_state[256];      
+i32 task_state[256];
 i32 task_wake_tick[256];  // Tick when the task should wake up
+
+// Dedicated idle context. When no task is runnable the scheduler switches to
+// this context (a wfi loop) instead of resuming a sleeping task's stack, so
+// "some task is always current" is no longer an implicit assumption.
+// current_task == IDLE_TASK while it runs.
+i32 IDLE_TASK = -1;
+i32 idle_sp = 0;
+
+// The idle task: burn no CPU until the next interrupt. Never returns; the
+// timer interrupt switches away as soon as any real task becomes runnable.
+void idle_main() {
+    while (1) {
+        wfi_cpu();
+    }
+}
 
 // Interrupt handler invoked (via irq_trampoline.masm) on each timer interrupt.
 // It receives the current stack pointer as an argument, saves it for the
@@ -32,6 +48,19 @@ i32 task_wake_tick[256];  // Tick when the task should wake up
 //
 // Exported so the trampoline can resolve the label; MyLang mangles it to
 // `scheduler_irq_handler`, which irq_trampoline.masm imports.
+// Current timer-tick count. Lets callers measure elapsed ticks (e.g. frame time).
+export i32 ticks() {
+    return g_irq_count;
+}
+
+// Number of task slots actually in use (highest spawned index + 1). The tick
+// handler runs at every timer interrupt (1 kHz real time), so it must not scan
+// all MAX_TASKS slots: with MyLang's verbose codegen a 256-slot double scan
+// costs tens of thousands of instructions, and once the handler exceeds one
+// timer period the CPU does nothing but service interrupts (total starvation).
+// Scanning only the live slots keeps the handler a few hundred instructions.
+i32 g_task_count = 0;
+
 export i32 tick(i32 sp) {
     g_irq_count = g_irq_count + 1;
 
@@ -40,8 +69,9 @@ export i32 tick(i32 sp) {
     }
 
     // Check if any sleeping tasks should be woken up
+    i32 count = g_task_count;
     i32 i = 0;
-    while (i < MAX_TASKS) {
+    while (i < count) {
         if (task_state[i] == TASK_SLEEPING) {
             if (g_irq_count >= task_wake_tick[i]) {
                 task_state[i] = TASK_RUNNABLE; // Wake up!
@@ -50,47 +80,57 @@ export i32 tick(i32 sp) {
         i = i + 1;
     }
 
-    // Save current task's SP
-    task_sps[current_task] = sp;
-
-    // Decide which task to run next
-    i32 next_task = (current_task + 1) % MAX_TASKS;
-    i32 checked = 0;
-    while (checked < MAX_TASKS) {
-        if (task_state[next_task] == TASK_RUNNABLE) {
-            current_task = next_task; // Switch to next task
-            checked = MAX_TASKS;      // break
-        } else {
-            next_task = (next_task + 1) % MAX_TASKS;
-            checked = checked + 1;
-        }
+    // Save the interrupted context: a real task's slot, or the idle context.
+    if (current_task >= 0) {
+        task_sps[current_task] = sp;
+    } else {
+        idle_sp = sp;
     }
 
-    // Return new task's SP
-    return task_sps[current_task];
+    // Round-robin scan starting after the current task (from 0 when idle).
+    i32 start = 0;
+    if (current_task >= 0) { start = (current_task + 1) % count; }
+    i32 next_task = start;
+    i32 checked = 0;
+    while (checked < count) {
+        if (task_state[next_task] == TASK_RUNNABLE) {
+            current_task = next_task; // Switch to next task
+            return task_sps[next_task];
+        }
+        next_task = (next_task + 1) % count;
+        checked = checked + 1;
+    }
+
+    // Nothing is runnable: run the dedicated idle context until a wake-up.
+    current_task = IDLE_TASK;
+    return idle_sp;
 }
 
 // Voluntarily sleep for `ticks` timer interrupts
 export void sleep(i32 ticks) {
+    // Capture our own slot: current_task changes under us once the scheduler
+    // switches away, and only our own state says when we may run on.
+    i32 me = current_task;
     i32 target = g_irq_count + ticks;
-    task_wake_tick[current_task] = target;
-    task_state[current_task] = TASK_SLEEPING; // Set state to SLEEPING
+    task_wake_tick[me] = target;
+    task_state[me] = TASK_SLEEPING; // Set state to SLEEPING
 
-    // Busy-wait until the scheduler wakes us up.
-    // The first timer interrupt that hits while we are in this loop
-    // will see that we are SLEEPING, and will stop giving us CPU time!
-    while (task_state[current_task] == TASK_SLEEPING) {
-        // Just spin. CPU time is given to other tasks.
+    // The next timer interrupt switches away (to another runnable task or the
+    // idle context); a SLEEPING task is never resumed, so we return from the
+    // wfi only after the scheduler marked us RUNNABLE again. The loop guards
+    // the race where the tick fires between the store above and the wfi.
+    while (task_state[me] == TASK_SLEEPING) {
+        wfi_cpu(); // Idle until next interrupt instead of busy-spinning
     }
 }
 
 // (Demo tasks have been removed. You can use spawn_task() to launch apps here!)
 
-void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
+// Construct an initial context frame at the top of a stack and return the
+// stack pointer to resume it with (via the IRQ trampoline's restore path).
+// Pushed in reverse order of pops: r7..r0, bp, lr, SR, PC.
+i32 build_context(i32 func_ptr, i32 stack_bottom) {
     i32 sp = stack_bottom;
-
-    // Construct initial stack frame.
-    // Pushed in reverse order of pops: r7..r0, bp, lr, SR, PC.
 
     sp = sp - 4; mem.write_word(sp, func_ptr); // PC
     sp = sp - 4; mem.write_word(sp, 1);        // SR (IE=1)
@@ -105,7 +145,11 @@ void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     sp = sp - 4; mem.write_word(sp, 0);        // r6
     sp = sp - 4; mem.write_word(sp, 0);        // r7
 
-    task_sps[task_idx] = sp;
+    return sp;
+}
+
+void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
+    task_sps[task_idx] = build_context(func_ptr, stack_bottom);
 }
 
 // Spawns a new task. Returns the task ID on success, or -1 if slots are exhausted.
@@ -120,6 +164,9 @@ export i32 spawn_task(i32 func_ptr) {
             }
             init_task(i, func_ptr, stack + 1024);
             task_state[i] = TASK_RUNNABLE;
+            if (i >= g_task_count) {
+                g_task_count = i + 1; // grow the live-slot range the tick scans
+            }
             return i;
         }
         i = i + 1;
@@ -130,6 +177,7 @@ export i32 spawn_task(i32 func_ptr) {
 }
 
 // Initializes the scheduler. Marks the current execution context as Task 0.
+// Requires heap.init() to have run (the idle stack is heap-allocated).
 export void init() {
     // Initialize task states to EMPTY
     i32 i = 0;
@@ -138,10 +186,21 @@ export void init() {
         i = i + 1;
     }
 
+    // Build the dedicated idle context. 512 bytes is plenty: the wfi loop
+    // itself is a leaf, and an interrupt frame (PC/SR + 10 registers) is the
+    // only thing ever pushed on top of it.
+    i32 idle_stack = heap.alloc(512);
+    if (idle_stack == 0) {
+        debug.println("scheduler: FATAL: no memory for the idle stack");
+        return;
+    }
+    idle_sp = build_context(idle_main, idle_stack + 512);
+
     // Task 0 is the current context: the first timer interrupt saves our SP
     // into task_sps[0], so tasks_initialized must be set before we enter the loop.
     task_state[0] = TASK_RUNNABLE;
     current_task = 0;
+    g_task_count = 1; // task 0 (this context) is live; spawn_task grows this
     tasks_initialized = 1;
 
     // Interrupts can now safely context-switch!

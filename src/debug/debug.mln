@@ -65,7 +65,8 @@ export void printf(char* fmt, rest args) {
             } else {
                 print("(null)");
             }
-        } else if (*fmt == 'i') {
+        } else if (*fmt == 'i' || *fmt == 'd') {
+            // %d is accepted as an alias for %i (signed decimal integer).
             if (arg_index >= args.len) {
                 print("%<missing>");
                 break;
