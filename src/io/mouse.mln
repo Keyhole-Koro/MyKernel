@@ -3,17 +3,22 @@ package mouse;
 import mem from "../mm/mem.mln";
 
 // Memory-mapped mouse registers (must match constants.rs in the emulator).
-// The emulator refreshes these once per display frame and raises an IRQ when
-// the position or button state changes.
+// The emulator samples the host pointer every ~2 ms; every change raises an
+// IRQ and is latched into the hardware event FIFO below. The live registers
+// always hold the current state.
 i32 MOUSE_X_ADDR = 0x24000040;
 i32 MOUSE_Y_ADDR = 0x24000044;
 i32 MOUSE_BUTTONS_ADDR = 0x24000048;
 
-i32 MOUSE_BUTTON_LEFT = 0x1;
+// Hardware event FIFO registers. EVT_STATUS is the queued-event count,
+// EVT_X/Y/BTN read the head event, writing EVT_POP consumes it.
+i32 MOUSE_EVT_STATUS_ADDR = 0x2400004C;
+i32 MOUSE_EVT_X_ADDR      = 0x24000050;
+i32 MOUSE_EVT_Y_ADDR      = 0x24000054;
+i32 MOUSE_EVT_BTN_ADDR    = 0x24000058;
+i32 MOUSE_EVT_POP_ADDR    = 0x2400005C;
 
-// Tracks the previous left-button state so pressed() can report the edge
-// (the frame the button goes from up to down), i.e. a fresh click.
-i32 g_prev_left = 0;
+i32 MOUSE_BUTTON_LEFT = 0x1;
 
 export i32 x() {
     return mem.read_word(MOUSE_X_ADDR);
@@ -33,21 +38,11 @@ export i32 left_down() {
     return buttons() & MOUSE_BUTTON_LEFT;
 }
 
-// Returns non-zero exactly once per click: on the transition from not-pressed
-// to pressed. Call once per polling pass; it latches the previous state.
-export i32 clicked() {
-    i32 now = buttons() & MOUSE_BUTTON_LEFT;
-    i32 edge = 0;
-    if (now != 0) {
-        if (g_prev_left == 0) {
-            edge = 1;
-        }
-    }
-    g_prev_left = now;
-    return edge;
-}
-
-// --- Event Queue Implementation ---
+// --- software event queue ---
+// The mouse IRQ handler drains the hardware FIFO into this ring buffer; the
+// UI task consumes it. Because every transition (press, release, motion) is
+// its own event, a click shorter than a display frame still arrives as a
+// press event followed by a release event instead of vanishing.
 i32 QUEUE_SIZE = 64;
 i32 q_x[64];
 i32 q_y[64];
@@ -55,18 +50,24 @@ i32 q_btn[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
-// Called by the IRQ handler to push hardware state into the queue.
-export void irq_push() {
-    i32 nx = mem.read_word(MOUSE_X_ADDR);
-    i32 ny = mem.read_word(MOUSE_Y_ADDR);
-    i32 nb = mem.read_word(MOUSE_BUTTONS_ADDR);
-    
-    i32 next = (q_tail + 1) % QUEUE_SIZE;
-    if (next != q_head) { // If queue is not full
-        q_x[q_tail] = nx;
-        q_y[q_tail] = ny;
-        q_btn[q_tail] = nb;
-        q_tail = next;
+// Called by the mouse IRQ handler: drain the hardware event FIFO into the
+// software queue. If the software queue is full the incoming event is dropped;
+// consumers must treat the live registers as the authoritative current state,
+// so a dropped event can delay a repaint but never wedge button state.
+export void drain_hw() {
+    while (mem.read_word(MOUSE_EVT_STATUS_ADDR) != 0) {
+        i32 nx = mem.read_word(MOUSE_EVT_X_ADDR);
+        i32 ny = mem.read_word(MOUSE_EVT_Y_ADDR);
+        i32 nb = mem.read_word(MOUSE_EVT_BTN_ADDR);
+        mem.write_word(MOUSE_EVT_POP_ADDR, 1);
+
+        i32 next = (q_tail + 1) % QUEUE_SIZE;
+        if (next != q_head) { // drop if full
+            q_x[q_tail] = nx;
+            q_y[q_tail] = ny;
+            q_btn[q_tail] = nb;
+            q_tail = next;
+        }
     }
 }
 

@@ -13,12 +13,47 @@ export void putc(i32 c) {
     mem.write_word(SERIAL_TX_ADDR, c);
 }
 
-// Non-zero while a received byte is waiting.
+// Non-zero while a received byte is waiting in the hardware RX register.
 export i32 rx_ready() {
     return mem.read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR;
 }
 
-// Consume and return the next received byte (call only when rx_ready()).
+// Consume and return the next received byte from hardware (call only when
+// rx_ready()). Only the serial IRQ handler should read hardware RX; consumers
+// (the shell) read the software input queue below instead, so a byte is never
+// stolen by whoever polls the hardware first.
 export i32 read_rx() {
     return mem.read_word(SERIAL_RX_ADDR) & 0xFF;
+}
+
+// --- input queue ---
+// The serial IRQ handler drains hardware RX into this ring buffer; tasks read
+// keystrokes from here. This resolves the contention where both the IRQ handler
+// and the shell read hardware RX and one stole the other's bytes.
+i32 IN_QUEUE_SIZE = 128;
+i32 in_q[128];
+i32 in_head = 0;
+i32 in_tail = 0;
+
+// Called by the serial IRQ handler for each received byte.
+export void input_push(i32 c) {
+    i32 next = (in_tail + 1) % IN_QUEUE_SIZE;
+    if (next != in_head) { // drop if full
+        in_q[in_tail] = c & 0xFF;
+        in_tail = next;
+    }
+}
+
+// Non-zero while a keystroke is waiting in the input queue.
+export i32 has_input() {
+    if (in_head == in_tail) { return 0; }
+    return 1;
+}
+
+// Consume and return the next queued keystroke, or 0 if the queue is empty.
+export i32 read_input() {
+    if (in_head == in_tail) { return 0; }
+    i32 c = in_q[in_head];
+    in_head = (in_head + 1) % IN_QUEUE_SIZE;
+    return c;
 }

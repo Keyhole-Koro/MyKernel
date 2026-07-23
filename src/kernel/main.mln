@@ -19,95 +19,143 @@ void kernel_arch_init() {
     debug.println("kernel: heap ready");
 }
 
-// Clickable button geometry.
-i32 BTN_X = 120;
-i32 BTN_Y = 130;
-i32 BTN_W = 150;
-i32 BTN_H = 60;
+// Click state, owned by the kernel UI. The handler updates these; the renderer
+// reads the DOM nodes the handler mutates.
+i32 g_clicks = 0;
+i32 g_label_id = 0;
 
-// Draw the whole scene. `clicks` is the running click counter; `hover` is
-// non-zero when the pointer is over the button (draws a highlighted border).
-void render_scene(i32 clicks, i32 hover) {
-    i32 black = graphics.rgb(0, 0, 0);
-    i32 white = graphics.rgb(255, 255, 255);
-    i32 blue = graphics.rgb(40, 90, 220);
+// Button click handler. dom.dispatch_click invokes this indirectly with the
+// button id. It bumps the counter and rewrites the label text; the next render
+// picks up the new text from the node.
+char g_click_buf[32];
 
-    // Background + window.
-    graphics.fill_rect(0, 0, 1024, 768, graphics.rgb(0, 0, 255));
-    graphics.fill_rect(100, 100, 600, 400, white);
-    graphics.draw_rect(100, 100, 600, 400, graphics.rgb(136, 136, 136));
-    graphics.draw_text(120, 108, "MyKernel Window", black, white);
+void on_button_click(i32 id) {
+    g_clicks = g_clicks + 1;
+    
+    g_click_buf[0] = 99; g_click_buf[1] = 108; g_click_buf[2] = 105; 
+    g_click_buf[3] = 99; g_click_buf[4] = 107; g_click_buf[5] = 115; 
+    g_click_buf[6] = 58; g_click_buf[7] = 32; 
 
-    // Button: lighter when hovered, with a thicker border.
-    i32 face = graphics.rgb(204, 204, 204);
-    if (hover != 0) { face = graphics.rgb(180, 210, 255); }
-    graphics.fill_rect(BTN_X, BTN_Y, BTN_W, BTN_H, face);
-    graphics.draw_rect(BTN_X, BTN_Y, BTN_W, BTN_H, black);
-    if (hover != 0) {
-        graphics.draw_rect(BTN_X - 1, BTN_Y - 1, BTN_W + 2, BTN_H + 2, blue);
+    if (g_clicks == 0) {
+        g_click_buf[8] = 48;
+        g_click_buf[9] = 0;
+    } else {
+        i32 temp = g_clicks;
+        i32 num_digits = 0;
+        while (temp > 0) {
+            num_digits = num_digits + 1;
+            temp = temp / 10;
+        }
+
+        temp = g_clicks;
+        i32 i = 8 + num_digits - 1;
+        g_click_buf[8 + num_digits] = 0;
+
+        while (temp > 0) {
+            i32 d = temp % 10;
+            g_click_buf[i] = 48 + d;
+            temp = temp / 10;
+            i = i - 1;
+        }
     }
-    graphics.draw_text(BTN_X + 30, BTN_Y + 22, "CLICK ME", black, face);
-
-    // Click counter readout.
-    graphics.draw_text(320, 150, "clicks:", black, white);
-    graphics.draw_int(400, 150, clicks, blue, white);
+    dom.set_text(g_label_id, &g_click_buf[0]);
 }
 
-// Draw a small arrow cursor at (mx, my).
+// Build the window / button / text tree under the desktop and return the button
+// id so the loop can hit-test and drive its state.
+i32 build_ui() {
+    i32 desktop = dom.desktop_id();
+
+    i32 win = dom.create_window("MyKernel Window", 100, 100, 600, 400);
+    dom.append_child(desktop, win);
+
+    i32 btn = dom.create_button("CLICK ME", 120, 130, 150, 60);
+    dom.append_child(win, btn);
+    dom.set_on_click(btn, on_button_click);
+
+    g_label_id = dom.create_text("clicks: 0", 320, 150);
+    dom.append_child(win, g_label_id);
+
+    return btn;
+}
+
+// Draw a small arrow cursor at (mx, my). A white edge keeps it visible on any
+// background. Drawn last, after the DOM scene, so it sits on top of everything.
 void draw_cursor(i32 mx, i32 my) {
     i32 black = graphics.rgb(0, 0, 0);
     i32 white = graphics.rgb(255, 255, 255);
-    // A short diagonal with a white edge for visibility on any background.
     graphics.draw_line(mx, my, mx + 10, my + 10, white);
     graphics.draw_line(mx, my, mx + 8, my + 12, black);
     graphics.draw_line(mx, my, mx + 12, my + 8, black);
     graphics.fill_rect(mx, my, 2, 2, black);
 }
 
-// Interactive loop: sleep until an interrupt fires, drain the event queue,
-// re-render if anything changed, and count clicks. Never returns.
-void ui_loop() {
-    i32 clicks = 0;
-    i32 mx = 0;
-    i32 my = 0;
-    i32 hover = 0;
-    i32 prev_btn = 0;
-    // Initial render
-    render_scene(clicks, hover);
+// Render the DOM scene, overlay the cursor at (mx, my), then flip the frame.
+void present_frame(i32 mx, i32 my) {
+    dom.render_scene();
     draw_cursor(mx, my);
     graphics.present();
+}
+
+// Interactive loop, event-driven. The mouse IRQ handler drains the hardware
+// event FIFO into mouse's software queue; each pass consumes every queued
+// event and edge-detects the button per event, so a click whose press and
+// release both happened since the last pass still dispatches (nothing shorter
+// than a display frame is lost anymore). The live registers stay authoritative
+// for the cursor position and hover state, so a dropped event can delay a
+// repaint but never wedge the button.
+void ui_loop(i32 btn) {
+    i32 prev_left = 0;
+    i32 prev_over = 0;
+    i32 prev_mx = -1;
+    i32 prev_my = -1;
 
     while (1) {
         i32 dirty = 0;
 
-        // Drain the event queue completely
+        // Consume all queued events. Clicks are dispatched at the event's own
+        // coordinates: where the press happened, not where the pointer is now.
         while (mouse.has_event() != 0) {
-            mx = mouse.event_x();
-            my = mouse.event_y();
-            i32 btn = mouse.event_btn();
+            i32 ex = mouse.event_x();
+            i32 ey = mouse.event_y();
+            i32 eb = mouse.event_btn() & 1;
             mouse.pop_event();
 
-            hover = mouse.in_rect(mx, my, BTN_X, BTN_Y, BTN_W, BTN_H);
-
-            i32 left_down = btn & 1;
-            if (left_down != 0) {
-                if (prev_btn == 0) { // Edge detected (fresh click)
-                    if (hover != 0) {
-                        clicks = clicks + 1;
-                        debug.printf("click! total=%d\n", clicks);
+            if (eb != 0) {
+                if (prev_left == 0) {
+                    // Press edge: a fresh click on the button.
+                    if (dom.find_at(ex, ey) == btn) {
+                        dom.set_pressed(btn, 1);
+                        dom.dispatch_click(btn); // may change the label text
+                        dirty = 1;
                     }
                 }
+            } else {
+                if (prev_left != 0) { dirty = 1; } // release: repaint un-pressed
+                dom.set_pressed(btn, 0);
             }
-            prev_btn = left_down;
-            dirty = 1;
+            prev_left = eb;
         }
 
-        // Only re-render and present if we actually processed some events
+        // Live state drives the cursor and hover.
+        i32 mx = mouse.x();
+        i32 my = mouse.y();
+        i32 over_button = 0;
+        if (dom.find_at(mx, my) == btn) { over_button = 1; }
+        dom.set_hovered(btn, over_button);
+
+        if (mx != prev_mx) { dirty = 1; }
+        if (my != prev_my) { dirty = 1; }
+        if (over_button != prev_over) { dirty = 1; }
+
         if (dirty != 0) {
-            render_scene(clicks, hover);
-            draw_cursor(mx, my);
-            graphics.present();
+            present_frame(mx, my);
+            prev_mx = mx;
+            prev_my = my;
+            prev_over = over_button;
         }
+
+        scheduler.sleep(1); // yield the CPU to other tasks between passes
     }
 }
 
@@ -117,6 +165,8 @@ void kernel_init() {
 
     dom.init();
     debug.println("kernel: dom ready");
+
+    i32 btn = build_ui();
     dom.dump();
 
     fs.init();
@@ -129,7 +179,7 @@ void kernel_init() {
     scheduler.spawn_task(shell.run);
 
     debug.println("ui: click the button (window must have focus)");
-    ui_loop();
+    ui_loop(btn);
 }
 
 i32 kernel_main() {

@@ -2,8 +2,13 @@ package scheduler;
 
 import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
+import serial from "../../src/io/serial.mln";
 import irq from "../../src/arch/irq.mln";
 
+// The serial IRQ handler now drains hardware RX into serial's software input
+// queue (it no longer echoes or quits itself). This test plays the consumer:
+// read from the queue, echo each byte, and stop on 'q'. It verifies the full
+// IRQ -> input_push -> read_input path.
 test("serial_rx", {
     stdin: "PINGq";
     expect: "PING";
@@ -18,6 +23,15 @@ test("serial_rx", {
     irq.enable();
     debug.println("kernel: type to echo (q to quit)");
 
-    while (1) {
+    i32 done = 0;
+    while (done == 0) {
+        while (serial.has_input() != 0) {
+            i32 c = serial.read_input();
+            if (c == 'q') {
+                done = 1;
+            } else {
+                serial.putc(c);
+            }
+        }
     }
 });

@@ -1,0 +1,7 @@
+; Wait-for-interrupt wrapper. The CPU will idle until the next IRQ fires,
+; at which point execution resumes at the instruction after `wfi`.
+export wfi_cpu
+
+wfi_cpu:
+  wfi
+  mov pc, lr
