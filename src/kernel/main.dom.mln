@@ -61,22 +61,14 @@ void on_button_click(i32 id) {
     dom.set_text(g_label_id, &g_click_buf[0]);
 }
 
-// Build the window / button / text tree under the desktop and return the button
-// id so the loop can hit-test and drive its state.
+// Declarative UI. Each element calls the dom function of the same name, with
+// every property handed to the parameter of the same name; children become
+// dom.append_child. The window node id comes back for the caller to mount.
 i32 build_ui() {
-    i32 desktop = dom.desktop_id();
-
-    i32 win = dom.create_window("MyKernel Window", 100, 100, 600, 400);
-    dom.append_child(desktop, win);
-
-    i32 btn = dom.create_button("CLICK ME", 120, 130, 150, 60);
-    dom.append_child(win, btn);
-    dom.set_on_click(btn, on_button_click);
-
-    g_label_id = dom.create_text("clicks: 0", 320, 150);
-    dom.append_child(win, g_label_id);
-
-    return btn;
+    return <Window title="MyKernel Window" x={100} y={100} w={600} h={400}>
+        <Button text="CLICK ME" x={120} y={130} w={150} h={60} onClick={on_button_click} />
+        <Text text="clicks: 0" x={320} y={150} />
+    </Window>;
 }
 
 // Draw a small arrow cursor at (mx, my). A white edge keeps it visible on any
@@ -166,7 +158,12 @@ void kernel_init() {
     dom.init();
     debug.println("kernel: dom ready");
 
-    i32 btn = build_ui();
+    // The tree comes back rooted at the window; mount it and pick out the
+    // button (first child) and the label that follows it.
+    i32 win = build_ui();
+    dom.append_child(dom.desktop_id(), win);
+    i32 btn = dom.first_child(win);
+    g_label_id = dom.next_sibling(btn);
     dom.dump();
 
     fs.init();
