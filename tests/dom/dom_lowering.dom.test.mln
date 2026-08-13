@@ -1,0 +1,51 @@
+import debug from "../../src/debug/debug.mln";
+import test from "../libs/test.mln";
+
+// End-to-end check of the .dom.mln lowering contract: a tag calls the function
+// of the same name, a property is handed to the parameter of the same name
+// whatever order it is written in, and children are attached with append_child.
+//
+// The element vocabulary is local to this test on purpose — what is under test
+// is the language lowering, not the OS dom package. Every element reports the
+// arguments it actually received, so the serial trace pins both the property ->
+// parameter mapping and the order the calls happen in.
+
+void on_click(i32 id) {
+    debug.printf("click(%d);", id);
+}
+
+i32 Window(char *title, i32 x, i32 y, i32 w, i32 h) {
+    debug.printf("Window(%s,%d,%d,%d,%d);", title, x, y, w, h);
+    return 10;
+}
+
+i32 Button(char *text, i32 x, i32 y, i32 w, i32 h, i32 onClick) {
+    debug.printf("Button(%s,%d,%d,%d,%d);", text, x, y, w, h);
+    onClick(99); // an indirect call through the parameter the property filled
+    return 20;
+}
+
+i32 Text(char *text, i32 x, i32 y) {
+    debug.printf("Text(%s,%d,%d);", text, x, y);
+    return 30;
+}
+
+void append_child(i32 parent, i32 child) {
+    debug.printf("append(%d,%d);", parent, child);
+}
+
+test("dom_lowering", {
+    expect: "TRACE:Window(Root,1,2,3,4);Button(OK,5,6,7,8);click(99);append(10,20);Text(hi,9,10);append(10,30);root=10";
+    step: 10000000;
+}, () => {
+    debug.print("TRACE:");
+
+    // Properties are deliberately written out of signature order.
+    i32 root = <Window title="Root" x={1} y={2} w={3} h={4}>
+        <Button x={5} text="OK" onClick={on_click} y={6} w={7} h={8} />
+        <Text text="hi" x={9} y={10} />
+    </Window>;
+
+    debug.printf("root=%d\n", root);
+    test.pass();
+});
