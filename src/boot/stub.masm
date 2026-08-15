@@ -1,4 +1,4 @@
-import { kernel_main } from "../kernel/main.dom.mln"
+import { kernel_main } from "../kernel/main.mln"
 
 __START__:
   call kernel_main
