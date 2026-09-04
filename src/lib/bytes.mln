@@ -1,0 +1,92 @@
+package bytes;
+
+// Raw byte-buffer operations: the memset / memcpy / memcmp layer.
+//
+// Named `bytes` rather than `mem` because `package mem` (src/mm/mem.mln) is
+// already the kernel's word-level absolute-address accessor for RAM and MMIO.
+// This package is the byte-oriented counterpart and holds no state.
+//
+// Every count is in bytes and every buffer is caller-owned; nothing here
+// allocates. Reads mask with 0xFF because `char` sign-extends into i32.
+
+// Fill n bytes of dst with value. Returns dst's length in bytes for chaining.
+export i32 set(char* dst, i32 value, i32 n) {
+    i32 v = value & 0xFF;
+    i32 i = 0;
+    while (i < n) {
+        dst[i] = v;
+        i = i + 1;
+    }
+    return n;
+}
+
+// Fill n bytes of dst with 0.
+export i32 zero(char* dst, i32 n) {
+    return set(dst, 0, n);
+}
+
+// Copy n bytes forwards. The buffers must not overlap; use move() when they can.
+export i32 copy(char* dst, char* src, i32 n) {
+    i32 i = 0;
+    while (i < n) {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+    return n;
+}
+
+// Copy n bytes, correct even when dst and src overlap. Copies backwards when
+// dst sits inside src, which is the only direction that cannot clobber a byte
+// before it has been read.
+export i32 move(char* dst, char* src, i32 n) {
+    if (dst == src || n <= 0) {
+        return n;
+    }
+
+    if (dst < src) {
+        return copy(dst, src, n);
+    }
+
+    i32 i = n - 1;
+    while (i >= 0) {
+        dst[i] = src[i];
+        i = i - 1;
+    }
+    return n;
+}
+
+// Compare n bytes by unsigned value.
+// Returns <0 if a sorts before b, 0 if the ranges are equal, >0 otherwise.
+export i32 cmp(char* a, char* b, i32 n) {
+    i32 i = 0;
+    while (i < n) {
+        i32 ca = (i32)a[i] & 0xFF;
+        i32 cb = (i32)b[i] & 0xFF;
+        if (ca != cb) {
+            return ca - cb;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Non-zero when the first n bytes of a and b are equal.
+export i32 eq(char* a, char* b, i32 n) {
+    if (cmp(a, b, n) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+// Index of the first byte equal to value within the first n bytes, or -1.
+export i32 find(char* buf, i32 n, i32 value) {
+    i32 want = value & 0xFF;
+    i32 i = 0;
+    while (i < n) {
+        if (((i32)buf[i] & 0xFF) == want) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
