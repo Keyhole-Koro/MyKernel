@@ -1,0 +1,80 @@
+import debug from "../../src/debug/debug.mln";
+import heap from "../../src/mm/heap.mln";
+import mem from "../../src/mm/mem.mln";
+import mmu from "../../src/mm/mmu.mln";
+
+i32 PTE_VALID    = 0x01;
+i32 PTE_WRITABLE = 0x02;
+
+i32 TEST_VA = 0x40000000;
+i32 TEST_VAL1 = 0x12345;
+i32 TEST_VAL2 = 0x67890;
+i32 TEST_VAL3 = 0xABCDE;
+i32 TEST_VAL4 = 0x54321;
+
+void kernel_main() {
+    debug.println("--- Starting MMU & Virtual Memory Test ---");
+
+    heap.init();
+
+    i32 pd = mmu.create_page_directory();
+    if (pd == 0) {
+        debug.println("[FAIL] failed to allocate root page directory");
+        return;
+    }
+    debug.printf("mmu: root page directory at 0x%x\n", pd);
+
+    // 1. Identity map the kernel execution space & MMIO
+    mmu.setup_identity_kernel_mapping(pd);
+
+    // 2. Allocate a physical frame and map high virtual address 0x40000000 (1 GB) to it
+    i32 pa = mmu.alloc_page();
+    i32 va = TEST_VA;
+    
+    // Write test signature physically before enabling MMU
+    mem.write_word(pa, TEST_VAL1);
+    mem.write_word(pa + 4, TEST_VAL2);
+
+    i32 res = mmu.map_page(pd, va, pa, PTE_VALID | PTE_WRITABLE);
+    if (res != 0) {
+        debug.println("[FAIL] map_page failed");
+        return;
+    }
+
+    // 3. Enable Paging
+    mmu.enable_paging(pd);
+
+    // 4. Access virtual address 0x40000000 through MMU translation
+    i32 val1 = mem.read_word(va);
+    i32 val2 = mem.read_word(va + 4);
+    if (val1 != TEST_VAL1 || val2 != TEST_VAL2) {
+        debug.println("[FAIL] virtual address read mismatch");
+        return;
+    }
+    debug.println("mmu: virtual address read verified");
+
+    // 5. Write through virtual address and verify
+    mem.write_word(va, TEST_VAL3);
+    mem.write_word(va + 4, TEST_VAL4);
+
+    i32 val3 = mem.read_word(va);
+    i32 val4 = mem.read_word(va + 4);
+    if (val3 != TEST_VAL3 || val4 != TEST_VAL4) {
+        debug.println("[FAIL] virtual address write mismatch");
+        return;
+    }
+    debug.println("mmu: virtual address write verified");
+
+    // 6. Disable Paging and verify physical memory was modified
+    mmu.disable_paging();
+
+    i32 pval1 = mem.read_word(pa);
+    i32 pval2 = mem.read_word(pa + 4);
+    if (pval1 != TEST_VAL3 || pval2 != TEST_VAL4) {
+        debug.println("[FAIL] physical memory backing mismatch after paging disabled");
+        return;
+    }
+    debug.println("mmu: physical memory backing verified");
+
+    debug.println("[TEST_MMU_SUCCESS]");
+}
