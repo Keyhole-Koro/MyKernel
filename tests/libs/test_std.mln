@@ -1,0 +1,368 @@
+import debug from "../../src/debug/debug.mln";
+import str from "../../src/lib/str.mln";
+import bytes from "../../src/lib/bytes.mln";
+import bitset from "../../src/lib/bitset.mln";
+import ringbuf from "../../src/lib/ringbuf.mln";
+import strbuf from "../../src/lib/strbuf.mln";
+import serial from "../../src/io/serial.mln";
+
+// Exercises the MLC-004 phase 0 standard library on real hardware behaviour:
+// every check runs in the emulator, so byte signedness, pointer arithmetic and
+// the handle-array layouts are verified as the compiler actually lowers them
+// rather than as they read on the page.
+//
+// The runner looks for "Test PASSED!"; every individual check prints its own
+// line so a failure names itself.
+
+i32 g_failures = 0;
+
+void check(i32 cond, char* name) {
+    if (cond != 0) {
+        debug.printf("ok   %s\n", name);
+    } else {
+        debug.printf("FAIL %s\n", name);
+        g_failures = g_failures + 1;
+    }
+}
+
+void check_eq(i32 got, i32 want, char* name) {
+    if (got == want) {
+        debug.printf("ok   %s\n", name);
+    } else {
+        debug.printf("FAIL %s: got %i want %i\n", name, got, want);
+        g_failures = g_failures + 1;
+    }
+}
+
+// --- str -------------------------------------------------------------------
+
+char g_buf[64];
+char g_buf2[64];
+
+void test_str() {
+    debug.println("-- str --");
+
+    check_eq(str.len(""), 0, "str.len empty");
+    check_eq(str.len("hello"), 5, "str.len hello");
+
+    check_eq(str.cmp("abc", "abc"), 0, "str.cmp equal");
+    check(str.cmp("abc", "abd") < 0, "str.cmp less");
+    check(str.cmp("abd", "abc") > 0, "str.cmp greater");
+    check(str.cmp("ab", "abc") < 0, "str.cmp prefix is less");
+
+    check_eq(str.eq("ls", "ls"), 1, "str.eq same");
+    check_eq(str.eq("ls", "dom"), 0, "str.eq different");
+
+    check_eq(str.ncmp("abcXX", "abcYY", 3), 0, "str.ncmp first 3 match");
+    check(str.ncmp("abcXX", "abcYY", 4) != 0, "str.ncmp 4th differs");
+
+    check_eq(str.starts_with("MyOS> ls", "MyOS>"), 1, "str.starts_with hit");
+    check_eq(str.starts_with("ls", "MyOS>"), 0, "str.starts_with miss");
+    check_eq(str.starts_with("anything", ""), 1, "str.starts_with empty prefix");
+
+    check_eq(str.copy(&g_buf[0], "hello"), 5, "str.copy returns length");
+    check_eq(str.eq(&g_buf[0], "hello"), 1, "str.copy content");
+
+    check_eq(str.ncopy(&g_buf[0], "hello", 4), 3, "str.ncopy truncates");
+    check_eq(str.eq(&g_buf[0], "hel"), 1, "str.ncopy content");
+    check_eq(str.ncopy(&g_buf[0], "hi", 16), 2, "str.ncopy fits");
+
+    str.copy(&g_buf[0], "clicks: ");
+    check_eq(str.cat(&g_buf[0], "12"), 10, "str.cat returns total");
+    check_eq(str.eq(&g_buf[0], "clicks: 12"), 1, "str.cat content");
+
+    check_eq(str.chr("hello", 'l'), 2, "str.chr found");
+    check_eq(str.chr("hello", 'z'), -1, "str.chr missing");
+
+    check_eq(str.find("hello world", "world"), 6, "str.find hit");
+    check_eq(str.find("hello", "xyz"), -1, "str.find miss");
+    check_eq(str.find("hello", ""), 0, "str.find empty needle");
+
+    check_eq(str.itoa(0, &g_buf[0]), 1, "str.itoa zero length");
+    check_eq(str.eq(&g_buf[0], "0"), 1, "str.itoa zero");
+    str.itoa(4210, &g_buf[0]);
+    check_eq(str.eq(&g_buf[0], "4210"), 1, "str.itoa positive");
+    str.itoa(0 - 42, &g_buf[0]);
+    check_eq(str.eq(&g_buf[0], "-42"), 1, "str.itoa negative");
+
+    str.xtoa(0, &g_buf[0]);
+    check_eq(str.eq(&g_buf[0], "0"), 1, "str.xtoa zero");
+    str.xtoa(0x1abcde, &g_buf[0]);
+    check_eq(str.eq(&g_buf[0], "1abcde"), 1, "str.xtoa multi nibble");
+    str.xtoa(0x1f, &g_buf[0]);
+    check_eq(str.eq(&g_buf[0], "1f"), 1, "str.xtoa strips leading zeros");
+
+    check_eq(str.atoi("0"), 0, "str.atoi zero");
+    check_eq(str.atoi("4210"), 4210, "str.atoi positive");
+    check_eq(str.atoi("-42"), 0 - 42, "str.atoi negative");
+    check_eq(str.atoi("+7"), 7, "str.atoi plus sign");
+    check_eq(str.atoi("12abc"), 12, "str.atoi stops at non-digit");
+    check_eq(str.atoi("abc"), 0, "str.atoi no digits");
+}
+
+// --- bytes -----------------------------------------------------------------
+
+void test_bytes() {
+    debug.println("-- bytes --");
+
+    bytes.set(&g_buf[0], 'A', 4);
+    g_buf[4] = 0;
+    check_eq(str.eq(&g_buf[0], "AAAA"), 1, "bytes.set fills");
+
+    bytes.zero(&g_buf[0], 4);
+    check_eq(str.len(&g_buf[0]), 0, "bytes.zero clears");
+
+    str.copy(&g_buf[0], "source");
+    bytes.copy(&g_buf2[0], &g_buf[0], 7);
+    check_eq(str.eq(&g_buf2[0], "source"), 1, "bytes.copy content");
+
+    check_eq(bytes.cmp("abc", "abc", 3), 0, "bytes.cmp equal");
+    check(bytes.cmp("abc", "abd", 3) < 0, "bytes.cmp less");
+    check_eq(bytes.cmp("abX", "abY", 2), 0, "bytes.cmp honours n");
+    check_eq(bytes.eq("hi", "hi", 2), 1, "bytes.eq same");
+
+    check_eq(bytes.find("hello", 5, 'l'), 2, "bytes.find hit");
+    check_eq(bytes.find("hello", 5, 'z'), -1, "bytes.find miss");
+
+    // Overlapping moves are compared byte-for-byte rather than as strings:
+    // a move writes exactly n bytes and does not terminate, so whatever the
+    // previous test left further along g_buf is still there.
+
+    // Forward direction: dst before src.
+    str.copy(&g_buf[0], "abcdef");
+    bytes.move(&g_buf[0], &g_buf[2], 5);
+    check_eq(bytes.eq(&g_buf[0], "cdef", 5), 1, "bytes.move dst below src");
+
+    // Backward direction: dst after src. Copying forwards here would smear
+    // the first byte across the range, giving "aaaaaaa".
+    str.copy(&g_buf[0], "abcdef");
+    bytes.move(&g_buf[2], &g_buf[0], 5);
+    check_eq(bytes.eq(&g_buf[0], "ababcde", 7), 1, "bytes.move dst above src");
+}
+
+// --- bitset ----------------------------------------------------------------
+
+char g_bits[32];
+
+void test_bitset() {
+    debug.println("-- bitset --");
+
+    check_eq(bitset.bytes(0), 0, "bitset.bytes 0");
+    check_eq(bitset.bytes(1), 1, "bitset.bytes 1");
+    check_eq(bitset.bytes(8), 1, "bitset.bytes 8");
+    check_eq(bitset.bytes(9), 2, "bitset.bytes 9");
+
+    bitset.clear_all(&g_bits[0], 128);
+    check_eq(bitset.count(&g_bits[0], 128), 0, "bitset.clear_all");
+    check_eq(bitset.get(&g_bits[0], 5), 0, "bitset.get unset");
+
+    bitset.set(&g_bits[0], 5);
+    check_eq(bitset.get(&g_bits[0], 5), 1, "bitset.set");
+    check_eq(bitset.get(&g_bits[0], 4), 0, "bitset.set leaves neighbour");
+    check_eq(bitset.get(&g_bits[0], 6), 0, "bitset.set leaves neighbour 2");
+
+    // Crossing a byte boundary is where an index shift goes wrong.
+    bitset.set(&g_bits[0], 8);
+    bitset.set(&g_bits[0], 15);
+    check_eq(bitset.get(&g_bits[0], 8), 1, "bitset.set byte boundary");
+    check_eq(bitset.get(&g_bits[0], 15), 1, "bitset.set high bit");
+    check_eq(bitset.get(&g_bits[0], 7), 0, "bitset.set no bleed down");
+    check_eq(bitset.get(&g_bits[0], 16), 0, "bitset.set no bleed up");
+
+    check_eq(bitset.count(&g_bits[0], 128), 3, "bitset.count");
+
+    bitset.clear(&g_bits[0], 8);
+    check_eq(bitset.get(&g_bits[0], 8), 0, "bitset.clear");
+
+    bitset.put(&g_bits[0], 20, 1);
+    check_eq(bitset.get(&g_bits[0], 20), 1, "bitset.put 1");
+    bitset.put(&g_bits[0], 20, 0);
+    check_eq(bitset.get(&g_bits[0], 20), 0, "bitset.put 0");
+
+    check_eq(bitset.toggle(&g_bits[0], 30), 1, "bitset.toggle on");
+    check_eq(bitset.toggle(&g_bits[0], 30), 0, "bitset.toggle off");
+
+    check_eq(bitset.find_set(&g_bits[0], 128, 0), 5, "bitset.find_set");
+    check_eq(bitset.find_clear(&g_bits[0], 128, 0), 0, "bitset.find_clear at 0");
+    check_eq(bitset.find_clear(&g_bits[0], 128, 5), 6, "bitset.find_clear skips set");
+
+    // A fully set bitmap must report exhaustion, and the byte-at-a-time skip
+    // inside find_clear is what this exercises.
+    bitset.clear_all(&g_bits[0], 128);
+    i32 i = 0;
+    while (i < 128) {
+        bitset.set(&g_bits[0], i);
+        i = i + 1;
+    }
+    check_eq(bitset.count(&g_bits[0], 128), 128, "bitset all set");
+    check_eq(bitset.find_clear(&g_bits[0], 128, 0), -1, "bitset.find_clear exhausted");
+
+    bitset.clear(&g_bits[0], 100);
+    check_eq(bitset.find_clear(&g_bits[0], 128, 0), 100, "bitset.find_clear after skip");
+    check_eq(bitset.find_set(&g_bits[0], 128, 0), 0, "bitset.find_set at 0");
+}
+
+// --- ringbuf ---------------------------------------------------------------
+
+i32 g_q[19]; // 3 header words + 16 slots
+
+void test_ringbuf() {
+    debug.println("-- ringbuf --");
+
+    ringbuf.init(&g_q[0], 16);
+    check_eq(ringbuf.capacity(&g_q[0]), 15, "ringbuf.capacity is cap-1");
+    check_eq(ringbuf.count(&g_q[0]), 0, "ringbuf empty count");
+    check_eq(ringbuf.has(&g_q[0]), 0, "ringbuf empty has");
+    check_eq(ringbuf.full(&g_q[0]), 0, "ringbuf empty not full");
+    check_eq(ringbuf.pop(&g_q[0], -1), -1, "ringbuf pop empty returns sentinel");
+
+    check_eq(ringbuf.push(&g_q[0], 'P'), 1, "ringbuf.push accepted");
+    ringbuf.push(&g_q[0], 'I');
+    ringbuf.push(&g_q[0], 'N');
+    ringbuf.push(&g_q[0], 'G');
+    check_eq(ringbuf.count(&g_q[0]), 4, "ringbuf.count after pushes");
+    check_eq(ringbuf.peek(&g_q[0], -1), 'P', "ringbuf.peek does not consume");
+    check_eq(ringbuf.count(&g_q[0]), 4, "ringbuf.peek left count");
+
+    check_eq(ringbuf.pop(&g_q[0], -1), 'P', "ringbuf FIFO order 1");
+    check_eq(ringbuf.pop(&g_q[0], -1), 'I', "ringbuf FIFO order 2");
+    check_eq(ringbuf.pop(&g_q[0], -1), 'N', "ringbuf FIFO order 3");
+    check_eq(ringbuf.pop(&g_q[0], -1), 'G', "ringbuf FIFO order 4");
+    check_eq(ringbuf.has(&g_q[0]), 0, "ringbuf drained");
+
+    // Fill to capacity: the 16th push must be refused, not overwrite.
+    ringbuf.init(&g_q[0], 16);
+    i32 i = 0;
+    while (i < 15) {
+        ringbuf.push(&g_q[0], i);
+        i = i + 1;
+    }
+    check_eq(ringbuf.count(&g_q[0]), 15, "ringbuf filled to capacity");
+    check_eq(ringbuf.full(&g_q[0]), 1, "ringbuf.full when at capacity");
+    check_eq(ringbuf.push(&g_q[0], 99), 0, "ringbuf.push refused when full");
+    check_eq(ringbuf.count(&g_q[0]), 15, "ringbuf.push refusal did not store");
+    check_eq(ringbuf.peek(&g_q[0], -1), 0, "ringbuf oldest survived overflow");
+
+    // Wrap the indices past the end of the array and back to the start.
+    ringbuf.init(&g_q[0], 16);
+    i32 round = 0;
+    while (round < 40) {
+        ringbuf.push(&g_q[0], round);
+        check_eq(ringbuf.pop(&g_q[0], -1), round, "ringbuf wrap round-trip");
+        round = round + 1;
+    }
+    check_eq(ringbuf.count(&g_q[0]), 0, "ringbuf empty after wrapping");
+
+    ringbuf.push(&g_q[0], 1);
+    ringbuf.push(&g_q[0], 2);
+    ringbuf.clear(&g_q[0]);
+    check_eq(ringbuf.count(&g_q[0]), 0, "ringbuf.clear");
+}
+
+// --- strbuf ----------------------------------------------------------------
+
+char g_line[16];
+
+void test_strbuf() {
+    debug.println("-- strbuf --");
+
+    i32 n = strbuf.reset(&g_line[0]);
+    check_eq(n, 0, "strbuf.reset returns 0");
+    check_eq(str.len(&g_line[0]), 0, "strbuf.reset empties");
+
+    n = strbuf.append(&g_line[0], 16, n, "clicks: ");
+    check_eq(n, 8, "strbuf.append length");
+    n = strbuf.append_i32(&g_line[0], 16, n, 42);
+    check_eq(str.eq(&g_line[0], "clicks: 42"), 1, "strbuf.append_i32 content");
+    check_eq(n, 10, "strbuf.append_i32 length");
+
+    check_eq(strbuf.space(16, n), 5, "strbuf.space");
+
+    n = strbuf.push(&g_line[0], 16, n, '!');
+    check_eq(str.eq(&g_line[0], "clicks: 42!"), 1, "strbuf.push");
+
+    n = strbuf.truncate(&g_line[0], n, 3);
+    check_eq(str.eq(&g_line[0], "clicks: "), 1, "strbuf.truncate");
+    check_eq(strbuf.truncate(&g_line[0], 2, 99), 0, "strbuf.truncate clamps at 0");
+
+    n = strbuf.reset(&g_line[0]);
+    n = strbuf.append_hex(&g_line[0], 16, n, 0x1f);
+    check_eq(str.eq(&g_line[0], "1f"), 1, "strbuf.append_hex");
+
+    n = strbuf.reset(&g_line[0]);
+    n = strbuf.append_repeat(&g_line[0], 16, n, '-', 4);
+    check_eq(str.eq(&g_line[0], "----"), 1, "strbuf.append_repeat");
+    check_eq(n, 4, "strbuf.append_repeat length");
+
+    n = strbuf.reset(&g_line[0]);
+    n = strbuf.append_n(&g_line[0], 16, n, "abcdef", 3);
+    check_eq(str.eq(&g_line[0], "abc"), 1, "strbuf.append_n limit");
+
+    // Truncation must stop at cap-1 and still terminate, never run past the
+    // array. g_line holds 16 bytes, so 15 visible characters is the ceiling.
+    n = strbuf.reset(&g_line[0]);
+    n = strbuf.append(&g_line[0], 16, n, "0123456789abcdefghij");
+    check_eq(n, 15, "strbuf.append truncates at cap-1");
+    check_eq(str.len(&g_line[0]), 15, "strbuf truncated stays terminated");
+    check_eq(str.eq(&g_line[0], "0123456789abcde"), 1, "strbuf truncated content");
+    check_eq(strbuf.space(16, n), 0, "strbuf.space exhausted");
+    check_eq(strbuf.push(&g_line[0], 16, n, 'z'), 15, "strbuf.push refused when full");
+    check_eq(strbuf.append_i32(&g_line[0], 16, n, 7), 15, "strbuf.append_i32 refused when full");
+}
+
+// --- serial input queue ------------------------------------------------------
+// serial's keystroke queue is ringbuf underneath. It has no init call of its
+// own (the IRQ handler can push before any task runs), so this pins the
+// contract the shell depends on: push/has/read behave from a cold start, and
+// the queue drops rather than overwrites once full.
+
+void test_serial_queue() {
+    debug.println("-- serial input queue --");
+
+    check_eq(serial.has_input(), 0, "serial queue starts empty");
+    check_eq(serial.read_input(), 0, "serial read on empty returns 0");
+
+    serial.input_push('h');
+    serial.input_push('i');
+    check_eq(serial.has_input(), 1, "serial has_input after push");
+    check_eq(serial.read_input(), 'h', "serial FIFO order 1");
+    check_eq(serial.read_input(), 'i', "serial FIFO order 2");
+    check_eq(serial.has_input(), 0, "serial drained");
+
+    // Bytes >= 0x80 must survive the round trip rather than sign-extending.
+    serial.input_push(0xFF);
+    check_eq(serial.read_input(), 0xFF, "serial high byte round trip");
+
+    // 128 slots hold 127 keystrokes; the 128th push is dropped and the oldest
+    // byte stays at the front.
+    i32 i = 0;
+    while (i < 200) {
+        serial.input_push('a' + (i & 7));
+        i = i + 1;
+    }
+    check_eq(serial.read_input(), 'a', "serial kept oldest on overflow");
+
+    i32 drained = 1;
+    while (serial.has_input() != 0) {
+        serial.read_input();
+        drained = drained + 1;
+    }
+    check_eq(drained, 127, "serial held capacity-1 keystrokes");
+}
+
+void kernel_main() {
+    debug.println("std library test: begin");
+
+    test_str();
+    test_bytes();
+    test_bitset();
+    test_ringbuf();
+    test_strbuf();
+    test_serial_queue();
+
+    if (g_failures == 0) {
+        debug.println("Test PASSED!");
+    } else {
+        debug.printf("Test FAILED: %i check(s)\n", g_failures);
+    }
+}

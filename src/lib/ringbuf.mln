@@ -1,0 +1,119 @@
+package ringbuf;
+
+// Fixed-capacity FIFO of i32 over a caller-owned array.
+//
+// MyLang has no generics and no struct types that cross a package boundary, so
+// the queue state and its slots live together in one i32 array the caller
+// declares and hands over as an `i32*` handle:
+//
+//   i32 q[3 + 128];
+//   ringbuf.init(&q[0], 128);
+//
+//   q[0] = head   (index of the next slot to read)
+//   q[1] = tail   (index of the next slot to write)
+//   q[2] = cap    (number of slots)
+//   q[3..]        slots
+//
+// head == tail means empty, so one slot is always left unused and the queue
+// holds at most cap - 1 values. Indices wrap with a compare instead of `%`
+// because the target has no divide instruction.
+//
+// This is a single-producer / single-consumer structure with no locking: it is
+// safe for an IRQ handler to push while a task pops, which is exactly how the
+// serial input queue uses it, but not for two pushers.
+
+// Words of state in front of the slots. Callers must spell this out as the
+// literal 3 in their array size: an array bound has to be a literal, and an
+// exported constant would not survive cross-package linking anyway (the same
+// limitation MyOS src/ui/dom.mln notes for its enum members).
+i32 HEADER = 3;
+
+// Prepare an empty queue of cap slots. The array must hold HEADER + cap words.
+export void init(i32* q, i32 cap) {
+    q[0] = 0;
+    q[1] = 0;
+    q[2] = cap;
+}
+
+// Slots the queue can hold at once (one less than the capacity given to init).
+export i32 capacity(i32* q) {
+    return q[2] - 1;
+}
+
+// Number of values currently queued.
+export i32 count(i32* q) {
+    i32 head = q[0];
+    i32 tail = q[1];
+    if (tail >= head) {
+        return tail - head;
+    }
+    return q[2] - head + tail;
+}
+
+// Non-zero while at least one value is queued.
+export i32 has(i32* q) {
+    if (q[0] == q[1]) {
+        return 0;
+    }
+    return 1;
+}
+
+// Non-zero when a further push would drop.
+export i32 full(i32* q) {
+    i32 next = q[1] + 1;
+    if (next >= q[2]) {
+        next = 0;
+    }
+    if (next == q[0]) {
+        return 1;
+    }
+    return 0;
+}
+
+// Append value. Returns 1 when stored, 0 when the queue was full and the value
+// was dropped. Dropping rather than overwriting keeps the oldest input, which
+// is what a keystroke queue wants.
+export i32 push(i32* q, i32 value) {
+    i32 tail = q[1];
+    i32 next = tail + 1;
+    if (next >= q[2]) {
+        next = 0;
+    }
+    if (next == q[0]) {
+        return 0;
+    }
+    q[HEADER + tail] = value;
+    q[1] = next;
+    return 1;
+}
+
+// Remove and return the oldest value, or `empty` when the queue is empty.
+// Callers that cannot spare a sentinel should check has() first.
+export i32 pop(i32* q, i32 empty) {
+    i32 head = q[0];
+    if (head == q[1]) {
+        return empty;
+    }
+    i32 value = q[HEADER + head];
+    i32 next = head + 1;
+    if (next >= q[2]) {
+        next = 0;
+    }
+    q[0] = next;
+    return value;
+}
+
+// Return the oldest value without removing it, or `empty` when empty.
+export i32 peek(i32* q, i32 empty) {
+    i32 head = q[0];
+    if (head == q[1]) {
+        return empty;
+    }
+    return q[HEADER + head];
+}
+
+// Discard every queued value.
+export void clear(i32* q) {
+    q[0] = 0;
+    q[1] = 0;
+}

@@ -49,6 +49,7 @@ LIB_SOURCES = [
     (SRC / "mm" / "heap_sym.masm", "masm"),
     (SRC / "arch" / "halt.masm", "masm"),
     (SRC / "mm" / "mem.mln", "ml"),
+    (SRC / "lib" / "ringbuf.mln", "ml"),
     (SRC / "io" / "serial.mln", "ml"),
     (SRC / "debug" / "debug.mln", "ml"),
 ]
