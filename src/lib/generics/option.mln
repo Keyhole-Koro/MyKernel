@@ -1,0 +1,23 @@
+// Explicit-tag option value. This is the current substitute for a payload enum.
+export struct Option<T> {
+    i32 is_some;
+    T value;
+};
+
+export void option_none<T>(Option<T> *option) {
+    option->is_some = 0;
+}
+
+export void option_some<T>(Option<T> *option, T value) {
+    option->is_some = 1;
+    option->value = value;
+}
+
+export i32 option_take<T>(Option<T> *option, T *out) {
+    if (option->is_some == 0) {
+        return 0;
+    }
+    *out = option->value;
+    option->is_some = 0;
+    return 1;
+}

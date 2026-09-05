@@ -2,9 +2,9 @@ package ringbuf;
 
 // Fixed-capacity FIFO of i32 over a caller-owned array.
 //
-// MyLang has no generics and no struct types that cross a package boundary, so
-// the queue state and its slots live together in one i32 array the caller
-// declares and hands over as an `i32*` handle:
+// This is the small, established i32-only queue used by IRQ paths. New code
+// that needs a typed caller-storage queue can use `generics/ringbuf.mln`'s
+// `RingBuffer<T>`; this API remains for its compact array layout:
 //
 //   i32 q[3 + 128];
 //   ringbuf.init(&q[0], 128);

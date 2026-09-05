@@ -1,0 +1,33 @@
+// Explicit-tag result value. Payload enums can replace this representation when
+// the language supports them.
+export struct Result<T, E> {
+    i32 is_ok;
+    T ok;
+    E err;
+};
+
+export void result_ok<T, E>(Result<T, E> *result, T value) {
+    result->is_ok = 1;
+    result->ok = value;
+}
+
+export void result_err<T, E>(Result<T, E> *result, E error) {
+    result->is_ok = 0;
+    result->err = error;
+}
+
+export i32 result_take_ok<T, E>(Result<T, E> *result, T *out) {
+    if (result->is_ok == 0) {
+        return 0;
+    }
+    *out = result->ok;
+    return 1;
+}
+
+export i32 result_take_err<T, E>(Result<T, E> *result, E *out) {
+    if (result->is_ok != 0) {
+        return 0;
+    }
+    *out = result->err;
+    return 1;
+}

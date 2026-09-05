@@ -1,0 +1,26 @@
+// Typed bump allocator over caller-owned storage. Reset invalidates all prior
+// allocations and allocation returns NULL on exhaustion.
+export struct Arena<T> {
+    T *data;
+    i32 cap;
+    i32 used;
+};
+
+export void arena_init<T>(Arena<T> *arena, T *storage, i32 cap) {
+    arena->data = storage;
+    arena->cap = cap;
+    arena->used = 0;
+}
+
+export void arena_reset<T>(Arena<T> *arena) {
+    arena->used = 0;
+}
+
+export T *arena_alloc<T>(Arena<T> *arena, i32 count) {
+    if (count < 0 || count > arena->cap - arena->used) {
+        return (T *)0;
+    }
+    T *result = arena->data + arena->used;
+    arena->used = arena->used + count;
+    return result;
+}

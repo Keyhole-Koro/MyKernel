@@ -4,9 +4,8 @@ import str from "str.mln";
 
 // Append-only string builder over a caller-owned char array.
 //
-// MyLang has no struct type that crosses a package boundary, so the builder
-// carries no state of its own: every call takes the buffer, its capacity and
-// the current length, and returns the new length.
+// This compatibility API keeps state explicit: every call takes the buffer,
+// its capacity and the current length, and returns the new length.
 //
 //   char line[64];
 //   i32 n = strbuf.reset(&line[0]);

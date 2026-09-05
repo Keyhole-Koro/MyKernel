@@ -1,0 +1,21 @@
+// Borrowed contiguous range over caller-owned storage.
+export struct Slice<T> {
+    T *data;
+    i32 len;
+};
+
+export void slice_init<T>(Slice<T> *slice, T *data, i32 len) {
+    slice->data = data;
+    slice->len = len;
+}
+
+export i32 slice_len<T>(Slice<T> *slice) {
+    return slice->len;
+}
+
+export T *slice_at<T>(Slice<T> *slice, i32 index) {
+    if (index < 0 || index >= slice->len) {
+        return (T *)0;
+    }
+    return slice->data + index;
+}
