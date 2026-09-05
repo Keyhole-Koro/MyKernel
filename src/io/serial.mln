@@ -1,7 +1,7 @@
 package serial;
 
 import mem from "../mm/mem.mln";
-import ringbuf from "../lib/ringbuf.mln";
+import { RingBuffer, ring_init, ring_push, ring_pop, ring_has } from "../lib/ringbuf.mln";
 
 // Memory-mapped UART registers (must match constants.rs in the emulator).
 i32 SERIAL_TX_ADDR = 0x24000000;
@@ -32,19 +32,21 @@ export i32 read_rx() {
 // keystrokes from here. This resolves the contention where both the IRQ handler
 // and the shell read hardware RX and one stole the other's bytes.
 //
-// The queue itself is std ringbuf over one i32 array: 3 words of state
-// (head, tail, cap) followed by 128 slots, so it holds 127 pending keystrokes.
-// ringbuf drops on overflow rather than overwriting, which keeps the oldest
-// keystroke -- the same behaviour this queue had when it was open-coded.
-i32 in_q[131];
+// The queue is a RingBuffer<i32> over a 128-word backing array, so it holds
+// 127 pending keystrokes (one slot stays empty to distinguish full from
+// empty). It drops on overflow rather than overwriting, which keeps the
+// oldest keystroke -- the same behaviour this queue had when it was
+// open-coded.
+i32 in_storage[128];
+RingBuffer<i32> in_q;
 i32 in_ready = 0;
 
 // The queue has no boot-time init call to hang off: the IRQ handler can fire
 // before any task runs, and every consumer is a bare export. Preparing it on
-// first touch keeps that contract while letting ringbuf own the layout.
+// first touch keeps that contract while letting RingBuffer own the layout.
 void ensure_queue() {
     if (in_ready == 0) {
-        ringbuf.init(&in_q[0], 128);
+        ring_init<i32>(&in_q, &in_storage[0], 128);
         in_ready = 1;
     }
 }
@@ -52,17 +54,19 @@ void ensure_queue() {
 // Called by the serial IRQ handler for each received byte.
 export void input_push(i32 c) {
     ensure_queue();
-    ringbuf.push(&in_q[0], c & 0xFF);
+    ring_push<i32>(&in_q, c & 0xFF);
 }
 
 // Non-zero while a keystroke is waiting in the input queue.
 export i32 has_input() {
     ensure_queue();
-    return ringbuf.has(&in_q[0]);
+    return ring_has<i32>(&in_q);
 }
 
 // Consume and return the next queued keystroke, or 0 if the queue is empty.
 export i32 read_input() {
     ensure_queue();
-    return ringbuf.pop(&in_q[0], 0);
+    i32 value = 0;
+    ring_pop<i32>(&in_q, &value);
+    return value;
 }

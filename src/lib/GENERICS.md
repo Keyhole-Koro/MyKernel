@@ -1,11 +1,11 @@
 # Generic containers
 
-Each module under `generics/` is independently importable through the
-compiler's named generic import support. Import every template used by a
-specialization, including its container type:
+Each of these modules is independently importable through the compiler's
+named generic import support. Import every template used by a specialization,
+including its container type:
 
 ```mln
-import { Vec, vec_init, vec_push, vec_pop } from "generics/vec.mln";
+import { Vec, vec_init, vec_push, vec_pop } from "vec.mln";
 
 i32 main() {
     i32 storage[8];
@@ -23,7 +23,7 @@ i32 main() {
 | `slice.mln` | `Slice<T>` |
 | `vec.mln` | `Vec<T>` |
 | `arena.mln` | `Arena<T>` |
-| `ringbuf.mln` | `RingBuffer<T>` |
+| `ringbuf.mln` | `RingBuffer<T>` (also the serial input queue's implementation) |
 | `intrusive_list.mln` | `IntrusiveList<T>` |
 | `option.mln` | struct-based `Option<T>` |
 | `result.mln` | struct-based `Result<T,E>` |
