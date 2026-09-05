@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tools.project_paths import MYEMULATOR_DIR, MYKERNEL_DIR, REPO_ROOT
 
-BUILD_TOOLCHAIN = REPO_ROOT / "qa" / "build_toolchain.py"
+BUILD_TOOLCHAIN = REPO_ROOT / "qa" / "runners" / "build_toolchain.py"
 MYEMU = MYEMULATOR_DIR / "target" / "release" / "myemu"
 SOURCE = MYKERNEL_DIR / "tests" / "scheduler" / "test_scheduler.mln"
 STUB = MYKERNEL_DIR / "tests" / "scheduler" / "test_stub.masm"
