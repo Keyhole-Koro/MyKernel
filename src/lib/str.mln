@@ -1,0 +1,48 @@
+package str;
+
+// Convert a 32-bit integer to a NUL-terminated string in base 10.
+// Returns the number of characters written, excluding the NUL terminator.
+export i32 itoa(i32 value, char* buf) {
+    if (value == 0) {
+        buf[0] = 48; // '0'
+        buf[1] = 0;
+        return 1;
+    }
+
+    i32 is_negative = 0;
+    if (value < 0) {
+        is_negative = 1;
+        value = 0 - value;
+    }
+
+    // Count digits
+    i32 temp = value;
+    i32 num_digits = 0;
+    while (temp > 0) {
+        num_digits = num_digits + 1;
+        temp = temp / 10;
+    }
+
+    i32 total_chars = num_digits;
+    if (is_negative != 0) {
+        total_chars = total_chars + 1;
+    }
+
+    buf[total_chars] = 0;
+
+    temp = value;
+    i32 i = total_chars - 1;
+
+    while (temp > 0) {
+        i32 d = temp % 10;
+        buf[i] = 48 + d; // '0' + d
+        temp = temp / 10;
+        i = i - 1;
+    }
+
+    if (is_negative != 0) {
+        buf[0] = 45; // '-'
+    }
+
+    return total_chars;
+}

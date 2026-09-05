@@ -1,6 +1,6 @@
 import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
-import fs from "../../src/fs/fs.mln";
+import fs from "../../../MyOS/src/fs/fs.mln";
 import serial from "../../src/io/serial.mln";
 import { halt_cpu } from "../../src/arch/halt.masm";
 

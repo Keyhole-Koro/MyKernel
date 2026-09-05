@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-FS smoke test runner for MyKernel.
-
-Builds the fs smoke test kernel and runs it in the emulator.
+Minode & File Descriptor integration test runner for MyKernel / MyOS.
 """
 
 import argparse
@@ -17,12 +15,11 @@ from tools.project_paths import MYEMULATOR_DIR, MYKERNEL_DIR, REPO_ROOT
 
 BUILD_TOOLCHAIN = REPO_ROOT / "qa" / "runners" / "build_toolchain.py"
 MYEMU = MYEMULATOR_DIR / "target" / "release" / "myemu"
-SOURCE = MYKERNEL_DIR / "tests" / "fs" / "test_fs_smoke.mln"
-STUB = MYKERNEL_DIR / "tests" / "fs" / "test_fs_smoke_stub.masm"
+SOURCE = MYKERNEL_DIR / "tests" / "fs" / "test_minode_fd.mln"
+STUB = MYKERNEL_DIR / "tests" / "fs" / "test_minode_fd_stub.masm"
 
 STEP_LIMIT = "50000000"
-MARKER = "Test PASSED!"
-EXPECTED = "fs: read back 'hi fs'"
+MARKER = "Minode and FD tests PASSED!"
 
 GREEN, RED, CYAN = "32", "31", "36"
 
@@ -34,8 +31,8 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    work = Path(tempfile.mkdtemp(prefix="mykernel-fs-smoke-test-"))
-    linked = work / "test_fs_smoke_linked.mbin"
+    work = Path(tempfile.mkdtemp(prefix="mykernel-minode-fd-test-"))
+    linked = work / "test_minode_fd_linked.mbin"
 
     build = subprocess.run(
         ["python3", str(BUILD_TOOLCHAIN), str(STUB), str(SOURCE),
@@ -44,7 +41,7 @@ def main() -> int:
         text=True, timeout=300,
     )
     if build.returncode != 0 or not linked.exists():
-        print(colored("[FAIL]", RED), "fs smoke test build failed")
+        print(colored("[FAIL]", RED), "minode/fd test build failed")
         if args.verbose:
             print(build.stdout)
         else:
@@ -62,14 +59,14 @@ def main() -> int:
     if args.verbose:
         print(out)
 
-    if MARKER not in out or EXPECTED not in out:
-        print(colored("[FAIL]", RED), "fs smoke test marker or expected output not seen")
-        print(colored("[INFO]", CYAN), f"emulator tail: {out[-200:]!r}")
+    if MARKER not in out:
+        print(colored("[FAIL]", RED), "minode/fd test marker not seen")
+        print(colored("[INFO]", CYAN), f"emulator tail: {out[-300:]!r}")
         if not args.verbose:
             print(colored("[INFO]", CYAN), "re-run with --verbose to see output")
         return 1
 
-    print(colored("[PASS]", GREEN), "fs smoke test: verified file creation, read and list")
+    print(colored("[PASS]", GREEN), "minode and FD integration test passed successfully!")
     return 0
 
 if __name__ == "__main__":
