@@ -25,14 +25,17 @@ i32 main() {
 | `arena.mln` | `Arena<T>` |
 | `ringbuf.mln` | `RingBuffer<T>` (also the serial input queue's implementation) |
 | `intrusive_list.mln` | `IntrusiveList<T>` |
-| `option.mln` | struct-based `Option<T>` |
-| `result.mln` | struct-based `Result<T,E>` |
+| `option.mln` | payload-enum `Option<T>` (`Some(T)` / `None`) |
+| `result.mln` | payload-enum `Result<T,E>` (`Ok(T)` / `Err(E)`) |
 | `hashmap.mln` | string-keyed `HashMap<T>` |
 
 `Slice<T>`, `Vec<T>`, `Arena<T>`, and `RingBuffer<T>` operate on storage passed
 by the caller. `IntrusiveList<T>` is singly linked; each push/pop receives the
 address of the payload node's next-link field. `Option<T>` and `Result<T,E>`
-are explicit-tag structs until the language gains payload-carrying enums.
+are real payload enums built with `Some(value)` / `None` and `Ok(value)` /
+`Err(error)`, matched with `case ... of { ... }`; `option_take()` and
+`result_take_ok()`/`result_take_err()` are convenience wrappers for the
+common "check and consume" shape.
 `HashMap<T>` maps borrowed NUL-terminated string keys to `T` values using
 caller-provided `i32` key-address and value arrays; it has insertion, replacement,
 and lookup but not deletion or automatic growth. Its capacity must be a power of two.
