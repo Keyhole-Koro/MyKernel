@@ -1,23 +1,14 @@
-// Explicit-tag option value. This is the current substitute for a payload enum.
-export struct Option<T> {
-    i32 is_some;
-    T value;
-};
-
-export void option_none<T>(Option<T> *option) {
-    option->is_some = 0;
-}
-
-export void option_some<T>(Option<T> *option, T value) {
-    option->is_some = 1;
-    option->value = value;
+// Payload-enum option value. Build it directly with `Some(value)` / `None`
+// and match it with `case`; option_take() is a convenience for the common
+// "check and consume" shape.
+export enum Option<T> {
+    Some(T),
+    None,
 }
 
 export i32 option_take<T>(Option<T> *option, T *out) {
-    if (option->is_some == 0) {
-        return 0;
-    }
-    *out = option->value;
-    option->is_some = 0;
-    return 1;
+    return case *option of {
+        Some(v) -> ({ *out = v; 1; });
+        None    -> 0;
+    };
 }

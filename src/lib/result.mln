@@ -1,33 +1,21 @@
-// Explicit-tag result value. Payload enums can replace this representation when
-// the language supports them.
-export struct Result<T, E> {
-    i32 is_ok;
-    T ok;
-    E err;
-};
-
-export void result_ok<T, E>(Result<T, E> *result, T value) {
-    result->is_ok = 1;
-    result->ok = value;
-}
-
-export void result_err<T, E>(Result<T, E> *result, E error) {
-    result->is_ok = 0;
-    result->err = error;
+// Payload-enum result value. Build it directly with `Ok(value)` / `Err(error)`
+// and match it with `case`; result_take_ok()/result_take_err() are
+// convenience wrappers for the common "check and consume" shape.
+export enum Result<T, E> {
+    Ok(T),
+    Err(E),
 }
 
 export i32 result_take_ok<T, E>(Result<T, E> *result, T *out) {
-    if (result->is_ok == 0) {
-        return 0;
-    }
-    *out = result->ok;
-    return 1;
+    return case *result of {
+        Ok(v)  -> ({ *out = v; 1; });
+        Err(e) -> 0;
+    };
 }
 
 export i32 result_take_err<T, E>(Result<T, E> *result, E *out) {
-    if (result->is_ok != 0) {
-        return 0;
-    }
-    *out = result->err;
-    return 1;
+    return case *result of {
+        Ok(v)  -> 0;
+        Err(e) -> ({ *out = e; 1; });
+    };
 }
