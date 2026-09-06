@@ -1,7 +1,7 @@
 package serial;
 
 import mem from "../mm/mem.mln";
-import { RingBuffer, ring_init, ring_push, ring_pop, ring_has } from "../lib/ringbuf.mln";
+import { RingBuffer, ring_init, ring_push, ring_pop, ring_has } from "../../../../toolchain/MyStdLib/ringbuf.mln";
 
 // Memory-mapped UART registers (must match constants.rs in the emulator).
 i32 SERIAL_TX_ADDR = 0x24000000;
