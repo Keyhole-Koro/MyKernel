@@ -29,6 +29,7 @@ from tools.project_paths import (
     MYKERNEL_DIR,
     MYLANGCOMPILER_DIR,
     MYLINKER_DIR,
+    MYSTDLIB_DIR,
     REPO_ROOT,
 )
 
@@ -49,7 +50,7 @@ LIB_SOURCES = [
     (SRC / "mm" / "heap_sym.masm", "masm"),
     (SRC / "arch" / "halt.masm", "masm"),
     (SRC / "mm" / "mem.mln", "ml"),
-    (SRC / "lib" / "ringbuf.mln", "ml"),
+    (MYSTDLIB_DIR / "ringbuf.mln", "ml"),
     (SRC / "io" / "serial.mln", "ml"),
     (SRC / "debug" / "debug.mln", "ml"),
 ]

@@ -1,9 +1,9 @@
 import debug from "../../src/debug/debug.mln";
-import str from "../../src/lib/str.mln";
-import bytes from "../../src/lib/bytes.mln";
-import bitset from "../../src/lib/bitset.mln";
-import ringbuf from "../../src/lib/ringbuf.mln";
-import strbuf from "../../src/lib/strbuf.mln";
+import str from "../../../../toolchain/MyStdLib/str.mln";
+import bytes from "../../../../toolchain/MyStdLib/bytes.mln";
+import bitset from "../../../../toolchain/MyStdLib/bitset.mln";
+import { RingBuffer, ring_init, ring_capacity, ring_count, ring_has, ring_full, ring_push, ring_pop, ring_peek, ring_clear } from "../../../../toolchain/MyStdLib/ringbuf.mln";
+import strbuf from "../../../../toolchain/MyStdLib/strbuf.mln";
 import serial from "../../src/io/serial.mln";
 
 // Exercises the MLC-004 phase 0 standard library on real hardware behaviour:
@@ -204,59 +204,72 @@ void test_bitset() {
 
 // --- ringbuf ---------------------------------------------------------------
 
-i32 g_q[19]; // 3 header words + 16 slots
+i32 g_q_storage[16];
+RingBuffer<i32> g_q;
 
 void test_ringbuf() {
     debug.println("-- ringbuf --");
 
-    ringbuf.init(&g_q[0], 16);
-    check_eq(ringbuf.capacity(&g_q[0]), 15, "ringbuf.capacity is cap-1");
-    check_eq(ringbuf.count(&g_q[0]), 0, "ringbuf empty count");
-    check_eq(ringbuf.has(&g_q[0]), 0, "ringbuf empty has");
-    check_eq(ringbuf.full(&g_q[0]), 0, "ringbuf empty not full");
-    check_eq(ringbuf.pop(&g_q[0], -1), -1, "ringbuf pop empty returns sentinel");
+    i32 v = -1;
+    ring_init<i32>(&g_q, &g_q_storage[0], 16);
+    check_eq(ring_capacity<i32>(&g_q), 15, "ring_capacity is cap-1");
+    check_eq(ring_count<i32>(&g_q), 0, "ringbuf empty count");
+    check_eq(ring_has<i32>(&g_q), 0, "ringbuf empty has");
+    check_eq(ring_full<i32>(&g_q), 0, "ringbuf empty not full");
+    v = -1;
+    check_eq(ring_pop<i32>(&g_q, &v), 0, "ring_pop on empty returns 0");
+    check_eq(v, -1, "ring_pop on empty leaves *out untouched");
 
-    check_eq(ringbuf.push(&g_q[0], 'P'), 1, "ringbuf.push accepted");
-    ringbuf.push(&g_q[0], 'I');
-    ringbuf.push(&g_q[0], 'N');
-    ringbuf.push(&g_q[0], 'G');
-    check_eq(ringbuf.count(&g_q[0]), 4, "ringbuf.count after pushes");
-    check_eq(ringbuf.peek(&g_q[0], -1), 'P', "ringbuf.peek does not consume");
-    check_eq(ringbuf.count(&g_q[0]), 4, "ringbuf.peek left count");
+    check_eq(ring_push<i32>(&g_q, 'P'), 1, "ring_push accepted");
+    ring_push<i32>(&g_q, 'I');
+    ring_push<i32>(&g_q, 'N');
+    ring_push<i32>(&g_q, 'G');
+    check_eq(ring_count<i32>(&g_q), 4, "ring_count after pushes");
+    v = -1;
+    check_eq(ring_peek<i32>(&g_q, &v), 1, "ring_peek does not consume");
+    check_eq(v, 'P', "ring_peek reads oldest");
+    check_eq(ring_count<i32>(&g_q), 4, "ring_peek left count");
 
-    check_eq(ringbuf.pop(&g_q[0], -1), 'P', "ringbuf FIFO order 1");
-    check_eq(ringbuf.pop(&g_q[0], -1), 'I', "ringbuf FIFO order 2");
-    check_eq(ringbuf.pop(&g_q[0], -1), 'N', "ringbuf FIFO order 3");
-    check_eq(ringbuf.pop(&g_q[0], -1), 'G', "ringbuf FIFO order 4");
-    check_eq(ringbuf.has(&g_q[0]), 0, "ringbuf drained");
+    ring_pop<i32>(&g_q, &v);
+    check_eq(v, 'P', "ringbuf FIFO order 1");
+    ring_pop<i32>(&g_q, &v);
+    check_eq(v, 'I', "ringbuf FIFO order 2");
+    ring_pop<i32>(&g_q, &v);
+    check_eq(v, 'N', "ringbuf FIFO order 3");
+    ring_pop<i32>(&g_q, &v);
+    check_eq(v, 'G', "ringbuf FIFO order 4");
+    check_eq(ring_has<i32>(&g_q), 0, "ringbuf drained");
 
     // Fill to capacity: the 16th push must be refused, not overwrite.
-    ringbuf.init(&g_q[0], 16);
+    ring_init<i32>(&g_q, &g_q_storage[0], 16);
     i32 i = 0;
     while (i < 15) {
-        ringbuf.push(&g_q[0], i);
+        ring_push<i32>(&g_q, i);
         i = i + 1;
     }
-    check_eq(ringbuf.count(&g_q[0]), 15, "ringbuf filled to capacity");
-    check_eq(ringbuf.full(&g_q[0]), 1, "ringbuf.full when at capacity");
-    check_eq(ringbuf.push(&g_q[0], 99), 0, "ringbuf.push refused when full");
-    check_eq(ringbuf.count(&g_q[0]), 15, "ringbuf.push refusal did not store");
-    check_eq(ringbuf.peek(&g_q[0], -1), 0, "ringbuf oldest survived overflow");
+    check_eq(ring_count<i32>(&g_q), 15, "ringbuf filled to capacity");
+    check_eq(ring_full<i32>(&g_q), 1, "ring_full when at capacity");
+    check_eq(ring_push<i32>(&g_q, 99), 0, "ring_push refused when full");
+    check_eq(ring_count<i32>(&g_q), 15, "ring_push refusal did not store");
+    v = -1;
+    ring_peek<i32>(&g_q, &v);
+    check_eq(v, 0, "ringbuf oldest survived overflow");
 
     // Wrap the indices past the end of the array and back to the start.
-    ringbuf.init(&g_q[0], 16);
+    ring_init<i32>(&g_q, &g_q_storage[0], 16);
     i32 round = 0;
     while (round < 40) {
-        ringbuf.push(&g_q[0], round);
-        check_eq(ringbuf.pop(&g_q[0], -1), round, "ringbuf wrap round-trip");
+        ring_push<i32>(&g_q, round);
+        ring_pop<i32>(&g_q, &v);
+        check_eq(v, round, "ringbuf wrap round-trip");
         round = round + 1;
     }
-    check_eq(ringbuf.count(&g_q[0]), 0, "ringbuf empty after wrapping");
+    check_eq(ring_count<i32>(&g_q), 0, "ringbuf empty after wrapping");
 
-    ringbuf.push(&g_q[0], 1);
-    ringbuf.push(&g_q[0], 2);
-    ringbuf.clear(&g_q[0]);
-    check_eq(ringbuf.count(&g_q[0]), 0, "ringbuf.clear");
+    ring_push<i32>(&g_q, 1);
+    ring_push<i32>(&g_q, 2);
+    ring_clear<i32>(&g_q);
+    check_eq(ring_count<i32>(&g_q), 0, "ring_clear");
 }
 
 // --- strbuf ----------------------------------------------------------------
