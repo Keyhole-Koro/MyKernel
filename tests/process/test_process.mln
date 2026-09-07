@@ -10,6 +10,7 @@ import process from "../../src/kernel/process.mln";
 import loader from "../../src/kernel/loader.mln";
 import { halt_cpu } from "../../src/arch/halt.masm";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { LoaderError } from "../../src/kernel/loader.mln";
 import { MmuError } from "../../src/mm/mmu.mln";
 
@@ -161,13 +162,16 @@ void init_wx_fault_binary(i32 buf) {
     mem.write_byte(t + 12, 116); mem.write_byte(t + 13, 129); mem.write_byte(t + 14, 0); mem.write_byte(t + 15, 0);
 }
 
+// Runtime hook required by MyStdLib/assert.mln.
+void assert_fail(char* message) {
+    debug.printf("FAIL: %s\n", message);
+    halt_cpu();
+}
+
 void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_version) {
     case *result of {
         Err(LoaderError::InvalidHeader(actual_version)) -> ({
-            if (actual_version != expected_version) {
-                debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Err(InvalidHeader(%d))\n", expected_version, actual_version);
-                halt_cpu();
-            }
+            assert_eq<i32>(actual_version, expected_version, "InvalidHeader payload mismatch");
         });
         Ok(_) -> ({
             debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Ok\n", expected_version);
@@ -185,10 +189,7 @@ void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_
 void assert_invalid_bounds_error(Result<i32, LoaderError> *result, i32 expected_size) {
     case *result of {
         Err(LoaderError::InvalidBounds(actual_size)) -> ({
-            if (actual_size != expected_size) {
-                debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Err(InvalidBounds(%d))\n", expected_size, actual_size);
-                halt_cpu();
-            }
+            assert_eq<i32>(actual_size, expected_size, "InvalidBounds payload mismatch");
         });
         Ok(_) -> ({
             debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Ok\n", expected_size);
@@ -300,11 +301,9 @@ export i32 kernel_main() {
             if (code == 42) {
                 debug.println("SUCCESS: MBIN v2 process 1 exited cleanly with code 42!");
                 break;
-            } else {
-                debug.printf("FAIL: unexpected exit code %d for process 1\n", code);
-                halt_cpu();
-                return 1;
             }
+            assert_eq<i32>(code, 42, "unexpected exit code for process 1");
+            break;
         }
     }
 
@@ -330,9 +329,8 @@ export i32 kernel_main() {
             if (code == -14) {
                 debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");
                 debug.println("TEST_PASSED_OK");
-            } else {
-                debug.printf("FAIL: process 2 did not trigger page fault! exit code=%d\n", code);
             }
+            assert_eq<i32>(code, -14, "process 2 did not trigger the expected page fault");
             halt_cpu();
         }
     }

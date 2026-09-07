@@ -3,7 +3,9 @@ import heap from "../../src/mm/heap.mln";
 import mem from "../../src/mm/mem.mln";
 import mmu from "../../src/mm/mmu.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { MmuError } from "../../src/mm/mmu.mln";
+import { halt_cpu } from "../../src/arch/halt.masm";
 
 i32 PTE_VALID    = 0x01;
 i32 PTE_WRITABLE = 0x02;
@@ -13,6 +15,11 @@ i32 TEST_VAL1 = 0x12345;
 i32 TEST_VAL2 = 0x67890;
 i32 TEST_VAL3 = 0xABCDE;
 i32 TEST_VAL4 = 0x54321;
+
+void assert_fail(char* message) {
+    debug.printf("[FAIL] %s\n", message);
+    halt_cpu();
+}
 
 void kernel_main() {
     debug.println("--- Starting MMU & Virtual Memory Test ---");
@@ -101,10 +108,8 @@ void kernel_main() {
     // 4. Access virtual address 0x40000000 through MMU translation
     i32 val1 = mem.read_word(va);
     i32 val2 = mem.read_word(va + 4);
-    if (val1 != TEST_VAL1 || val2 != TEST_VAL2) {
-        debug.println("[FAIL] virtual address read mismatch");
-        return;
-    }
+    assert_eq<i32>(val1, TEST_VAL1, "virtual address read word 0 mismatch");
+    assert_eq<i32>(val2, TEST_VAL2, "virtual address read word 1 mismatch");
     debug.println("mmu: virtual address read verified");
 
     // 5. Write through virtual address and verify
@@ -113,10 +118,8 @@ void kernel_main() {
 
     i32 val3 = mem.read_word(va);
     i32 val4 = mem.read_word(va + 4);
-    if (val3 != TEST_VAL3 || val4 != TEST_VAL4) {
-        debug.println("[FAIL] virtual address write mismatch");
-        return;
-    }
+    assert_eq<i32>(val3, TEST_VAL3, "virtual address write word 0 mismatch");
+    assert_eq<i32>(val4, TEST_VAL4, "virtual address write word 1 mismatch");
     debug.println("mmu: virtual address write verified");
 
     // 6. Disable Paging and verify physical memory was modified
@@ -124,10 +127,8 @@ void kernel_main() {
 
     i32 pval1 = mem.read_word(pa);
     i32 pval2 = mem.read_word(pa + 4);
-    if (pval1 != TEST_VAL3 || pval2 != TEST_VAL4) {
-        debug.println("[FAIL] physical memory backing mismatch after paging disabled");
-        return;
-    }
+    assert_eq<i32>(pval1, TEST_VAL3, "physical backing word 0 mismatch");
+    assert_eq<i32>(pval2, TEST_VAL4, "physical backing word 1 mismatch");
     debug.println("mmu: physical memory backing verified");
 
     // 7. Verify finer-grained MmuError reporting
@@ -139,10 +140,7 @@ void kernel_main() {
         Err(AllocFailed) -> 0;
         Err(UnalignedAddress(a)) -> 0;
     };
-    if (got_inv_pd != 1) {
-        debug.println("[FAIL] expected Err(InvalidDirectory) for null pd");
-        return;
-    }
+    assert_eq<i32>(got_inv_pd, 1, "expected Err(InvalidDirectory) for null pd");
     debug.println("mmu: InvalidDirectory reported correctly");
 
     // 7b. Test UnalignedAddress error (unaligned vaddr)
@@ -153,10 +151,7 @@ void kernel_main() {
         Err(AllocFailed) -> 0;
         Err(InvalidDirectory) -> 0;
     };
-    if (got_unaligned != va + 123) {
-        debug.println("[FAIL] expected Err(UnalignedAddress(va+123)) for unaligned vaddr");
-        return;
-    }
+    assert_eq<i32>(got_unaligned, va + 123, "expected Err(UnalignedAddress(va+123)) for unaligned vaddr");
     debug.println("mmu: UnalignedAddress reported correctly");
 
     debug.println("[TEST_MMU_SUCCESS]");

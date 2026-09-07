@@ -2,6 +2,7 @@ package test;
 
 import debug from "../../src/debug/debug.mln";
 import serial from "../../src/io/serial.mln";
+import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { halt_cpu } from "../../src/arch/halt.masm";
 
 export void pass() {
@@ -15,10 +16,11 @@ export void fail(ref char reason) {
     halt_cpu();
 }
 
-export void assert_eq_i32(i32 got, i32 expected, ref char reason) {
-    if (got != expected) {
-        fail(reason);
-    }
+// Runtime hook required by MyStdLib/assert.mln.
+void assert_fail(char* reason) {
+    debug.print("TEST_FAIL:");
+    debug.println(reason);
+    halt_cpu();
 }
 
 export i32 wait_serial_rx(i32 timeout, ref char reason) {
@@ -35,5 +37,5 @@ export i32 wait_serial_rx(i32 timeout, ref char reason) {
 export void expect_serial_byte(i32 expected, i32 timeout, ref char reason) {
     i32 got = wait_serial_rx(timeout, reason);
     serial.putc(got);
-    assert_eq_i32(got, expected, reason);
+    assert_eq<i32>(got, expected, reason);
 }
