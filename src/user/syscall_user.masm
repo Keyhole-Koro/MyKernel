@@ -1,0 +1,30 @@
+export sys_exit
+export sys_read
+export sys_write
+export sys_sbrk
+export sys_yield
+
+sys_exit:
+  movi r1, 1
+  syscall
+  mov pc, lr
+
+sys_read:
+  movi r1, 2
+  syscall
+  mov pc, lr
+
+sys_write:
+  movi r1, 3
+  syscall
+  mov pc, lr
+
+sys_sbrk:
+  movi r1, 7
+  syscall
+  mov pc, lr
+
+sys_yield:
+  movi r1, 8
+  syscall
+  mov pc, lr

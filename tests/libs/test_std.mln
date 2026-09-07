@@ -4,7 +4,11 @@ import bytes from "../../../../toolchain/MyStdLib/bytes.mln";
 import bitset from "../../../../toolchain/MyStdLib/bitset.mln";
 import { RingBuffer, ring_init, ring_capacity, ring_count, ring_has, ring_full, ring_push, ring_pop, ring_peek, ring_clear } from "../../../../toolchain/MyStdLib/ringbuf.mln";
 import strbuf from "../../../../toolchain/MyStdLib/strbuf.mln";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import { assert_eq, assert_ne, assert_null, assert_not_null, assert_result_ok, assert_result_err } from "../../../../toolchain/MyStdLib/assert.mln";
 import serial from "../../src/io/serial.mln";
+import { halt_cpu } from "../../src/arch/halt.masm";
 
 // Exercises the MLC-004 phase 0 standard library on real hardware behaviour:
 // every check runs in the emulator, so byte signedness, pointer arithmetic and
@@ -15,6 +19,14 @@ import serial from "../../src/io/serial.mln";
 // line so a failure names itself.
 
 i32 g_failures = 0;
+i32 g_assert_value = 42;
+i32* g_assert_null = (i32*)0;
+
+// Runtime hook required by MyStdLib/assert.mln.
+void assert_fail(char* message) {
+    debug.printf("ASSERT FAILED: %s\n", message);
+    halt_cpu();
+}
 
 void check(i32 cond, char* name) {
     if (cond != 0) {
@@ -32,6 +44,28 @@ void check_eq(i32 got, i32 want, char* name) {
         debug.printf("FAIL %s: got %i want %i\n", name, got, want);
         g_failures = g_failures + 1;
     }
+}
+
+// --- assert ---------------------------------------------------------------
+
+void test_assert() {
+    debug.println("-- assert --");
+
+    assert.assert_true(1, "assert_true accepts non-zero");
+    assert.assert_false(0, "assert_false accepts zero");
+    assert_eq<i32>(172, 172, "assert_eq<i32>");
+    assert_ne<i32>(172, 99, "assert_ne<i32>");
+    assert_null<i32>(g_assert_null, "assert_null<i32>");
+    assert_not_null<i32>(&g_assert_value, "assert_not_null<i32>");
+    assert.assert_str_eq("MyLang", "MyLang", "assert_str_eq");
+    assert.assert_bytes_eq("abcdef", "abcXYZ", 3, "assert_bytes_eq");
+
+    Result<i32, i32> ok = Ok(7);
+    Result<i32, i32> err = Err(0 - 1);
+    assert_result_ok<i32, i32>(&ok, "assert_result_ok");
+    assert_result_err<i32, i32>(&err, "assert_result_err");
+
+    debug.println("ok   assert");
 }
 
 // --- str -------------------------------------------------------------------
@@ -366,6 +400,7 @@ void test_serial_queue() {
 void kernel_main() {
     debug.println("std library test: begin");
 
+    test_assert();
     test_str();
     test_bytes();
     test_bitset();

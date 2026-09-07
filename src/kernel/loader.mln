@@ -1,0 +1,355 @@
+package loader;
+
+import mem from "../mm/mem.mln";
+import mmu from "../mm/mmu.mln";
+import heap from "../mm/heap.mln";
+import debug from "../debug/debug.mln";
+import process from "process.mln";
+import scheduler from "scheduler.mln";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { MmuError } from "../mm/mmu.mln";
+import { ProcessError } from "process.mln";
+
+export enum LoaderError {
+    ProcSlotFull,        // Process slot table exhausted
+    OutOfMemory,         // Memory allocation failed (page directory / frame / stack)
+    MmuInvalidDir,       // Invalid page directory base address (e.g. 0)
+    MmuUnaligned(i32),   // Unaligned virtual or physical address in mapping
+    InvalidHeader(i32),  // Invalid MBIN header or unsupported version
+    InvalidBounds(i32),  // Section boundaries exceed binary buffer
+    SpawnTaskFailed,     // Task scheduler spawn failed
+}
+
+i32 USER_CODE_BASE  = 0x40000000;
+i32 USER_STACK_BASE = 0x7FFFF000;
+i32 USER_STACK_TOP  = 0x7FFFFFE0;
+i32 USER_HEAP_BASE  = 0x41000000;
+
+// MMU Page Table Entry flags:
+// Bit 0: Valid, Bit 1: Writable, Bit 2: Executable, Bit 3: User
+i32 PTE_USER_RX     = 0x0D; // VALID | EXEC | USER (0x01 | 0x04 | 0x08)
+i32 PTE_USER_RW     = 0x0B; // VALID | WRITABLE | USER (0x01 | 0x02 | 0x08)
+i32 PTE_USER_RWX    = 0x0F; // Legacy / flat fallback: VALID | WRITABLE | EXEC | USER
+
+i32 MBIN_MAGIC      = 0x4D42494E; // 'MBIN'
+
+// Reads a 32-bit big-endian word from memory
+i32 read_be32(i32 addr) {
+    i32 b0 = mem.read_byte(addr);
+    i32 b1 = mem.read_byte(addr + 1);
+    i32 b2 = mem.read_byte(addr + 2);
+    i32 b3 = mem.read_byte(addr + 3);
+    return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+}
+
+// Aligns an address/size up to a 4 KiB boundary
+i32 align_up_4k(i32 val) {
+    i32 rem = val & 4095;
+    if (rem == 0) {
+        return val;
+    }
+    return (val - rem) + 4096;
+}
+
+// Copies `size` bytes from `src_ptr` into physical frames and maps them at `vaddr_base`
+// with `pte_flags`. If `src_ptr` is 0, the frames remain zero-filled (used for BSS).
+Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size, i32 pte_flags) {
+    i32 offset = 0;
+    while (offset < size) {
+        Result<i32, MmuError> frame_res = mmu.alloc_page();
+        i32 frame = case frame_res of {
+            Ok(f) -> f;
+            Err(AllocFailed) -> ({
+                debug.println("loader: out of memory for frame");
+                return Err(LoaderError::OutOfMemory);
+            });
+            Err(InvalidDirectory) -> ({
+                debug.println("loader: invalid directory allocating frame");
+                return Err(LoaderError::MmuInvalidDir);
+            });
+            Err(UnalignedAddress(a)) -> ({
+                debug.println("loader: unaligned address allocating frame");
+                LoaderError cause = MmuUnaligned(a);
+                return Err(cause);
+            });
+        };
+
+        i32 chunk = 4096;
+        if (offset + chunk > size) {
+            chunk = size - offset;
+        }
+
+        if (src_ptr != 0) {
+            i32 b = 0;
+            while (b < chunk) {
+                i32 byte_val = mem.read_byte(src_ptr + offset + b);
+                mem.write_byte(frame + b, byte_val);
+                b = b + 1;
+            }
+        }
+
+        Result<_, MmuError> map_res = mmu.map_page(pd, vaddr_base + offset, frame, pte_flags);
+        case map_res of {
+            Ok(_) -> 0;
+            Err(AllocFailed) -> ({
+                debug.println("loader: out of memory for page table");
+                return Err(LoaderError::OutOfMemory);
+            });
+            Err(InvalidDirectory) -> ({
+                debug.println("loader: invalid directory mapping segment");
+                return Err(LoaderError::MmuInvalidDir);
+            });
+            Err(UnalignedAddress(a)) -> ({
+                debug.println("loader: unaligned address mapping segment");
+                LoaderError cause = MmuUnaligned(a);
+                return Err(cause);
+            });
+        };
+        offset = offset + 4096;
+    }
+    return Ok(_);
+}
+
+// Spawns a new process from raw binary instructions located at `code_ptr`.
+// Automatically detects MBIN v2 header (0x4D42494E) for segment separation & W^X,
+// or falls back to flat binary loading for legacy compatibility.
+// Returns Ok(pid) on success or Err(LoaderError) on failure.
+export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
+    Result<i32, ProcessError> proc_res = process.alloc_proc();
+    i32 pid = case proc_res of {
+        Ok(p) -> p;
+        Err(NoFreeSlot) -> ({
+            debug.println("loader: failed to allocate process slot");
+            return Err(LoaderError::ProcSlotFull);
+        });
+        Err(InvalidPid(p)) -> ({
+            debug.println("loader: invalid pid allocated");
+            return Err(LoaderError::ProcSlotFull);
+        });
+    };
+
+    // 1. Create Page Directory and map kernel regions identity
+    Result<i32, MmuError> pd_res = mmu.create_page_directory();
+    i32 pd = case pd_res of {
+        Ok(d) -> d;
+        Err(AllocFailed) -> ({
+            debug.println("loader: failed to allocate page directory");
+            process.free_proc(pid);
+            return Err(LoaderError::OutOfMemory);
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("loader: invalid directory for page directory");
+            process.free_proc(pid);
+            return Err(LoaderError::MmuInvalidDir);
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("loader: unaligned page directory");
+            process.free_proc(pid);
+            LoaderError cause = MmuUnaligned(a);
+            return Err(cause);
+        });
+    };
+    Result<_, MmuError> id_res = mmu.setup_identity_kernel_mapping(pd);
+    case id_res of {
+        Ok(_) -> 0;
+        Err(AllocFailed) -> ({
+            debug.println("loader: failed to setup identity kernel mapping");
+            process.free_proc(pid);
+            return Err(LoaderError::OutOfMemory);
+        });
+        Err(InvalidDirectory) -> ({
+            debug.printf("loader: invalid directory for identity mapping, pd=0x%x\n", pd);
+            process.free_proc(pid);
+            return Err(LoaderError::MmuInvalidDir);
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("loader: unaligned address for identity mapping");
+            process.free_proc(pid);
+            LoaderError cause = MmuUnaligned(a);
+            return Err(cause);
+        });
+    };
+    process.set_pdbr(pid, pd);
+
+    // 2. Check for MBIN v2 executable header
+    i32 entry_point = USER_CODE_BASE;
+    i32 initial_brk = USER_HEAP_BASE;
+    i32 is_mbin = 0;
+
+    if (code_size >= 32) {
+        i32 magic = read_be32(code_ptr);
+        if (magic == MBIN_MAGIC) {
+            is_mbin = 1;
+        }
+    }
+
+    if (is_mbin == 1) {
+        i32 version     = read_be32(code_ptr + 4);
+        entry_point     = read_be32(code_ptr + 8);
+        i32 text_offset = read_be32(code_ptr + 12);
+        i32 text_size   = read_be32(code_ptr + 16);
+        i32 data_offset = read_be32(code_ptr + 20);
+        i32 data_size   = read_be32(code_ptr + 24);
+        i32 bss_size    = read_be32(code_ptr + 28);
+
+        if (version != 1) {
+            debug.println("loader: unsupported MBIN version");
+            process.free_proc(pid);
+            LoaderError cause = InvalidHeader(version);
+            return Err(cause);
+        }
+        if (text_offset + text_size > code_size) {
+            debug.println("loader: invalid text section bounds");
+            process.free_proc(pid);
+            LoaderError cause = InvalidBounds(code_size);
+            return Err(cause);
+        }
+        if (data_offset + data_size > code_size) {
+            debug.println("loader: invalid data section bounds");
+            process.free_proc(pid);
+            LoaderError cause = InvalidBounds(code_size);
+            return Err(cause);
+        }
+
+        debug.printf("loader: loading MBIN v%d (entry=0x%x, text_sz=%d, data_sz=%d, bss_sz=%d)\n",
+                     version, entry_point, text_size, data_size, bss_size);
+
+        // Map Text segment as RX (Read + Execute, No Write)
+        Result<_, LoaderError> map_text = map_segment(pd, USER_CODE_BASE, code_ptr + text_offset, text_size, PTE_USER_RX);
+        case map_text of {
+            Ok(_)  -> 0;
+            Err(e) -> ({
+                process.free_proc(pid);
+                return Err(e);
+            });
+        };
+
+        // Map Data segment as RW (Read + Write, No Execute)
+        i32 data_vaddr = USER_CODE_BASE + align_up_4k(text_size);
+        if (data_size > 0) {
+            Result<_, LoaderError> map_data = map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW);
+            case map_data of {
+                Ok(_)  -> 0;
+                Err(e) -> ({
+                    process.free_proc(pid);
+                    return Err(e);
+                });
+            };
+        }
+
+        // Map BSS segment as RW (Read + Write, No Execute)
+        if (bss_size > 0) {
+            i32 bss_vaddr = data_vaddr + align_up_4k(data_size);
+            Result<_, LoaderError> map_bss = map_segment(pd, bss_vaddr, 0, bss_size, PTE_USER_RW);
+            case map_bss of {
+                Ok(_)  -> 0;
+                Err(e) -> ({
+                    process.free_proc(pid);
+                    return Err(e);
+                });
+            };
+        }
+
+        // Calculate heap break after loaded segments
+        i32 seg_end = data_vaddr + align_up_4k(data_size + bss_size);
+        if (seg_end > initial_brk) {
+            initial_brk = seg_end;
+        }
+    } else {
+        // Legacy flat binary fallback: map entire buffer as RWX
+        debug.println("loader: legacy flat binary detected, mapping as RWX");
+        Result<_, LoaderError> map_flat = map_segment(pd, USER_CODE_BASE, code_ptr, code_size, PTE_USER_RWX);
+        case map_flat of {
+            Ok(_)  -> 0;
+            Err(e) -> ({
+                process.free_proc(pid);
+                return Err(e);
+            });
+        };
+    }
+
+    // 3. Allocate user stack page (RW, No Execute)
+    Result<i32, MmuError> stack_res = mmu.alloc_page();
+    i32 stack_frame = case stack_res of {
+        Ok(f) -> f;
+        Err(AllocFailed) -> ({
+            debug.println("loader: out of memory for user stack frame");
+            process.free_proc(pid);
+            return Err(LoaderError::OutOfMemory);
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("loader: invalid directory for user stack frame");
+            process.free_proc(pid);
+            return Err(LoaderError::MmuInvalidDir);
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("loader: unaligned user stack frame");
+            process.free_proc(pid);
+            LoaderError cause = MmuUnaligned(a);
+            return Err(cause);
+        });
+    };
+    Result<_, MmuError> map_stack_res = mmu.map_page(pd, USER_STACK_BASE, stack_frame, PTE_USER_RW);
+    case map_stack_res of {
+        Ok(_) -> 0;
+        Err(AllocFailed) -> ({
+            debug.println("loader: failed to map user stack page");
+            process.free_proc(pid);
+            return Err(LoaderError::OutOfMemory);
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("loader: invalid directory mapping user stack");
+            process.free_proc(pid);
+            return Err(LoaderError::MmuInvalidDir);
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("loader: unaligned address mapping user stack");
+            process.free_proc(pid);
+            LoaderError cause = MmuUnaligned(a);
+            return Err(cause);
+        });
+    };
+
+    // 4. Allocate kernel stack
+    i32 kstack = heap.alloc(1024);
+    if (kstack == 0) {
+        debug.println("loader: out of memory for kernel stack");
+        process.free_proc(pid);
+        return Err(LoaderError::OutOfMemory);
+    }
+    i32 kstack_top = kstack + 1024;
+    process.set_kernel_stack_top(pid, kstack_top);
+
+    // 5. Initialize process registers and state
+    process.set_user_sp(pid, USER_STACK_TOP);
+    process.set_user_entry(pid, entry_point);
+    process.set_heap_break(pid, initial_brk);
+
+    // 6. Build initial interrupt stack frame for iret to resume
+    i32 sp = kstack_top;
+    sp = sp - 4; mem.write_word(sp, entry_point);     // PC
+    sp = sp - 4; mem.write_word(sp, 0x21);            // SR (SR_USER=0x20 | SR_IE=0x01)
+    sp = sp - 4; mem.write_word(sp, 0);               // lr
+    sp = sp - 4; mem.write_word(sp, 0);               // bp
+    sp = sp - 4; mem.write_word(sp, 0);               // r0
+    sp = sp - 4; mem.write_word(sp, 0);               // r1
+    sp = sp - 4; mem.write_word(sp, 0);               // r2
+    sp = sp - 4; mem.write_word(sp, 0);               // r3
+    sp = sp - 4; mem.write_word(sp, 0);               // r4
+    sp = sp - 4; mem.write_word(sp, 0);               // r5
+    sp = sp - 4; mem.write_word(sp, 0);               // r6
+    sp = sp - 4; mem.write_word(sp, 0);               // r7
+
+    process.set_kernel_sp(pid, sp);
+
+    // 7. Spawn task in scheduler
+    i32 tid = scheduler.spawn_proc_task(pid, sp);
+    if (tid < 0) {
+        debug.println("loader: failed to spawn task");
+        process.free_proc(pid);
+        return Err(LoaderError::SpawnTaskFailed);
+    }
+
+    process.set_state(pid, process.state_ready());
+    return Ok(pid);
+}

@@ -3,6 +3,13 @@ package mmu;
 import heap from "heap.mln";
 import mem from "mem.mln";
 import debug from "../debug/debug.mln";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+
+export enum MmuError {
+    AllocFailed,            // Out of memory for physical frame allocation
+    InvalidDirectory,       // Page directory base address is invalid (e.g. 0)
+    UnalignedAddress(i32),  // Virtual or physical address is not 4KB-aligned
+}
 
 // =========================================================================
 // MyComputer MMU & 2-Level Paging Architecture
@@ -55,12 +62,12 @@ i32 VRAM_SIZE         = 0x00300000; // 3 MB
 i32 FRAME_MASK        = 0xFFFFF000;
 
 // Allocate a 4 KB-aligned, zero-filled physical frame from the heap
-export i32 alloc_page() {
+export Result<i32, MmuError> alloc_page() {
     // Allocate 8192 bytes so we can guarantee a 4096-byte aligned base
     i32 raw = heap.alloc(PAGE_SIZE * 2);
     if (raw == 0) {
         debug.println("mmu: out of memory for page allocation");
-        return 0;
+        return Err(MmuError::AllocFailed);
     }
     i32 aligned = (raw + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
     
@@ -70,83 +77,140 @@ export i32 alloc_page() {
         mem.write_word(aligned + i, 0);
         i = i + 4;
     }
-    return aligned;
+    return Ok(aligned);
 }
 
 // Create and initialize a new empty Page Directory (root of page table)
-export i32 create_page_directory() {
-    return alloc_page();
+export Result<i32, MmuError> create_page_directory() {
+    Result<i32, MmuError> res = alloc_page();
+    return res;
+}
+
+// Set Page Directory Entry (PDE) with Page Table base address and permissions
+void set_pde(i32 pde_addr, i32 pt_base, i32 flags) {
+    i32 pde_flags = PTE_VALID | PTE_WRITABLE;
+    if ((flags & PTE_USER) != 0) {
+        pde_flags = pde_flags | PTE_USER;
+    }
+    mem.write_word(pde_addr, (pt_base & FRAME_MASK) | pde_flags);
+}
+
+// Get or allocate the second-level Page Table for a given Page Directory Index (pdi)
+Result<i32, MmuError> get_or_create_page_table(i32 pd_addr, i32 pdi, i32 flags) {
+    i32 pde_addr = pd_addr + (pdi * 4);
+    i32 pde = mem.read_word(pde_addr);
+
+    if ((pde & PTE_VALID) == 0) {
+        Result<i32, MmuError> pt_res = alloc_page();
+        i32 pt_base = case pt_res of {
+            Ok(pt) -> pt;
+            Err(e) -> ({
+                return Err(e);
+            });
+        };
+        set_pde(pde_addr, pt_base, flags);
+        return Ok(pt_base);
+    }
+
+    // Page table already exists: if user mapping, ensure PDE also has User flag
+    if ((flags & PTE_USER) != 0) {
+        mem.write_word(pde_addr, pde | PTE_USER);
+    }
+    return Ok(pde & FRAME_MASK);
 }
 
 // Map a single 4 KB virtual page to a physical frame
-export i32 map_page(i32 pd_addr, i32 vaddr, i32 paddr, i32 flags) {
-    if (pd_addr == 0) { return -1; }
+export Result<_, MmuError> map_page(i32 pd_addr, i32 vaddr, i32 paddr, i32 flags) {
+    if (pd_addr == 0) {
+        return Err(MmuError::InvalidDirectory);
+    }
+    if ((vaddr & 0xFFF) != 0) {
+        MmuError cause = UnalignedAddress(vaddr);
+        return Err(cause);
+    }
+    if ((paddr & 0xFFF) != 0) {
+        MmuError cause = UnalignedAddress(paddr);
+        return Err(cause);
+    }
 
     i32 pdi = (vaddr >> 22) & 0x3FF;
     i32 pti = (vaddr >> 12) & 0x3FF;
 
-    i32 pde_addr = pd_addr + (pdi * 4);
-    i32 pde = mem.read_word(pde_addr);
-    i32 pt_base = 0;
-
-    if ((pde & PTE_VALID) == 0) {
-        // Allocate a new page table for this directory entry
-        pt_base = alloc_page();
-        if (pt_base == 0) { return -1; }
-
-        i32 pde_flags = PTE_VALID | PTE_WRITABLE;
-        if ((flags & PTE_USER) != 0) {
-            pde_flags = pde_flags | PTE_USER;
-        }
-        mem.write_word(pde_addr, (pt_base & FRAME_MASK) | pde_flags);
-    } else {
-        pt_base = pde & FRAME_MASK;
-        // If this new mapping is User, make sure the PDE also allows User access
-        if ((flags & PTE_USER) != 0) {
-            mem.write_word(pde_addr, pde | PTE_USER);
-        }
-    }
+    Result<i32, MmuError> pt_res = get_or_create_page_table(pd_addr, pdi, flags);
+    i32 pt_base = case pt_res of {
+        Ok(pt) -> pt;
+        Err(e) -> ({
+            return Err(e);
+        });
+    };
 
     i32 pte_addr = pt_base + (pti * 4);
     i32 pte = (paddr & FRAME_MASK) | flags | PTE_VALID;
     mem.write_word(pte_addr, pte);
-    return 0;
+    return Ok(_);
 }
 
 // Map a contiguous range of memory (size in bytes)
-export i32 map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 size, i32 flags) {
+export Result<_, MmuError> map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 size, i32 flags) {
     i32 offset = 0;
     while (offset < size) {
         i32 va = vstart + offset;
         i32 pa = pstart + offset;
-        i32 res = map_page(pd_addr, va, pa, flags);
-        if (res != 0) {
-            return res;
-        }
+        Result<_, MmuError> res = map_page(pd_addr, va, pa, flags);
+        case res of {
+            Ok(_) -> 0;
+            Err(e) -> ({
+                return Err(e);
+            });
+        };
         offset = offset + PAGE_SIZE;
     }
-    return 0;
+    return Ok(_);
 }
 
 // Setup Identity Mapping for Kernel code/data, MMIO, and VRAM
-export i32 setup_identity_kernel_mapping(i32 pd_addr) {
+export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
     // 1. Map lower 16 MB of physical RAM (Kernel image, heaps)
     // Read/Write/Execute, Kernel Mode only
-    map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC);
+    Result<_, MmuError> r1 = map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC);
+    case r1 of {
+        Ok(_)  -> 0;
+        Err(e) -> ({
+            return Err(e);
+        });
+    };
 
     // 2. Map high RAM stack region (0x1F000000 .. 0x20000000)
     // Read/Write, Kernel Mode only
-    map_range(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE);
+    Result<_, MmuError> r2 = map_range(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE);
+    case r2 of {
+        Ok(_)  -> 0;
+        Err(e) -> ({
+            return Err(e);
+        });
+    };
 
     // 3. Map MMIO peripheral space (0x24000000 .. 0x24002000)
     // Read/Write, Kernel Mode only
-    map_range(pd_addr, MMIO_BASE, MMIO_BASE, MMIO_SIZE, PTE_VALID | PTE_WRITABLE);
+    Result<_, MmuError> r3 = map_range(pd_addr, MMIO_BASE, MMIO_BASE, MMIO_SIZE, PTE_VALID | PTE_WRITABLE);
+    case r3 of {
+        Ok(_)  -> 0;
+        Err(e) -> ({
+            return Err(e);
+        });
+    };
 
     // 4. Map VRAM framebuffer space (0x30000000 .. 0x30300000)
     // Read/Write, Kernel Mode only
-    map_range(pd_addr, VRAM_BASE, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE);
+    Result<_, MmuError> r4 = map_range(pd_addr, VRAM_BASE, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE);
+    case r4 of {
+        Ok(_)  -> 0;
+        Err(e) -> ({
+            return Err(e);
+        });
+    };
 
-    return 0;
+    return Ok(_);
 }
 
 // Enable Paging using the provided Page Directory

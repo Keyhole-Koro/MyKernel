@@ -1,0 +1,341 @@
+package test_process;
+
+import debug from "../../src/debug/debug.mln";
+import heap from "../../src/mm/heap.mln";
+import irq from "../../src/arch/irq.mln";
+import mem from "../../src/mm/mem.mln";
+import mmu from "../../src/mm/mmu.mln";
+import scheduler from "../../src/kernel/scheduler.mln";
+import process from "../../src/kernel/process.mln";
+import loader from "../../src/kernel/loader.mln";
+import { halt_cpu } from "../../src/arch/halt.masm";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { LoaderError } from "../../src/kernel/loader.mln";
+import { MmuError } from "../../src/mm/mmu.mln";
+
+void init_user_binary(i32 buf) {
+    // 140-byte position-independent user program
+    // offset 0
+    mem.write_byte(buf + 0, 108); mem.write_byte(buf + 1, 0); mem.write_byte(buf + 2, 0); mem.write_byte(buf + 3, 4);
+    mem.write_byte(buf + 4, 4); mem.write_byte(buf + 5, 204); mem.write_byte(buf + 6, 0); mem.write_byte(buf + 7, 0);
+    mem.write_byte(buf + 8, 100); mem.write_byte(buf + 9, 192); mem.write_byte(buf + 10, 0); mem.write_byte(buf + 11, 72);
+    mem.write_byte(buf + 12, 8); mem.write_byte(buf + 13, 32); mem.write_byte(buf + 14, 0); mem.write_byte(buf + 15, 3);
+    // offset 16
+    mem.write_byte(buf + 16, 8); mem.write_byte(buf + 17, 160); mem.write_byte(buf + 18, 0); mem.write_byte(buf + 19, 1);
+    mem.write_byte(buf + 20, 8); mem.write_byte(buf + 21, 224); mem.write_byte(buf + 22, 0); mem.write_byte(buf + 23, 28);
+    mem.write_byte(buf + 24, 248); mem.write_byte(buf + 25, 0); mem.write_byte(buf + 26, 0); mem.write_byte(buf + 27, 0);
+    mem.write_byte(buf + 28, 8); mem.write_byte(buf + 29, 32); mem.write_byte(buf + 30, 0); mem.write_byte(buf + 31, 8);
+    // offset 32
+    mem.write_byte(buf + 32, 248); mem.write_byte(buf + 33, 0); mem.write_byte(buf + 34, 0); mem.write_byte(buf + 35, 0);
+    mem.write_byte(buf + 36, 108); mem.write_byte(buf + 37, 0); mem.write_byte(buf + 38, 0); mem.write_byte(buf + 39, 4);
+    mem.write_byte(buf + 40, 4); mem.write_byte(buf + 41, 204); mem.write_byte(buf + 42, 0); mem.write_byte(buf + 43, 0);
+    mem.write_byte(buf + 44, 100); mem.write_byte(buf + 45, 192); mem.write_byte(buf + 46, 0); mem.write_byte(buf + 47, 68);
+    // offset 48
+    mem.write_byte(buf + 48, 8); mem.write_byte(buf + 49, 32); mem.write_byte(buf + 50, 0); mem.write_byte(buf + 51, 3);
+    mem.write_byte(buf + 52, 8); mem.write_byte(buf + 53, 160); mem.write_byte(buf + 54, 0); mem.write_byte(buf + 55, 1);
+    mem.write_byte(buf + 56, 8); mem.write_byte(buf + 57, 224); mem.write_byte(buf + 58, 0); mem.write_byte(buf + 59, 27);
+    mem.write_byte(buf + 60, 248); mem.write_byte(buf + 61, 0); mem.write_byte(buf + 62, 0); mem.write_byte(buf + 63, 0);
+    mem.write_byte(buf + 64, 8); mem.write_byte(buf + 65, 32); mem.write_byte(buf + 66, 0); mem.write_byte(buf + 67, 1);
+    mem.write_byte(buf + 68, 8); mem.write_byte(buf + 69, 160); mem.write_byte(buf + 70, 0); mem.write_byte(buf + 71, 42);
+    mem.write_byte(buf + 72, 248); mem.write_byte(buf + 73, 0); mem.write_byte(buf + 74, 0); mem.write_byte(buf + 75, 0);
+    mem.write_byte(buf + 76, 91); mem.write_byte(buf + 77, 85); mem.write_byte(buf + 78, 83); mem.write_byte(buf + 79, 69);
+    mem.write_byte(buf + 80, 82); mem.write_byte(buf + 81, 93); mem.write_byte(buf + 82, 32); mem.write_byte(buf + 83, 72);
+    mem.write_byte(buf + 84, 101); mem.write_byte(buf + 85, 108); mem.write_byte(buf + 86, 108); mem.write_byte(buf + 87, 111);
+    mem.write_byte(buf + 88, 32); mem.write_byte(buf + 89, 102); mem.write_byte(buf + 90, 114); mem.write_byte(buf + 91, 111);
+    mem.write_byte(buf + 92, 109); mem.write_byte(buf + 93, 32); mem.write_byte(buf + 94, 117); mem.write_byte(buf + 95, 115);
+    mem.write_byte(buf + 96, 101); mem.write_byte(buf + 97, 114); mem.write_byte(buf + 98, 32); mem.write_byte(buf + 99, 109);
+    mem.write_byte(buf + 100, 111); mem.write_byte(buf + 101, 100); mem.write_byte(buf + 102, 101); mem.write_byte(buf + 103, 33);
+    mem.write_byte(buf + 104, 10); mem.write_byte(buf + 105, 0); mem.write_byte(buf + 106, 0); mem.write_byte(buf + 107, 0);
+    mem.write_byte(buf + 108, 91); mem.write_byte(buf + 109, 85); mem.write_byte(buf + 110, 83); mem.write_byte(buf + 111, 69);
+    mem.write_byte(buf + 112, 82); mem.write_byte(buf + 113, 93); mem.write_byte(buf + 114, 32); mem.write_byte(buf + 115, 82);
+    mem.write_byte(buf + 116, 101); mem.write_byte(buf + 117, 115); mem.write_byte(buf + 118, 117); mem.write_byte(buf + 119, 109);
+    mem.write_byte(buf + 120, 101); mem.write_byte(buf + 121, 100); mem.write_byte(buf + 122, 32); mem.write_byte(buf + 123, 97);
+    mem.write_byte(buf + 124, 102); mem.write_byte(buf + 125, 116); mem.write_byte(buf + 126, 101); mem.write_byte(buf + 127, 114);
+    mem.write_byte(buf + 128, 32); mem.write_byte(buf + 129, 121); mem.write_byte(buf + 130, 105); mem.write_byte(buf + 131, 101);
+    mem.write_byte(buf + 132, 108); mem.write_byte(buf + 133, 100); mem.write_byte(buf + 134, 33); mem.write_byte(buf + 135, 10);
+    mem.write_byte(buf + 136, 0); mem.write_byte(buf + 137, 0); mem.write_byte(buf + 138, 0); mem.write_byte(buf + 139, 0);
+}
+
+void write_be32_mem(i32 addr, i32 val) {
+    mem.write_byte(addr + 0, (val >> 24) & 0xFF);
+    mem.write_byte(addr + 1, (val >> 16) & 0xFF);
+    mem.write_byte(addr + 2, (val >> 8) & 0xFF);
+    mem.write_byte(addr + 3, val & 0xFF);
+}
+
+void init_mbin_user_binary(i32 buf) {
+    // MBIN v2 Header (32 bytes)
+    write_be32_mem(buf + 0,  0x4D42494E); // magic: 'MBIN'
+    write_be32_mem(buf + 4,  1);          // version: 1
+    write_be32_mem(buf + 8,  0x40000000); // entry_point: 0x40000000
+    write_be32_mem(buf + 12, 32);         // text_offset: 32
+    write_be32_mem(buf + 16, 76);         // text_size: 76 bytes
+    write_be32_mem(buf + 20, 108);        // data_offset: 32 + 76 = 108
+    write_be32_mem(buf + 24, 64);         // data_size: 64 bytes
+    write_be32_mem(buf + 28, 0);          // bss_size: 0
+
+    // Text section (76 bytes) at buf + 32
+    i32 t = buf + 32;
+    // 0: call pc+4
+    mem.write_byte(t + 0, 108); mem.write_byte(t + 1, 0); mem.write_byte(t + 2, 0); mem.write_byte(t + 3, 4);
+    // 4: mov r6, lr
+    mem.write_byte(t + 4, 4); mem.write_byte(t + 5, 204); mem.write_byte(t + 6, 0); mem.write_byte(t + 7, 0);
+    // 8: addis r6, 4092 (r6 = 0x40000004 + 4092 = 0x40001000 = msg1)
+    mem.write_byte(t + 8, 100); mem.write_byte(t + 9, 192); mem.write_byte(t + 10, 15); mem.write_byte(t + 11, 252);
+    // 12: movi r1, 3 (SYS_WRITE)
+    mem.write_byte(t + 12, 8); mem.write_byte(t + 13, 32); mem.write_byte(t + 14, 0); mem.write_byte(t + 15, 3);
+    // 16: movi r5, 1 (stdout)
+    mem.write_byte(t + 16, 8); mem.write_byte(t + 17, 160); mem.write_byte(t + 18, 0); mem.write_byte(t + 19, 1);
+    // 20: movi r7, 28 (len)
+    mem.write_byte(t + 20, 8); mem.write_byte(t + 21, 224); mem.write_byte(t + 22, 0); mem.write_byte(t + 23, 28);
+    // 24: syscall
+    mem.write_byte(t + 24, 248); mem.write_byte(t + 25, 0); mem.write_byte(t + 26, 0); mem.write_byte(t + 27, 0);
+    // 28: movi r1, 8 (SYS_YIELD)
+    mem.write_byte(t + 28, 8); mem.write_byte(t + 29, 32); mem.write_byte(t + 30, 0); mem.write_byte(t + 31, 8);
+    // 32: syscall
+    mem.write_byte(t + 32, 248); mem.write_byte(t + 33, 0); mem.write_byte(t + 34, 0); mem.write_byte(t + 35, 0);
+    // 36: call pc+4
+    mem.write_byte(t + 36, 108); mem.write_byte(t + 37, 0); mem.write_byte(t + 38, 0); mem.write_byte(t + 39, 4);
+    // 40: mov r6, lr
+    mem.write_byte(t + 40, 4); mem.write_byte(t + 41, 204); mem.write_byte(t + 42, 0); mem.write_byte(t + 43, 0);
+    // 44: addis r6, 4084 (r6 = 0x40000028 + 4084 = 0x4000101C = msg2)
+    mem.write_byte(t + 44, 100); mem.write_byte(t + 45, 192); mem.write_byte(t + 46, 15); mem.write_byte(t + 47, 244);
+    // 48: movi r1, 3 (SYS_WRITE)
+    mem.write_byte(t + 48, 8); mem.write_byte(t + 49, 32); mem.write_byte(t + 50, 0); mem.write_byte(t + 51, 3);
+    // 52: movi r5, 1 (stdout)
+    mem.write_byte(t + 52, 8); mem.write_byte(t + 53, 160); mem.write_byte(t + 54, 0); mem.write_byte(t + 55, 1);
+    // 56: movi r7, 27 (len)
+    mem.write_byte(t + 56, 8); mem.write_byte(t + 57, 224); mem.write_byte(t + 58, 0); mem.write_byte(t + 59, 27);
+    // 60: syscall
+    mem.write_byte(t + 60, 248); mem.write_byte(t + 61, 0); mem.write_byte(t + 62, 0); mem.write_byte(t + 63, 0);
+    // 64: movi r1, 1 (SYS_EXIT)
+    mem.write_byte(t + 64, 8); mem.write_byte(t + 65, 32); mem.write_byte(t + 66, 0); mem.write_byte(t + 67, 1);
+    // 68: movi r5, 42 (exit code 42)
+    mem.write_byte(t + 68, 8); mem.write_byte(t + 69, 160); mem.write_byte(t + 70, 0); mem.write_byte(t + 71, 42);
+    // 72: syscall
+    mem.write_byte(t + 72, 248); mem.write_byte(t + 73, 0); mem.write_byte(t + 74, 0); mem.write_byte(t + 75, 0);
+
+    // Data section (64 bytes) at buf + 108
+    i32 d = buf + 108;
+    // msg1: "[USER] Hello from user mode!\n\0" (28 bytes)
+    mem.write_byte(d + 0, 91); mem.write_byte(d + 1, 85); mem.write_byte(d + 2, 83); mem.write_byte(d + 3, 69);
+    mem.write_byte(d + 4, 82); mem.write_byte(d + 5, 93); mem.write_byte(d + 6, 32); mem.write_byte(d + 7, 72);
+    mem.write_byte(d + 8, 101); mem.write_byte(d + 9, 108); mem.write_byte(d + 10, 108); mem.write_byte(d + 11, 111);
+    mem.write_byte(d + 12, 32); mem.write_byte(d + 13, 102); mem.write_byte(d + 14, 114); mem.write_byte(d + 15, 111);
+    mem.write_byte(d + 16, 109); mem.write_byte(d + 17, 32); mem.write_byte(d + 18, 117); mem.write_byte(d + 19, 115);
+    mem.write_byte(d + 20, 101); mem.write_byte(d + 21, 114); mem.write_byte(d + 22, 32); mem.write_byte(d + 23, 109);
+    mem.write_byte(d + 24, 111); mem.write_byte(d + 25, 100); mem.write_byte(d + 26, 101); mem.write_byte(d + 27, 33);
+    mem.write_byte(d + 28, 10); mem.write_byte(d + 29, 0); mem.write_byte(d + 30, 0); mem.write_byte(d + 31, 0);
+
+    // msg2: "[USER] Resumed after yield!\n\0" (27 bytes)
+    mem.write_byte(d + 32, 91); mem.write_byte(d + 33, 85); mem.write_byte(d + 34, 83); mem.write_byte(d + 35, 69);
+    mem.write_byte(d + 36, 82); mem.write_byte(d + 37, 93); mem.write_byte(d + 38, 32); mem.write_byte(d + 39, 82);
+    mem.write_byte(d + 40, 101); mem.write_byte(d + 41, 115); mem.write_byte(d + 42, 117); mem.write_byte(d + 43, 109);
+    mem.write_byte(d + 44, 101); mem.write_byte(d + 45, 100); mem.write_byte(d + 46, 32); mem.write_byte(d + 47, 97);
+    mem.write_byte(d + 48, 102); mem.write_byte(d + 49, 116); mem.write_byte(d + 50, 101); mem.write_byte(d + 51, 114);
+    mem.write_byte(d + 52, 32); mem.write_byte(d + 53, 121); mem.write_byte(d + 54, 105); mem.write_byte(d + 55, 101);
+    mem.write_byte(d + 56, 108); mem.write_byte(d + 57, 100); mem.write_byte(d + 58, 33); mem.write_byte(d + 59, 10);
+    mem.write_byte(d + 60, 0); mem.write_byte(d + 61, 0); mem.write_byte(d + 62, 0); mem.write_byte(d + 63, 0);
+}
+
+void init_wx_fault_binary(i32 buf) {
+    // MBIN v2 Header (32 bytes)
+    write_be32_mem(buf + 0,  0x4D42494E); // magic: 'MBIN'
+    write_be32_mem(buf + 4,  1);          // version: 1
+    write_be32_mem(buf + 8,  0x40000000); // entry_point: 0x40000000
+    write_be32_mem(buf + 12, 32);         // text_offset: 32
+    write_be32_mem(buf + 16, 16);         // text_size: 16 bytes
+    write_be32_mem(buf + 20, 48);         // data_offset: 32 + 16 = 48
+    write_be32_mem(buf + 24, 0);          // data_size: 0
+    write_be32_mem(buf + 28, 0);          // bss_size: 0
+
+    // Text section (16 bytes) at buf + 32
+    i32 t = buf + 32;
+    // 0: movi r1, 99
+    mem.write_byte(t + 0, 8); mem.write_byte(t + 1, 32); mem.write_byte(t + 2, 0); mem.write_byte(t + 3, 99);
+    // 4: call pc+4
+    mem.write_byte(t + 4, 108); mem.write_byte(t + 5, 0); mem.write_byte(t + 6, 0); mem.write_byte(t + 7, 4);
+    // 8: mov r4, lr (r4 = 0x40000008, pointing inside RX text section)
+    mem.write_byte(t + 8, 4); mem.write_byte(t + 9, 140); mem.write_byte(t + 10, 0); mem.write_byte(t + 11, 0);
+    // 12: stb r4, r1 (Attempt to write byte 99 into RX text section -> W^X Page Fault!)
+    mem.write_byte(t + 12, 116); mem.write_byte(t + 13, 129); mem.write_byte(t + 14, 0); mem.write_byte(t + 15, 0);
+}
+
+void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_version) {
+    case *result of {
+        Err(LoaderError::InvalidHeader(actual_version)) -> ({
+            if (actual_version != expected_version) {
+                debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Err(InvalidHeader(%d))\n", expected_version, actual_version);
+                halt_cpu();
+            }
+        });
+        Ok(_) -> ({
+            debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Ok\n", expected_version);
+            halt_cpu();
+        });
+        Err(LoaderError::ProcSlotFull) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got ProcSlotFull\n", expected_version); halt_cpu(); });
+        Err(LoaderError::OutOfMemory) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got OutOfMemory\n", expected_version); halt_cpu(); });
+        Err(LoaderError::MmuInvalidDir) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got MmuInvalidDir\n", expected_version); halt_cpu(); });
+        Err(LoaderError::MmuUnaligned(a)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got MmuUnaligned(%d)\n", expected_version, a); halt_cpu(); });
+        Err(LoaderError::InvalidBounds(s)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got InvalidBounds(%d)\n", expected_version, s); halt_cpu(); });
+        Err(LoaderError::SpawnTaskFailed) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got SpawnTaskFailed\n", expected_version); halt_cpu(); });
+    };
+}
+
+void assert_invalid_bounds_error(Result<i32, LoaderError> *result, i32 expected_size) {
+    case *result of {
+        Err(LoaderError::InvalidBounds(actual_size)) -> ({
+            if (actual_size != expected_size) {
+                debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Err(InvalidBounds(%d))\n", expected_size, actual_size);
+                halt_cpu();
+            }
+        });
+        Ok(_) -> ({
+            debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Ok\n", expected_size);
+            halt_cpu();
+        });
+        Err(LoaderError::ProcSlotFull) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got ProcSlotFull\n", expected_size); halt_cpu(); });
+        Err(LoaderError::OutOfMemory) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got OutOfMemory\n", expected_size); halt_cpu(); });
+        Err(LoaderError::MmuInvalidDir) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got MmuInvalidDir\n", expected_size); halt_cpu(); });
+        Err(LoaderError::MmuUnaligned(a)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got MmuUnaligned(%d)\n", expected_size, a); halt_cpu(); });
+        Err(LoaderError::InvalidHeader(v)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got InvalidHeader(%d)\n", expected_size, v); halt_cpu(); });
+        Err(LoaderError::SpawnTaskFailed) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got SpawnTaskFailed\n", expected_size); halt_cpu(); });
+    };
+}
+
+export i32 kernel_main() {
+    debug.println("kernel: initializing heap...");
+    heap.init();
+    debug.println("kernel: initializing process table...");
+    process.init();
+    debug.println("kernel: initializing scheduler...");
+    scheduler.init();
+    debug.println("kernel: setting up irq handler...");
+    irq.set_handler();
+
+    // Setup kernel identity page table
+    debug.println("kernel: setting up identity page directory...");
+    Result<i32, MmuError> kpd_res = mmu.create_page_directory();
+    i32 kpd = case kpd_res of {
+        Ok(p) -> p;
+        Err(AllocFailed) -> ({
+            debug.println("kernel: failed to allocate identity page directory");
+            halt_cpu();
+            return 1;
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("kernel: unexpected InvalidDirectory for identity page directory");
+            halt_cpu();
+            return 1;
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("kernel: unexpected UnalignedAddress for identity page directory");
+            halt_cpu();
+            return 1;
+        });
+    };
+    Result<_, MmuError> kid_res = mmu.setup_identity_kernel_mapping(kpd);
+    case kid_res of {
+        Ok(_) -> 0;
+        Err(AllocFailed) -> ({
+            debug.println("kernel: failed to setup identity kernel mapping");
+            halt_cpu();
+            return 1;
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("kernel: unexpected InvalidDirectory for identity kernel mapping");
+            halt_cpu();
+            return 1;
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("kernel: unexpected UnalignedAddress for identity kernel mapping");
+            halt_cpu();
+            return 1;
+        });
+    };
+    mmu.enable_paging(kpd);
+
+    // Test MBIN header validation errors using LoaderError
+    debug.println("kernel: testing loader error reporting with LoaderError...");
+    i32 bad_buf = heap.alloc(256);
+    // 1. Invalid version test
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf + 4, 99); // bad version = 99
+    Result<i32, LoaderError> bad_ver_res = loader.spawn_from_buffer(bad_buf, 172);
+    assert_invalid_header_error(&bad_ver_res, 99);
+    debug.println("SUCCESS: InvalidHeader(99) reported correctly!");
+
+    // 2. Out of bounds test
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf + 16, 9999); // text_size = 9999 > buffer size 172
+    Result<i32, LoaderError> bad_size_res = loader.spawn_from_buffer(bad_buf, 172);
+    assert_invalid_bounds_error(&bad_size_res, 172);
+    debug.println("SUCCESS: InvalidBounds(172) reported correctly!");
+
+    // Prepare MBIN v2 user program binary buffer
+    i32 user_code = heap.alloc(256);
+    debug.printf("user_code buffer: 0x%x\n", user_code);
+    init_mbin_user_binary(user_code);
+
+    debug.println("kernel: spawning MBIN v2 user process (Normal)...");
+    Result<i32, LoaderError> pid1_res = loader.spawn_from_buffer(user_code, 172);
+    i32 pid1 = case pid1_res of {
+        Ok(p)  -> p;
+        Err(e) -> ({
+            debug.println("FAIL: failed to spawn user process");
+            halt_cpu();
+            return 1;
+        });
+    };
+    debug.println("kernel: MBIN v2 user process spawned!");
+
+    // Enable interrupts so preemptive/syscall context switches can happen
+    irq.enable();
+
+    // Loop in kernel task 0 until process 1 finishes
+    while (1) {
+        i32 state = process.get_state(pid1);
+        if (state == process.state_zombie()) {
+            i32 code = process.get_exit_code(pid1);
+            if (code == 42) {
+                debug.println("SUCCESS: MBIN v2 process 1 exited cleanly with code 42!");
+                break;
+            } else {
+                debug.printf("FAIL: unexpected exit code %d for process 1\n", code);
+                halt_cpu();
+                return 1;
+            }
+        }
+    }
+
+    // Now test W^X protection: spawn a process that tries to write to its RX text section
+    debug.println("kernel: testing W^X protection (attempt write to text section)...");
+    i32 fault_buf = heap.alloc(128);
+    init_wx_fault_binary(fault_buf);
+    Result<i32, LoaderError> spawn_res2 = loader.spawn_from_buffer(fault_buf, 48);
+    i32 pid2 = case spawn_res2 of {
+        Ok(p)  -> p;
+        Err(e) -> ({
+            debug.println("FAIL: failed to spawn fault test process");
+            halt_cpu();
+            return 1;
+        });
+    };
+
+    // Wait for process 2 to trigger Page Fault and terminate with code -14
+    while (1) {
+        i32 state = process.get_state(pid2);
+        if (state == process.state_zombie()) {
+            i32 code = process.get_exit_code(pid2);
+            if (code == -14) {
+                debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");
+                debug.println("TEST_PASSED_OK");
+            } else {
+                debug.printf("FAIL: process 2 did not trigger page fault! exit code=%d\n", code);
+            }
+            halt_cpu();
+        }
+    }
+
+    return 0;
+}

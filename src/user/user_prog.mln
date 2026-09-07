@@ -1,0 +1,10 @@
+package user_prog;
+
+import { sys_write, sys_exit, sys_yield } from "syscall_user.masm";
+
+export void user_main() {
+    sys_write(1, "Hello from User Space Process!\n", 31);
+    sys_yield();
+    sys_write(1, "User Space Process Resumed!\n", 28);
+    sys_exit(42);
+}

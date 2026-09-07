@@ -1,0 +1,7 @@
+import user_prog_user_main
+
+__START__:
+  call user_prog_user_main
+  movi r5, 0
+  movi r1, 1
+  syscall

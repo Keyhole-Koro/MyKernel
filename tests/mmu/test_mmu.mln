@@ -2,6 +2,8 @@ import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
 import mem from "../../src/mm/mem.mln";
 import mmu from "../../src/mm/mmu.mln";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { MmuError } from "../../src/mm/mmu.mln";
 
 i32 PTE_VALID    = 0x01;
 i32 PTE_WRITABLE = 0x02;
@@ -17,29 +19,81 @@ void kernel_main() {
 
     heap.init();
 
-    i32 pd = mmu.create_page_directory();
-    if (pd == 0) {
-        debug.println("[FAIL] failed to allocate root page directory");
-        return;
-    }
+    Result<i32, MmuError> pd_res = mmu.create_page_directory();
+    i32 pd = case pd_res of {
+        Ok(p) -> p;
+        Err(AllocFailed) -> ({
+            debug.println("[FAIL] failed to allocate root page directory");
+            return;
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("[FAIL] unexpected InvalidDirectory for root page directory");
+            return;
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("[FAIL] unexpected UnalignedAddress for root page directory");
+            return;
+        });
+    };
     debug.printf("mmu: root page directory at 0x%x\n", pd);
 
     // 1. Identity map the kernel execution space & MMIO
-    mmu.setup_identity_kernel_mapping(pd);
+    Result<_, MmuError> id_res = mmu.setup_identity_kernel_mapping(pd);
+    case id_res of {
+        Ok(_) -> 0;
+        Err(AllocFailed) -> ({
+            debug.println("[FAIL] failed to setup identity kernel mapping");
+            return;
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("[FAIL] unexpected InvalidDirectory for identity mapping");
+            return;
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("[FAIL] unexpected UnalignedAddress for identity mapping");
+            return;
+        });
+    };
 
     // 2. Allocate a physical frame and map high virtual address 0x40000000 (1 GB) to it
-    i32 pa = mmu.alloc_page();
+    Result<i32, MmuError> pa_res = mmu.alloc_page();
+    i32 pa = case pa_res of {
+        Ok(p) -> p;
+        Err(AllocFailed) -> ({
+            debug.println("[FAIL] failed to allocate physical frame");
+            return;
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("[FAIL] unexpected InvalidDirectory for physical frame");
+            return;
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("[FAIL] unexpected UnalignedAddress for physical frame");
+            return;
+        });
+    };
     i32 va = TEST_VA;
     
     // Write test signature physically before enabling MMU
     mem.write_word(pa, TEST_VAL1);
     mem.write_word(pa + 4, TEST_VAL2);
 
-    i32 res = mmu.map_page(pd, va, pa, PTE_VALID | PTE_WRITABLE);
-    if (res != 0) {
-        debug.println("[FAIL] map_page failed");
-        return;
-    }
+    Result<_, MmuError> map_res = mmu.map_page(pd, va, pa, PTE_VALID | PTE_WRITABLE);
+    case map_res of {
+        Ok(_) -> 0;
+        Err(AllocFailed) -> ({
+            debug.println("[FAIL] map_page failed");
+            return;
+        });
+        Err(InvalidDirectory) -> ({
+            debug.println("[FAIL] unexpected InvalidDirectory for map_page");
+            return;
+        });
+        Err(UnalignedAddress(a)) -> ({
+            debug.println("[FAIL] unexpected UnalignedAddress for map_page");
+            return;
+        });
+    };
 
     // 3. Enable Paging
     mmu.enable_paging(pd);
@@ -75,6 +129,35 @@ void kernel_main() {
         return;
     }
     debug.println("mmu: physical memory backing verified");
+
+    // 7. Verify finer-grained MmuError reporting
+    // 7a. Test InvalidDirectory error (pd_addr == 0)
+    Result<_, MmuError> inv_pd_res = mmu.map_page(0, va, pa, PTE_VALID);
+    i32 got_inv_pd = case inv_pd_res of {
+        Ok(_) -> 0;
+        Err(InvalidDirectory) -> 1;
+        Err(AllocFailed) -> 0;
+        Err(UnalignedAddress(a)) -> 0;
+    };
+    if (got_inv_pd != 1) {
+        debug.println("[FAIL] expected Err(InvalidDirectory) for null pd");
+        return;
+    }
+    debug.println("mmu: InvalidDirectory reported correctly");
+
+    // 7b. Test UnalignedAddress error (unaligned vaddr)
+    Result<_, MmuError> unalign_res = mmu.map_page(pd, va + 123, pa, PTE_VALID);
+    i32 got_unaligned = case unalign_res of {
+        Ok(_) -> 0;
+        Err(UnalignedAddress(a)) -> a;
+        Err(AllocFailed) -> 0;
+        Err(InvalidDirectory) -> 0;
+    };
+    if (got_unaligned != va + 123) {
+        debug.println("[FAIL] expected Err(UnalignedAddress(va+123)) for unaligned vaddr");
+        return;
+    }
+    debug.println("mmu: UnalignedAddress reported correctly");
 
     debug.println("[TEST_MMU_SUCCESS]");
 }

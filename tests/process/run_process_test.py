@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-FS smoke test runner for MyKernel.
-
-Builds the std library test kernel and runs it in the emulator.
+User Process, Syscall, and Preemption integration test for MyKernel.
 """
 
 import argparse
@@ -17,11 +15,12 @@ from tools.project_paths import MYEMULATOR_DIR, MYKERNEL_DIR, REPO_ROOT
 
 BUILD_TOOLCHAIN = REPO_ROOT / "qa" / "runners" / "build_toolchain.py"
 MYEMU = MYEMULATOR_DIR / "target" / "release" / "myemu"
-SOURCE = MYKERNEL_DIR / "tests" / "libs" / "test_std.mln"
-STUB = MYKERNEL_DIR / "tests" / "libs" / "test_std_stub.masm"
+SOURCE = MYKERNEL_DIR / "tests" / "process" / "test_process.mln"
+STUB = MYKERNEL_DIR / "tests" / "process" / "test_stub.masm"
 
 STEP_LIMIT = "50000000"
-MARKER = "Test PASSED!"
+TIMER_INTERVAL = "3000"
+MARKER = "TEST_PASSED_OK"
 
 GREEN, RED, CYAN = "32", "31", "36"
 
@@ -33,9 +32,10 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    work = Path(tempfile.mkdtemp(prefix="mykernel-std-test-"))
-    linked = work / "test_std_linked.mbin"
+    work = Path(tempfile.mkdtemp(prefix="mykernel-process-test-"))
+    linked = work / "test_process_linked.mbin"
 
+    print(colored("[BUILD]", CYAN), "building process integration test...")
     build = subprocess.run(
         ["python3", str(BUILD_TOOLCHAIN), str(STUB), str(SOURCE),
          "-o", str(linked), "--build-dir", str(work)],
@@ -43,29 +43,25 @@ def main() -> int:
         text=True, timeout=300,
     )
     if build.returncode != 0 or not linked.exists():
-        print(colored("[FAIL]", RED), "std library test build failed")
-        if args.verbose:
-            print(build.stdout)
-        else:
-            print(colored("[INFO]", CYAN), "re-run with --verbose to see build output")
+        print(colored("[FAIL]", RED), "process test build failed")
+        print(build.stdout)
         return 1
 
+    print(colored("[RUN]", CYAN), "running emulator with timer-interval=3000...")
     run = subprocess.run(
-        [str(MYEMU), "-i", str(linked), "--step", STEP_LIMIT, "--headless"],
+        [str(MYEMU), "-i", str(linked),
+         "--timer-interval", TIMER_INTERVAL, "--step", STEP_LIMIT, "--headless"],
         cwd=work, capture_output=True, text=True, timeout=60,
     )
     out = run.stdout + run.stderr
-    if args.verbose:
+    if args.verbose or MARKER not in out:
         print(out)
 
     if MARKER not in out:
-        print(colored("[FAIL]", RED), "std library test did not report PASSED")
-        print(colored("[INFO]", CYAN), f"emulator tail: {out[-200:]!r}")
-        if not args.verbose:
-            print(colored("[INFO]", CYAN), "re-run with --verbose to see output")
+        print(colored("[FAIL]", RED), "marker TEST_PASSED_OK not seen")
         return 1
 
-    print(colored("[PASS]", GREEN), "std library test: assert, str, bytes, bitset, ringbuf, strbuf verified")
+    print(colored("[PASS]", GREEN), "user process, syscall, and preemption test PASSED!")
     return 0
 
 if __name__ == "__main__":

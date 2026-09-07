@@ -5,6 +5,8 @@ import mem from "../mm/mem.mln";
 import heap from "../mm/heap.mln";
 import serial from "../io/serial.mln";
 import mouse from "../io/mouse.mln";
+import process from "process.mln";
+import mmu from "../mm/mmu.mln";
 import { wfi_cpu } from "../arch/wfi.masm";
 import { halt_cpu } from "../arch/halt.masm";
 
@@ -13,8 +15,12 @@ i32 g_irq_count = 0;
 
 i32 MAX_TASKS = 256;
 i32 task_sps[256];
+i32 task_pid[256]; // 0 = kernel task, >0 = user process PID
 i32 current_task = 0;
 i32 tasks_initialized = 0;
+
+i32 MMU_PDBR_ADDR  = 0x24000104;
+i32 KERNEL_SP_ADDR = 0x24000110;
 
 // Task state constants
 enum TaskState {
@@ -83,6 +89,13 @@ export i32 tick(i32 sp) {
     // Save the interrupted context: a real task's slot, or the idle context.
     if (current_task >= 0) {
         task_sps[current_task] = sp;
+        i32 cur_pid = task_pid[current_task];
+        if (cur_pid > 0) {
+            process.set_user_sp(cur_pid, mem.read_word(KERNEL_SP_ADDR));
+            if (process.get_state(cur_pid) == process.state_running()) {
+                process.set_state(cur_pid, process.state_ready());
+            }
+        }
     } else {
         idle_sp = sp;
     }
@@ -95,6 +108,15 @@ export i32 tick(i32 sp) {
     while (checked < count) {
         if (task_state[next_task] == TASK_RUNNABLE) {
             current_task = next_task; // Switch to next task
+            i32 next_pid = task_pid[next_task];
+            if (next_pid > 0) {
+                mem.write_word(KERNEL_SP_ADDR, process.get_user_sp(next_pid));
+                mem.write_word(MMU_PDBR_ADDR, process.get_pdbr(next_pid));
+                process.set_current_pid(next_pid);
+                process.set_state(next_pid, process.state_running());
+            } else {
+                process.set_current_pid(0);
+            }
             return task_sps[next_task];
         }
         next_task = (next_task + 1) % count;
@@ -103,6 +125,7 @@ export i32 tick(i32 sp) {
 
     // Nothing is runnable: run the dedicated idle context until a wake-up.
     current_task = IDLE_TASK;
+    process.set_current_pid(0);
     return idle_sp;
 }
 
@@ -164,6 +187,7 @@ export i32 spawn_task(i32 func_ptr) {
             }
             init_task(i, func_ptr, stack + 1024);
             task_state[i] = TASK_RUNNABLE;
+            task_pid[i] = 0; // Kernel task
             if (i >= g_task_count) {
                 g_task_count = i + 1; // grow the live-slot range the tick scans
             }
@@ -176,6 +200,34 @@ export i32 spawn_task(i32 func_ptr) {
     return -1;
 }
 
+// Spawns a user process task with an already prepared initial kernel stack pointer.
+export i32 spawn_proc_task(i32 pid, i32 initial_sp) {
+    i32 i = 0;
+    while (i < MAX_TASKS) {
+        if (task_state[i] == TASK_EMPTY) {
+            task_sps[i] = initial_sp;
+            task_state[i] = TASK_RUNNABLE;
+            task_pid[i] = pid;
+            process.set_task_id(pid, i);
+            if (i >= g_task_count) {
+                g_task_count = i + 1;
+            }
+            return i;
+        }
+        i = i + 1;
+    }
+    debug.println("scheduler: out of task slots for process");
+    return -1;
+}
+
+// Terminate a task slot
+export void terminate_task(i32 task_idx) {
+    if (task_idx >= 0 && task_idx < MAX_TASKS) {
+        task_state[task_idx] = TASK_EMPTY;
+        task_pid[task_idx] = 0;
+    }
+}
+
 // Initializes the scheduler. Marks the current execution context as Task 0.
 // Requires heap.init() to have run (the idle stack is heap-allocated).
 export void init() {
@@ -183,6 +235,7 @@ export void init() {
     i32 i = 0;
     while (i < MAX_TASKS) {
         task_state[i] = TASK_EMPTY;
+        task_pid[i] = 0;
         i = i + 1;
     }
 
@@ -199,6 +252,7 @@ export void init() {
     // Task 0 is the current context: the first timer interrupt saves our SP
     // into task_sps[0], so tasks_initialized must be set before we enter the loop.
     task_state[0] = TASK_RUNNABLE;
+    task_pid[0] = 0;
     current_task = 0;
     g_task_count = 1; // task 0 (this context) is live; spawn_task grows this
     tasks_initialized = 1;
