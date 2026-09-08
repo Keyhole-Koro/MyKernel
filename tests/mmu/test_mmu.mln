@@ -3,6 +3,7 @@ import heap from "../../src/mm/heap.mln";
 import mem from "../../src/mm/mem.mln";
 import mmu from "../../src/mm/mmu.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { MmuError } from "../../src/mm/mmu.mln";
 import { halt_cpu } from "../../src/arch/halt.masm";
@@ -26,19 +27,10 @@ void kernel_main() {
 
     heap.init();
 
-    Result<i32, MmuError> pd_res = mmu.create_page_directory();
-    i32 pd = case pd_res of {
-        Ok(p) -> p;
-        Err(AllocFailed) -> ({
+    i32 pd = case mmu.create_page_directory() of {
+        Some(p) -> p;
+        None -> ({
             debug.println("[FAIL] failed to allocate root page directory");
-            return;
-        });
-        Err(InvalidDirectory) -> ({
-            debug.println("[FAIL] unexpected InvalidDirectory for root page directory");
-            return;
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("[FAIL] unexpected UnalignedAddress for root page directory");
             return;
         });
     };
@@ -63,19 +55,10 @@ void kernel_main() {
     };
 
     // 2. Allocate a physical frame and map high virtual address 0x40000000 (1 GB) to it
-    Result<i32, MmuError> pa_res = mmu.alloc_page();
-    i32 pa = case pa_res of {
-        Ok(p) -> p;
-        Err(AllocFailed) -> ({
+    i32 pa = case mmu.alloc_page() of {
+        Some(p) -> p;
+        None -> ({
             debug.println("[FAIL] failed to allocate physical frame");
-            return;
-        });
-        Err(InvalidDirectory) -> ({
-            debug.println("[FAIL] unexpected InvalidDirectory for physical frame");
-            return;
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("[FAIL] unexpected UnalignedAddress for physical frame");
             return;
         });
     };

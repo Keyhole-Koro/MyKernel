@@ -7,7 +7,10 @@ import mouse from "../io/mouse.mln";
 import debug from "../debug/debug.mln";
 import process from "process.mln";
 import syscall from "syscall.mln";
+import { SyscallError, DispatchOutcome } from "syscall.mln";
 import mmu from "../mm/mmu.mln";
+import { irq_trampoline, irq_resume } from "../arch/irq_trampoline.masm";
+import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
 
 i32 IRQ_CAUSE_ADDR = 0x24000084;
 i32 IRQ_CAUSE_TIMER  = 1;
@@ -18,7 +21,30 @@ i32 IRQ_CAUSE_SYSCALL = 16;
 i32 IRQ_CAUSE_PAGE_FAULT = 32;
 i32 IRQ_CAUSE_PRIVILEGE_VIOLATION = 64;
 
-export i32 dispatch(i32 sp) {
+// irq_entry's fixed prologue leaves the interrupted bp/lr and the CPU's
+// saved SR/PC directly above the synthetic frame allocated by
+// irq_trampoline(). Copy them into its reserved tail so irq_resume() can
+// restore one contiguous r7..r0, bp, lr, SR, PC frame.
+// TODO(irq-abi): replace these compiler-prologue offsets with a first-class
+// interrupt/naked entry ABI (or a compiler-generated frame descriptor). Any
+// codegen change to irq_entry's prologue must update this layout.
+i32 complete_interrupt_frame(i32 frame) {
+    mem.write_word(frame + 32, mem.read_word(frame + 48)); // bp
+    mem.write_word(frame + 36, mem.read_word(frame + 52)); // lr
+    mem.write_word(frame + 40, mem.read_word(frame + 56)); // SR
+    mem.write_word(frame + 44, mem.read_word(frame + 60)); // PC
+    return frame;
+}
+
+// IRQ vector entry. irq_trampoline() preserves the interrupted state and
+// returns a synthetic frame pointer, then dispatch() owns all typed logic.
+// dispatch() reaches irq_resume(), which restores a selected frame and irets.
+export void entry() {
+    dispatch(complete_interrupt_frame(irq_trampoline()));
+    debug.panic("irq dispatcher returned unexpectedly");
+}
+
+export void dispatch(i32 sp) {
     i32 cause = mem.read_word(IRQ_CAUSE_ADDR);
     
     // Ack the handled interrupts to hardware
@@ -44,7 +70,8 @@ export i32 dispatch(i32 sp) {
         if (cur_pid > 0) {
             syscall.sys_exit(-1);
             sp = scheduler.tick(sp);
-            return sp;
+            irq_resume(sp);
+            return; // unreachable: irq_resume restores a frame and executes iret
         }
     }
 
@@ -54,17 +81,29 @@ export i32 dispatch(i32 sp) {
         if (cur_pid > 0) {
             syscall.sys_exit(-14);
             sp = scheduler.tick(sp);
-            return sp;
+            irq_resume(sp);
+            return; // unreachable: irq_resume restores a frame and executes iret
         }
     }
 
     if ((cause & IRQ_CAUSE_SYSCALL) != 0) {
-        sp = syscall.dispatch(sp);
+        Result<DispatchOutcome, SyscallError> result = syscall.dispatch(sp);
+        DispatchOutcome outcome;
+        if (result_take_ok<DispatchOutcome, SyscallError>(&result, &outcome) != 0) {
+            i32 return_value = syscall.outcome_return_value(&outcome);
+            i32 next_sp = syscall.outcome_next_sp(&outcome);
+            mem.write_word(sp + 24, return_value);
+            sp = next_sp;
+        } else {
+            SyscallError error;
+            result_take_err<DispatchOutcome, SyscallError>(&result, &error);
+            mem.write_word(sp + 24, syscall.error_code(error));
+        }
     }
 
     if ((cause & IRQ_CAUSE_TIMER) != 0) {
         sp = scheduler.tick(sp);
     }
 
-    return sp;
+    irq_resume(sp);
 }

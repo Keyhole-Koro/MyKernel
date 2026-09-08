@@ -1,9 +1,9 @@
 ; Thin wrappers over the EI/DI instructions so MyLang code can enable/disable
 ; interrupts. Same `export name: <instr>; mov pc,lr` pattern as halt.masm.
 ;
-; irq_trampoline_addr() returns the address of the trampoline (a masm symbol
-; the linker resolves) so MyLang can install it into the IRQ vector slot.
-import { irq_trampoline } from "irq_trampoline.masm"
+; irq_dispatch_entry() is the MyLang IRQ coordinator. The linker resolves its
+; address so MyLang can install it into the IRQ vector slot.
+import { irq_dispatch_entry } from "../kernel/irq_dispatch.mln"
 
 export hw_irq_enable
 export hw_irq_disable
@@ -17,11 +17,11 @@ hw_irq_disable:
   di
   mov pc, lr
 
-; Returns the address of the trampoline. This is a normal synchronous
+; Returns the address of the MyLang entry coordinator. This is a normal synchronous
 ; function call during OS init, not an interrupt handler. It is perfectly
 ; safe to overwrite r1 here (standard MyLang ABI return register).
-; Actual unexpected hardware interrupts are handled by `irq_trampoline`,
-; which correctly saves and restores r1 and other registers to the stack.
+; Actual hardware interrupts enter irq_dispatch_entry(), which captures the
+; complete frame through irq_trampoline() before any dispatch logic runs.
 hw_irq_vector_target:
-  movi r1, irq_trampoline
+  movi r1, irq_dispatch_entry
   mov  pc, lr

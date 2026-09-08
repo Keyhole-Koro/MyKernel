@@ -6,7 +6,9 @@ import serial from "../io/serial.mln";
 import debug from "../debug/debug.mln";
 import process from "process.mln";
 import scheduler from "scheduler.mln";
-import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import loader from "loader.mln";
+import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { MmuError } from "../mm/mmu.mln";
 
 // Syscall numbers
@@ -20,6 +22,50 @@ export i32 SYS_SBRK  = 7;
 export i32 SYS_YIELD = 8;
 export i32 SYS_SPAWN = 9;
 
+// Typed failure reasons for syscalls that do real work (multi-step, can fail
+// for more than one reason). Consumed only via Result<T, SyscallError>/case,
+// same as MmuError/LoaderError/ProcessError -- never accessed as a bare
+// cross-package member, so the enum-linking pitfall in dom.mln doesn't apply.
+// InvalidDirectory/UnalignedAddress deliberately aren't here: sys_sbrk only
+// ever hands the MMU a pdbr from a live process and page-aligned addresses
+// it computed itself, so those MmuError variants can't legitimately occur --
+// if they ever do, that's a kernel invariant broken, not a recoverable
+// syscall error, and is handled by panicking on the spot (see sys_sbrk).
+export enum SyscallError {
+    NoProcess,     // No process is currently executing
+    OutOfMemory,   // Physical frame allocation failed
+    HeapOverflow,  // New heap break would collide with the stack
+    BadFd,         // Unsupported file descriptor
+}
+
+// Typed result of syscall dispatch. It keeps the user-visible return value
+// together with the frame to resume; SYS_EXIT/SYS_YIELD may choose another
+// frame through the scheduler.
+export struct DispatchOutcome {
+    i32 next_sp;
+    i32 return_value;
+};
+
+export i32 outcome_next_sp(DispatchOutcome *outcome) {
+    return outcome->next_sp;
+}
+
+export i32 outcome_return_value(DispatchOutcome *outcome) {
+    return outcome->return_value;
+}
+
+// Raw return values are an ABI detail of the final user-space boundary.
+// Keep the mapping next to the typed error definition; irq_dispatch invokes it
+// only after handling Result<i32, SyscallError>.
+export i32 error_code(SyscallError error) {
+    return case error of {
+        NoProcess -> -1;
+        OutOfMemory -> -2;
+        HeapOverflow -> -3;
+        BadFd -> -4;
+    };
+}
+
 i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 
 export void sys_exit(i32 code) {
@@ -32,9 +78,9 @@ export void sys_exit(i32 code) {
     }
 }
 
-export i32 sys_write(i32 fd, i32 buf, i32 count) {
+export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
     if (count <= 0) {
-        return 0;
+        return Ok(0);
     }
     if (fd == 1 || fd == 2) {
         i32 i = 0;
@@ -43,14 +89,15 @@ export i32 sys_write(i32 fd, i32 buf, i32 count) {
             serial.putc(c);
             i = i + 1;
         }
-        return count;
+        return Ok(count);
     }
-    return -1;
+    SyscallError cause = BadFd;
+    return Err(cause);
 }
 
-export i32 sys_read(i32 fd, i32 buf, i32 count) {
+export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     if (count <= 0) {
-        return 0;
+        return Ok(0);
     }
     if (fd == 0) {
         i32 i = 0;
@@ -62,66 +109,84 @@ export i32 sys_read(i32 fd, i32 buf, i32 count) {
             mem.write_byte(buf + i, c);
             i = i + 1;
         }
-        return i;
+        return Ok(i);
     }
-    return -1;
+    SyscallError cause = BadFd;
+    return Err(cause);
 }
 
-export i32 sys_sbrk(i32 increment) {
+export Result<i32, SyscallError> sys_sbrk(i32 increment) {
     i32 pid = process.get_current_pid();
     if (pid <= 0) {
-        return -1;
+        return Err(SyscallError::NoProcess);
     }
     i32 cur_brk = process.get_heap_break(pid);
     if (increment == 0) {
-        return cur_brk;
+        return Ok(cur_brk);
     }
     if (increment < 0) {
         // Shrinking not supported yet
-        return cur_brk;
+        return Ok(cur_brk);
     }
 
     i32 new_brk = cur_brk + increment;
+    if (new_brk >= loader.USER_STACK_BASE) {
+        return Err(SyscallError::HeapOverflow);
+    }
+
     // Map pages if new_brk crosses page boundaries
     i32 cur_page = (cur_brk + 4095) & ~4095;
     i32 target_page = (new_brk + 4095) & ~4095;
     i32 pd = process.get_pdbr(pid);
 
     while (cur_page < target_page) {
-        Result<i32, MmuError> frame_res = mmu.alloc_page();
-        i32 frame = case frame_res of {
-            Ok(f) -> f;
-            Err(AllocFailed) -> ({
-                return -1;
-            });
-            Err(InvalidDirectory) -> ({
-                return -1;
-            });
-            Err(UnalignedAddress(a)) -> ({
-                return -1;
+        i32 frame = case mmu.alloc_page() of {
+            Some(f) -> f;
+            None -> ({
+                return Err(SyscallError::OutOfMemory);
             });
         };
         Result<_, MmuError> map_res = mmu.map_page(pd, cur_page, frame, PTE_USER_RW);
         case map_res of {
             Ok(_) -> 0;
             Err(AllocFailed) -> ({
-                return -1;
+                return Err(SyscallError::OutOfMemory);
             });
-            Err(InvalidDirectory) -> ({
-                return -1;
-            });
-            Err(UnalignedAddress(a)) -> ({
-                return -1;
+            Err(e) -> ({
+                // InvalidDirectory/UnalignedAddress here mean a kernel
+                // invariant broke: `pd` comes from a live process's pdbr
+                // (always set from a real create_page_directory() success),
+                // and `cur_page`/`frame` are always page-aligned by
+                // construction. Not a recoverable syscall error -- panic
+                // while we still have the pid for the diagnostic.
+                debug.printf("sys_sbrk: unexpected MMU error for pid=%d\n", pid);
+                debug.panic("kernel invariant broken -- MMU rejected an address sys_sbrk computed itself");
             });
         };
         cur_page = cur_page + 4096;
     }
 
     process.set_heap_break(pid, new_brk);
-    return cur_brk;
+    return Ok(cur_brk);
 }
 
-export i32 dispatch(i32 sp) {
+// The syscall layer keeps both successes and failures typed. irq_dispatch is
+// the only layer that writes the raw ABI result into the interrupted r1 frame.
+Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, SyscallError> *result) {
+    i32 ret = 0;
+    if (result_take_ok<i32, SyscallError>(result, &ret) != 0) {
+        DispatchOutcome outcome;
+        outcome.next_sp = sp;
+        outcome.return_value = ret;
+        return Ok(outcome);
+    }
+
+    SyscallError error;
+    result_take_err<i32, SyscallError>(result, &error);
+    return Err(error);
+}
+
+export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     // Stack frame layout (from irq_trampoline.masm):
     // [sp+0]:  r7 (arg3)
     // [sp+4]:  r6 (arg2)
@@ -139,27 +204,34 @@ export i32 dispatch(i32 sp) {
     i32 arg1   = mem.read_word(sp + 8);
     i32 arg2   = mem.read_word(sp + 4);
     i32 arg3   = mem.read_word(sp + 0);
-    i32 ret    = -1;
-
     if (sys_nr == SYS_EXIT) {
         sys_exit(arg1);
-        return scheduler.tick(sp);
+        DispatchOutcome outcome;
+        outcome.next_sp = scheduler.tick(sp);
+        outcome.return_value = 0;
+        return Ok(outcome);
     }
     if (sys_nr == SYS_READ) {
-        ret = sys_read(arg1, arg2, arg3);
+        Result<i32, SyscallError> result = sys_read(arg1, arg2, arg3);
+        return resume_after_syscall(sp, &result);
     }
     if (sys_nr == SYS_WRITE) {
-        ret = sys_write(arg1, arg2, arg3);
+        Result<i32, SyscallError> result = sys_write(arg1, arg2, arg3);
+        return resume_after_syscall(sp, &result);
     }
     if (sys_nr == SYS_SBRK) {
-        ret = sys_sbrk(arg1);
+        Result<i32, SyscallError> result = sys_sbrk(arg1);
+        return resume_after_syscall(sp, &result);
     }
     if (sys_nr == SYS_YIELD) {
-        ret = 0;
-        mem.write_word(sp + 24, ret);
-        return scheduler.tick(sp);
+        DispatchOutcome outcome;
+        outcome.next_sp = scheduler.tick(sp);
+        outcome.return_value = 0;
+        return Ok(outcome);
     }
 
-    mem.write_word(sp + 24, ret);
-    return sp;
+    DispatchOutcome outcome;
+    outcome.next_sp = sp;
+    outcome.return_value = -1;
+    return Ok(outcome);
 }

@@ -7,21 +7,21 @@ import debug from "../debug/debug.mln";
 import process from "process.mln";
 import scheduler from "scheduler.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { MmuError } from "../mm/mmu.mln";
 import { ProcessError } from "process.mln";
 
 export enum LoaderError {
     ProcSlotFull,        // Process slot table exhausted
     OutOfMemory,         // Memory allocation failed (page directory / frame / stack)
-    MmuInvalidDir,       // Invalid page directory base address (e.g. 0)
-    MmuUnaligned(i32),   // Unaligned virtual or physical address in mapping
+    Mmu(MmuError),       // Wrapped MMU failure (invalid directory / unaligned address)
     InvalidHeader(i32),  // Invalid MBIN header or unsupported version
     InvalidBounds(i32),  // Section boundaries exceed binary buffer
     SpawnTaskFailed,     // Task scheduler spawn failed
 }
 
 i32 USER_CODE_BASE  = 0x40000000;
-i32 USER_STACK_BASE = 0x7FFFF000;
+export i32 USER_STACK_BASE = 0x7FFFF000; // Heap must stay below this (see syscall.sys_sbrk)
 i32 USER_STACK_TOP  = 0x7FFFFFE0;
 i32 USER_HEAP_BASE  = 0x41000000;
 
@@ -56,21 +56,11 @@ i32 align_up_4k(i32 val) {
 Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size, i32 pte_flags) {
     i32 offset = 0;
     while (offset < size) {
-        Result<i32, MmuError> frame_res = mmu.alloc_page();
-        i32 frame = case frame_res of {
-            Ok(f) -> f;
-            Err(AllocFailed) -> ({
+        i32 frame = case mmu.alloc_page() of {
+            Some(f) -> f;
+            None -> ({
                 debug.println("loader: out of memory for frame");
                 return Err(LoaderError::OutOfMemory);
-            });
-            Err(InvalidDirectory) -> ({
-                debug.println("loader: invalid directory allocating frame");
-                return Err(LoaderError::MmuInvalidDir);
-            });
-            Err(UnalignedAddress(a)) -> ({
-                debug.println("loader: unaligned address allocating frame");
-                LoaderError cause = MmuUnaligned(a);
-                return Err(cause);
             });
         };
 
@@ -95,14 +85,9 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
                 debug.println("loader: out of memory for page table");
                 return Err(LoaderError::OutOfMemory);
             });
-            Err(InvalidDirectory) -> ({
-                debug.println("loader: invalid directory mapping segment");
-                return Err(LoaderError::MmuInvalidDir);
-            });
-            Err(UnalignedAddress(a)) -> ({
-                debug.println("loader: unaligned address mapping segment");
-                LoaderError cause = MmuUnaligned(a);
-                return Err(cause);
+            Err(e) -> ({
+                debug.println("loader: mmu error mapping segment");
+                return Err(LoaderError::Mmu(e));
             });
         };
         offset = offset + 4096;
@@ -129,24 +114,12 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     };
 
     // 1. Create Page Directory and map kernel regions identity
-    Result<i32, MmuError> pd_res = mmu.create_page_directory();
-    i32 pd = case pd_res of {
-        Ok(d) -> d;
-        Err(AllocFailed) -> ({
+    i32 pd = case mmu.create_page_directory() of {
+        Some(d) -> d;
+        None -> ({
             debug.println("loader: failed to allocate page directory");
             process.free_proc(pid);
             return Err(LoaderError::OutOfMemory);
-        });
-        Err(InvalidDirectory) -> ({
-            debug.println("loader: invalid directory for page directory");
-            process.free_proc(pid);
-            return Err(LoaderError::MmuInvalidDir);
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("loader: unaligned page directory");
-            process.free_proc(pid);
-            LoaderError cause = MmuUnaligned(a);
-            return Err(cause);
         });
     };
     Result<_, MmuError> id_res = mmu.setup_identity_kernel_mapping(pd);
@@ -157,16 +130,10 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             process.free_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
-        Err(InvalidDirectory) -> ({
-            debug.printf("loader: invalid directory for identity mapping, pd=0x%x\n", pd);
+        Err(e) -> ({
+            debug.printf("loader: mmu error setting up identity mapping, pd=0x%x\n", pd);
             process.free_proc(pid);
-            return Err(LoaderError::MmuInvalidDir);
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("loader: unaligned address for identity mapping");
-            process.free_proc(pid);
-            LoaderError cause = MmuUnaligned(a);
-            return Err(cause);
+            return Err(LoaderError::Mmu(e));
         });
     };
     process.set_pdbr(pid, pd);
@@ -269,24 +236,12 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     }
 
     // 3. Allocate user stack page (RW, No Execute)
-    Result<i32, MmuError> stack_res = mmu.alloc_page();
-    i32 stack_frame = case stack_res of {
-        Ok(f) -> f;
-        Err(AllocFailed) -> ({
+    i32 stack_frame = case mmu.alloc_page() of {
+        Some(f) -> f;
+        None -> ({
             debug.println("loader: out of memory for user stack frame");
             process.free_proc(pid);
             return Err(LoaderError::OutOfMemory);
-        });
-        Err(InvalidDirectory) -> ({
-            debug.println("loader: invalid directory for user stack frame");
-            process.free_proc(pid);
-            return Err(LoaderError::MmuInvalidDir);
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("loader: unaligned user stack frame");
-            process.free_proc(pid);
-            LoaderError cause = MmuUnaligned(a);
-            return Err(cause);
         });
     };
     Result<_, MmuError> map_stack_res = mmu.map_page(pd, USER_STACK_BASE, stack_frame, PTE_USER_RW);
@@ -297,16 +252,10 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             process.free_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
-        Err(InvalidDirectory) -> ({
-            debug.println("loader: invalid directory mapping user stack");
+        Err(e) -> ({
+            debug.println("loader: mmu error mapping user stack");
             process.free_proc(pid);
-            return Err(LoaderError::MmuInvalidDir);
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("loader: unaligned address mapping user stack");
-            process.free_proc(pid);
-            LoaderError cause = MmuUnaligned(a);
-            return Err(cause);
+            return Err(LoaderError::Mmu(e));
         });
     };
 

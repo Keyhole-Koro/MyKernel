@@ -67,6 +67,21 @@ export i32 ticks() {
 // Scanning only the live slots keeps the handler a few hundred instructions.
 i32 g_task_count = 0;
 
+// Returns the index of the next runnable task starting at `start`,
+// scanning at most `count` slots. Returns -1 if none are runnable.
+i32 find_next_runnable(i32 start, i32 count) {
+    i32 next_task = start;
+    i32 checked = 0;
+    while (checked < count) {
+        if (task_state[next_task] == TASK_RUNNABLE) {
+            return next_task;
+        }
+        next_task = (next_task + 1) % count;
+        checked = checked + 1;
+    }
+    return -1;
+}
+
 export i32 tick(i32 sp) {
     g_irq_count = g_irq_count + 1;
 
@@ -103,24 +118,19 @@ export i32 tick(i32 sp) {
     // Round-robin scan starting after the current task (from 0 when idle).
     i32 start = 0;
     if (current_task >= 0) { start = (current_task + 1) % count; }
-    i32 next_task = start;
-    i32 checked = 0;
-    while (checked < count) {
-        if (task_state[next_task] == TASK_RUNNABLE) {
-            current_task = next_task; // Switch to next task
-            i32 next_pid = task_pid[next_task];
-            if (next_pid > 0) {
-                mem.write_word(KERNEL_SP_ADDR, process.get_user_sp(next_pid));
-                mem.write_word(MMU_PDBR_ADDR, process.get_pdbr(next_pid));
-                process.set_current_pid(next_pid);
-                process.set_state(next_pid, process.state_running());
-            } else {
-                process.set_current_pid(0);
-            }
-            return task_sps[next_task];
+    i32 next_task = find_next_runnable(start, count);
+    if (next_task >= 0) {
+        current_task = next_task; // Switch to next task
+        i32 next_pid = task_pid[next_task];
+        if (next_pid > 0) {
+            mem.write_word(KERNEL_SP_ADDR, process.get_user_sp(next_pid));
+            mem.write_word(MMU_PDBR_ADDR, process.get_pdbr(next_pid));
+            process.set_current_pid(next_pid);
+            process.set_state(next_pid, process.state_running());
+        } else {
+            process.set_current_pid(0);
         }
-        next_task = (next_task + 1) % count;
-        checked = checked + 1;
+        return task_sps[next_task];
     }
 
     // Nothing is runnable: run the dedicated idle context until a wake-up.

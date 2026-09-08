@@ -10,6 +10,7 @@ import process from "../../src/kernel/process.mln";
 import loader from "../../src/kernel/loader.mln";
 import { halt_cpu } from "../../src/arch/halt.masm";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { LoaderError } from "../../src/kernel/loader.mln";
 import { MmuError } from "../../src/mm/mmu.mln";
@@ -179,8 +180,7 @@ void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_
         });
         Err(LoaderError::ProcSlotFull) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got ProcSlotFull\n", expected_version); halt_cpu(); });
         Err(LoaderError::OutOfMemory) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got OutOfMemory\n", expected_version); halt_cpu(); });
-        Err(LoaderError::MmuInvalidDir) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got MmuInvalidDir\n", expected_version); halt_cpu(); });
-        Err(LoaderError::MmuUnaligned(a)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got MmuUnaligned(%d)\n", expected_version, a); halt_cpu(); });
+        Err(LoaderError::Mmu(e)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Mmu error\n", expected_version); halt_cpu(); });
         Err(LoaderError::InvalidBounds(s)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got InvalidBounds(%d)\n", expected_version, s); halt_cpu(); });
         Err(LoaderError::SpawnTaskFailed) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got SpawnTaskFailed\n", expected_version); halt_cpu(); });
     };
@@ -197,8 +197,7 @@ void assert_invalid_bounds_error(Result<i32, LoaderError> *result, i32 expected_
         });
         Err(LoaderError::ProcSlotFull) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got ProcSlotFull\n", expected_size); halt_cpu(); });
         Err(LoaderError::OutOfMemory) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got OutOfMemory\n", expected_size); halt_cpu(); });
-        Err(LoaderError::MmuInvalidDir) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got MmuInvalidDir\n", expected_size); halt_cpu(); });
-        Err(LoaderError::MmuUnaligned(a)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got MmuUnaligned(%d)\n", expected_size, a); halt_cpu(); });
+        Err(LoaderError::Mmu(e)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Mmu error\n", expected_size); halt_cpu(); });
         Err(LoaderError::InvalidHeader(v)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got InvalidHeader(%d)\n", expected_size, v); halt_cpu(); });
         Err(LoaderError::SpawnTaskFailed) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got SpawnTaskFailed\n", expected_size); halt_cpu(); });
     };
@@ -216,21 +215,10 @@ export i32 kernel_main() {
 
     // Setup kernel identity page table
     debug.println("kernel: setting up identity page directory...");
-    Result<i32, MmuError> kpd_res = mmu.create_page_directory();
-    i32 kpd = case kpd_res of {
-        Ok(p) -> p;
-        Err(AllocFailed) -> ({
+    i32 kpd = case mmu.create_page_directory() of {
+        Some(p) -> p;
+        None -> ({
             debug.println("kernel: failed to allocate identity page directory");
-            halt_cpu();
-            return 1;
-        });
-        Err(InvalidDirectory) -> ({
-            debug.println("kernel: unexpected InvalidDirectory for identity page directory");
-            halt_cpu();
-            return 1;
-        });
-        Err(UnalignedAddress(a)) -> ({
-            debug.println("kernel: unexpected UnalignedAddress for identity page directory");
             halt_cpu();
             return 1;
         });

@@ -1,20 +1,17 @@
-; Low-level interrupt trampoline. On entry the CPU has already pushed the
-; interrupted PC and SR (in that order) and jumped here via the IRQ vector.
+; Low-level interrupt context helpers. The IRQ vector enters the MyLang
+; irq_dispatch_entry() function; its first action is to call irq_trampoline.
+; At that point MyLang's fixed entry prologue has saved the interrupted lr/bp.
 ;
-; This trampoline:
-;   1. saves all registers (lr, bp, r0-r7)
-;   2. passes current sp to scheduler_irq_handler in r1
-;   3. calls scheduler_irq_handler, which returns new sp in r1
-;   4. loads new sp from r1
-;   5. restores registers (r0-r7, bp, lr)
-;   6. executes `iret` to resume the selected task
-import { irq_dispatch_dispatch } from "../kernel/irq_dispatch.mln"
-
+; irq_trampoline returns an interrupt-frame pointer in r1. irq_resume accepts
+; such a pointer in r5 and resumes it with iret. Neither helper contains
+; dispatch policy or Result handling.
 export irq_trampoline
+export irq_resume
 
 irq_trampoline:
-  push lr
-  push bp
+  ; Reserve the frame tail (bp, lr, SR, PC), then save r0-r7. MyLang fills
+  ; the tail from its entry frame before dispatching.
+  addis sp, -16
   push r0
   push r1
   push r2
@@ -24,15 +21,11 @@ irq_trampoline:
   push r6
   push r7
 
-  ; Pass current sp to the dispatcher (so it can save it for the current task)
-  mov r5, sp
-  call irq_dispatch_dispatch
+  mov r1, sp
+  mov pc, lr
 
-  ; THE MAGIC HAPPENS HERE:
-  ; The dispatcher returned the saved stack pointer of the NEXT task to run in r1.
-  ; By changing sp here, we completely switch which task's stack we are using!
-  mov sp, r1
-
+irq_resume:
+  mov sp, r5
   pop r7
   pop r6
   pop r5
@@ -43,5 +36,4 @@ irq_trampoline:
   pop r0
   pop bp
   pop lr
-
   iret

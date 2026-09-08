@@ -1,7 +1,6 @@
 package heap;
 
 import { heap_image_end } from "heap_sym.masm";
-import { halt_cpu } from "../arch/halt.masm";
 import debug from "../debug/debug.mln";
 
 // First-fit allocator over the region between the loaded image (`_end`, from
@@ -42,12 +41,6 @@ void set_next(i32 h, i32 v) { write_word(h + 4, v); }
 // Physical address just past the end of block h.
 i32 block_end(i32 h) {
     return h + HDR_SIZE + block_size(h);
-}
-
-void panic(char* msg) {
-    debug.print("heap panic: ");
-    debug.println(msg);
-    halt_cpu();
 }
 
 export void init() {
@@ -98,7 +91,7 @@ export i32 alloc(i32 size) {
         cur = cur_next;
     }
 
-    panic("out of memory");
+    debug.panic("out of memory");
     return 0; // unreachable
 }
 

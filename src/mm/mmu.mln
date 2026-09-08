@@ -4,6 +4,7 @@ import heap from "heap.mln";
 import mem from "mem.mln";
 import debug from "../debug/debug.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
 export enum MmuError {
     AllocFailed,            // Out of memory for physical frame allocation
@@ -61,29 +62,34 @@ i32 VRAM_SIZE         = 0x00300000; // 3 MB
 
 i32 FRAME_MASK        = 0xFFFFF000;
 
-// Allocate a 4 KB-aligned, zero-filled physical frame from the heap
-export Result<i32, MmuError> alloc_page() {
+// Allocate a 4 KB-aligned, zero-filled physical frame from the heap.
+// Option<i32>, not Result<i32, MmuError>: this function takes no directory
+// or address arguments, so it structurally cannot fail with InvalidDirectory
+// or UnalignedAddress -- out-of-memory is its only failure mode, and Option's
+// None already says that with no loss of information.
+export Option<i32> alloc_page() {
     // Allocate 8192 bytes so we can guarantee a 4096-byte aligned base
     i32 raw = heap.alloc(PAGE_SIZE * 2);
     if (raw == 0) {
         debug.println("mmu: out of memory for page allocation");
-        return Err(MmuError::AllocFailed);
+        return None;
     }
     i32 aligned = (raw + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
-    
+
     // Zero out the page
     i32 i = 0;
     while (i < PAGE_SIZE) {
         mem.write_word(aligned + i, 0);
         i = i + 4;
     }
-    return Ok(aligned);
+    return Some(aligned);
 }
 
-// Create and initialize a new empty Page Directory (root of page table)
-export Result<i32, MmuError> create_page_directory() {
-    Result<i32, MmuError> res = alloc_page();
-    return res;
+// Create and initialize a new empty Page Directory (root of page table).
+// Same reasoning as alloc_page: it's a pure passthrough, so its failure
+// surface is exactly alloc_page's.
+export Option<i32> create_page_directory() {
+    return alloc_page();
 }
 
 // Set Page Directory Entry (PDE) with Page Table base address and permissions
@@ -101,11 +107,10 @@ Result<i32, MmuError> get_or_create_page_table(i32 pd_addr, i32 pdi, i32 flags) 
     i32 pde = mem.read_word(pde_addr);
 
     if ((pde & PTE_VALID) == 0) {
-        Result<i32, MmuError> pt_res = alloc_page();
-        i32 pt_base = case pt_res of {
-            Ok(pt) -> pt;
-            Err(e) -> ({
-                return Err(e);
+        i32 pt_base = case alloc_page() of {
+            Some(pt) -> pt;
+            None -> ({
+                return Err(MmuError::AllocFailed);
             });
         };
         set_pde(pde_addr, pt_base, flags);
@@ -125,12 +130,10 @@ export Result<_, MmuError> map_page(i32 pd_addr, i32 vaddr, i32 paddr, i32 flags
         return Err(MmuError::InvalidDirectory);
     }
     if ((vaddr & 0xFFF) != 0) {
-        MmuError cause = UnalignedAddress(vaddr);
-        return Err(cause);
+        return Err(UnalignedAddress(vaddr));
     }
     if ((paddr & 0xFFF) != 0) {
-        MmuError cause = UnalignedAddress(paddr);
-        return Err(cause);
+        return Err(UnalignedAddress(paddr));
     }
 
     i32 pdi = (vaddr >> 22) & 0x3FF;

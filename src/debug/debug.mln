@@ -1,6 +1,7 @@
 package debug;
 
 import serial from "../io/serial.mln";
+import { halt_cpu } from "../arch/halt.masm";
 
 char hex_digit(i32 nibble) {
     char *digits = "0123456789abcdef";
@@ -19,6 +20,13 @@ export void print(char* s) {
 export void println(char* s) {
     print(s);
     serial.putc('\n');
+}
+
+// Reports an unrecoverable kernel invariant failure and stops execution.
+export void panic(char* msg) {
+    print("panic: ");
+    println(msg);
+    halt_cpu();
 }
 
 export void hex(i32 value) {
