@@ -1,0 +1,22 @@
+import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
+import debug from "../../src/debug/debug.mln";
+import heap from "../../src/mm/heap.mln";
+
+// The allocator has a one-megabyte arena including its first block header, so
+// this request cannot fit. Spy intercepts the terminal debug.panic call: the
+// test can assert the intended failure path without serial-output matching or
+// an emulator halt.
+/*@Test "heap exhaustion reports panic" { step: 1000000; }*/
+void heap_exhaustion_reports_panic() {
+    heap.init();
+
+    mock.spy(debug.panic)
+        .when(mock.any())
+        .ret(0);
+
+    i32 allocation = heap.alloc(1048576);
+
+    assert.assert_true(allocation == 0, "OOM returns zero after intercepted panic");
+    assert.assert_true(mock.calls(debug.panic) == 1, "OOM reports exactly one panic");
+}
