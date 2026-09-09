@@ -44,10 +44,11 @@ void append_child(i32 parent, i32 child) {
     debug.printf("append(%d,%d);", parent, child);
 }
 
-test("dom_lowering", {
+/*@Test "dom_lowering" {
     expect: "TRACE:Window(Root,1,2,3,4);Button(OK,5,6,7,8);click(99);append(10,20);Box(10,13,15,14,11,12);append(10,40);Column(30,31,40,50,5,6);append(10,50);Text(hi,9,10);append(10,30);root=10";
     step: 10000000;
-}, () => {
+}*/
+void dom_lowering() {
     debug.print("TRACE:");
 
     // Properties are deliberately written out of signature order.
@@ -60,4 +61,4 @@ test("dom_lowering", {
 
     debug.printf("root=%d\n", root);
     test.pass();
-});
+}

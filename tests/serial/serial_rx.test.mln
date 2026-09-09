@@ -9,11 +9,12 @@ import irq from "../../src/arch/irq.mln";
 // queue (it no longer echoes or quits itself). This test plays the consumer:
 // read from the queue, echo each byte, and stop on 'q'. It verifies the full
 // IRQ -> input_push -> read_input path.
-test("serial_rx", {
+/*@Test "serial_rx" {
     stdin: "PINGq";
     expect: "PING";
     step: 10000000;
-}, () => {
+}*/
+void serial_rx() {
     debug.println("kernel: boot");
     debug.println("kernel: arch init");
     heap.init();
@@ -34,4 +35,4 @@ test("serial_rx", {
             }
         }
     }
-});
+}
