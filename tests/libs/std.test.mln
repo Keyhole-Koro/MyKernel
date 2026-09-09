@@ -8,24 +8,16 @@ import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import assert from "../../../../toolchain/MyStdLib/assert.mln";
 import { assert_eq, assert_ne, assert_null, assert_not_null, assert_result_ok, assert_result_err } from "../../../../toolchain/MyStdLib/assert.mln";
 import serial from "../../src/io/serial.mln";
-import { halt_cpu } from "../../src/arch/halt.masm";
 
 // Exercises the MLC-004 phase 0 standard library on real hardware behaviour:
 // every check runs in the emulator, so byte signedness, pointer arithmetic and
 // the handle-array layouts are verified as the compiler actually lowers them
 // rather than as they read on the page.
 //
-// The runner looks for "Test PASSED!"; each assertion supplies the failure
-// message reported by the runtime hook.
+// MyLangTestKit provides the assertion failure hook and reports the verdict.
 
 i32 g_assert_value = 42;
 i32* g_assert_null = (i32*)0;
-
-// Runtime hook required by MyStdLib/assert.mln.
-void assert_fail(char* message) {
-    debug.printf("ASSERT FAILED: %s\n", message);
-    halt_cpu();
-}
 
 // --- assert ---------------------------------------------------------------
 
@@ -378,7 +370,10 @@ void test_serial_queue() {
     assert_eq<i32>(drained, 127, "serial held capacity-1 keystrokes");
 }
 
-void kernel_main() {
+/*@Test "standard library" {
+    step: 50000000;
+}*/
+void standard_library() {
     debug.println("std library test: begin");
 
     test_assert();
@@ -389,5 +384,4 @@ void kernel_main() {
     test_strbuf();
     test_serial_queue();
 
-    debug.println("Test PASSED!");
 }

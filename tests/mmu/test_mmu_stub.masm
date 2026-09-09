@@ -1,5 +1,0 @@
-import { kernel_main } from "test_mmu.mln"
-
-__START__:
-  call kernel_main
-  halt

@@ -6,7 +6,6 @@ import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { MmuError } from "../../src/mm/mmu.mln";
-import { halt_cpu } from "../../src/arch/halt.masm";
 
 i32 PTE_VALID    = 0x01;
 i32 PTE_WRITABLE = 0x02;
@@ -17,12 +16,10 @@ i32 TEST_VAL2 = 0x67890;
 i32 TEST_VAL3 = 0xABCDE;
 i32 TEST_VAL4 = 0x54321;
 
-void assert_fail(char* message) {
-    debug.printf("[FAIL] %s\n", message);
-    halt_cpu();
-}
-
-void kernel_main() {
+/*@Test "MMU virtual memory" {
+    step: 50000000;
+}*/
+void mmu_virtual_memory() {
     debug.println("--- Starting MMU & Virtual Memory Test ---");
 
     heap.init();
@@ -30,8 +27,8 @@ void kernel_main() {
     i32 pd = case mmu.create_page_directory() of {
         Some(p) -> p;
         None -> ({
-            debug.println("[FAIL] failed to allocate root page directory");
-            return;
+            assert_eq<i32>(1, 0, "failed to allocate root page directory");
+            0;
         });
     };
     debug.printf("mmu: root page directory at 0x%x\n", pd);
@@ -41,16 +38,16 @@ void kernel_main() {
     case id_res of {
         Ok(_) -> 0;
         Err(AllocFailed) -> ({
-            debug.println("[FAIL] failed to setup identity kernel mapping");
-            return;
+            assert_eq<i32>(1, 0, "failed to setup identity kernel mapping");
+            0;
         });
         Err(InvalidDirectory) -> ({
-            debug.println("[FAIL] unexpected InvalidDirectory for identity mapping");
-            return;
+            assert_eq<i32>(1, 0, "unexpected InvalidDirectory for identity mapping");
+            0;
         });
         Err(UnalignedAddress(a)) -> ({
-            debug.println("[FAIL] unexpected UnalignedAddress for identity mapping");
-            return;
+            assert_eq<i32>(1, 0, "unexpected UnalignedAddress for identity mapping");
+            0;
         });
     };
 
@@ -58,8 +55,8 @@ void kernel_main() {
     i32 pa = case mmu.alloc_page() of {
         Some(p) -> p;
         None -> ({
-            debug.println("[FAIL] failed to allocate physical frame");
-            return;
+            assert_eq<i32>(1, 0, "failed to allocate physical frame");
+            0;
         });
     };
     i32 va = TEST_VA;
@@ -72,16 +69,16 @@ void kernel_main() {
     case map_res of {
         Ok(_) -> 0;
         Err(AllocFailed) -> ({
-            debug.println("[FAIL] map_page failed");
-            return;
+            assert_eq<i32>(1, 0, "map_page failed");
+            0;
         });
         Err(InvalidDirectory) -> ({
-            debug.println("[FAIL] unexpected InvalidDirectory for map_page");
-            return;
+            assert_eq<i32>(1, 0, "unexpected InvalidDirectory for map_page");
+            0;
         });
         Err(UnalignedAddress(a)) -> ({
-            debug.println("[FAIL] unexpected UnalignedAddress for map_page");
-            return;
+            assert_eq<i32>(1, 0, "unexpected UnalignedAddress for map_page");
+            0;
         });
     };
 
@@ -137,5 +134,4 @@ void kernel_main() {
     assert_eq<i32>(got_unaligned, va + 123, "expected Err(UnalignedAddress(va+123)) for unaligned vaddr");
     debug.println("mmu: UnalignedAddress reported correctly");
 
-    debug.println("[TEST_MMU_SUCCESS]");
 }
