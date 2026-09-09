@@ -1,0 +1,85 @@
+import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import heap from "../../src/mm/heap.mln";
+
+/*@Test "heap allocates distinct blocks"*/
+void heap_allocates_distinct_blocks() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(16);
+
+    assert.assert_true(a != 0, "first allocation succeeds");
+    assert.assert_true(b != 0, "second allocation succeeds");
+    assert.assert_true(a != b, "allocations do not alias");
+    if (b > a) {
+        assert.assert_true(b - a >= 16, "forward blocks do not overlap");
+    } else {
+        assert.assert_true(a - b >= 16, "reverse blocks do not overlap");
+    }
+}
+
+/*@Test "heap reuses freed block"*/
+void heap_reuses_freed_block() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(16);
+    heap.free(a);
+    i32 c = heap.alloc(16);
+
+    assert.assert_true(a != 0 && b != 0, "initial allocations succeed");
+    assert.assert_true(c == a, "free-list head is reused");
+}
+
+/*@Test "heap allocations are independently writable"*/
+void heap_allocations_are_independently_writable() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(16);
+    i32 *pa = (i32 *)a;
+    i32 *pb = (i32 *)b;
+    *pa = 111;
+    *pb = 222;
+
+    assert.assert_true(a != 0 && b != 0, "allocations succeed");
+    assert.assert_true(*pa == 111, "first block keeps its value");
+    assert.assert_true(*pb == 222, "second block keeps its value");
+}
+
+/*@Test "heap splits initial block"*/
+void heap_splits_initial_block() {
+    heap.init();
+    i32 a = heap.alloc(16);
+    i32 b = heap.alloc(32);
+
+    assert.assert_true(a != 0 && b != 0, "split allocations succeed");
+    assert.assert_true(a != b, "remainder supplies another block");
+}
+
+/*@Test "heap coalesces forward"*/
+void heap_coalesces_forward() {
+    heap.init();
+    i32 a = heap.alloc(64);
+    i32 b = heap.alloc(64);
+    i32 c = heap.alloc(64);
+    heap.free(a);
+    heap.free(b);
+
+    i32 size = *(i32 *)(a - 8);
+    assert.assert_true(a != 0 && b != 0 && c != 0, "guard allocations succeed");
+    assert.assert_true(b == a + 72, "blocks are physically adjacent");
+    assert.assert_true(size == 136, "forward neighbours coalesce");
+}
+
+/*@Test "heap coalesces backward"*/
+void heap_coalesces_backward() {
+    heap.init();
+    i32 a = heap.alloc(64);
+    i32 b = heap.alloc(64);
+    i32 c = heap.alloc(64);
+    heap.free(b);
+    heap.free(a);
+
+    i32 size = *(i32 *)(a - 8);
+    assert.assert_true(a != 0 && b != 0 && c != 0, "guard allocations succeed");
+    assert.assert_true(b == a + 72, "blocks are physically adjacent");
+    assert.assert_true(size == 136, "backward neighbours coalesce");
+}
