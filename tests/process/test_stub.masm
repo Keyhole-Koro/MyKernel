@@ -1,5 +1,0 @@
-import test_process_kernel_main
-
-__START__:
-  call test_process_kernel_main
-  halt

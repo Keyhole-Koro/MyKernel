@@ -8,7 +8,6 @@ import mmu from "../../src/mm/mmu.mln";
 import scheduler from "../../src/kernel/scheduler.mln";
 import process from "../../src/kernel/process.mln";
 import loader from "../../src/kernel/loader.mln";
-import { halt_cpu } from "../../src/arch/halt.masm";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
@@ -163,10 +162,10 @@ void init_wx_fault_binary(i32 buf) {
     mem.write_byte(t + 12, 116); mem.write_byte(t + 13, 129); mem.write_byte(t + 14, 0); mem.write_byte(t + 15, 0);
 }
 
-// Runtime hook required by MyStdLib/assert.mln.
-void assert_fail(char* message) {
-    debug.printf("FAIL: %s\n", message);
-    halt_cpu();
+extern void testkit_pass(char* name);
+
+void fail(char* message) {
+    assert_eq<i32>(1, 0, message);
 }
 
 void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_version) {
@@ -174,15 +173,12 @@ void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_
         Err(LoaderError::InvalidHeader(actual_version)) -> ({
             assert_eq<i32>(actual_version, expected_version, "InvalidHeader payload mismatch");
         });
-        Ok(_) -> ({
-            debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Ok\n", expected_version);
-            halt_cpu();
-        });
-        Err(LoaderError::ProcSlotFull) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got ProcSlotFull\n", expected_version); halt_cpu(); });
-        Err(LoaderError::OutOfMemory) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got OutOfMemory\n", expected_version); halt_cpu(); });
-        Err(LoaderError::Mmu(e)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got Mmu error\n", expected_version); halt_cpu(); });
-        Err(LoaderError::InvalidBounds(s)) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got InvalidBounds(%d)\n", expected_version, s); halt_cpu(); });
-        Err(LoaderError::SpawnTaskFailed) -> ({ debug.printf("FAIL: expected Err(InvalidHeader(%d)), got SpawnTaskFailed\n", expected_version); halt_cpu(); });
+        Ok(_) -> ({ fail("expected InvalidHeader, got Ok"); });
+        Err(LoaderError::ProcSlotFull) -> ({ fail("expected InvalidHeader, got ProcSlotFull"); });
+        Err(LoaderError::OutOfMemory) -> ({ fail("expected InvalidHeader, got OutOfMemory"); });
+        Err(LoaderError::Mmu(e)) -> ({ fail("expected InvalidHeader, got Mmu error"); });
+        Err(LoaderError::InvalidBounds(s)) -> ({ fail("expected InvalidHeader, got InvalidBounds"); });
+        Err(LoaderError::SpawnTaskFailed) -> ({ fail("expected InvalidHeader, got SpawnTaskFailed"); });
     };
 }
 
@@ -191,19 +187,20 @@ void assert_invalid_bounds_error(Result<i32, LoaderError> *result, i32 expected_
         Err(LoaderError::InvalidBounds(actual_size)) -> ({
             assert_eq<i32>(actual_size, expected_size, "InvalidBounds payload mismatch");
         });
-        Ok(_) -> ({
-            debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Ok\n", expected_size);
-            halt_cpu();
-        });
-        Err(LoaderError::ProcSlotFull) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got ProcSlotFull\n", expected_size); halt_cpu(); });
-        Err(LoaderError::OutOfMemory) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got OutOfMemory\n", expected_size); halt_cpu(); });
-        Err(LoaderError::Mmu(e)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got Mmu error\n", expected_size); halt_cpu(); });
-        Err(LoaderError::InvalidHeader(v)) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got InvalidHeader(%d)\n", expected_size, v); halt_cpu(); });
-        Err(LoaderError::SpawnTaskFailed) -> ({ debug.printf("FAIL: expected Err(InvalidBounds(%d)), got SpawnTaskFailed\n", expected_size); halt_cpu(); });
+        Ok(_) -> ({ fail("expected InvalidBounds, got Ok"); });
+        Err(LoaderError::ProcSlotFull) -> ({ fail("expected InvalidBounds, got ProcSlotFull"); });
+        Err(LoaderError::OutOfMemory) -> ({ fail("expected InvalidBounds, got OutOfMemory"); });
+        Err(LoaderError::Mmu(e)) -> ({ fail("expected InvalidBounds, got Mmu error"); });
+        Err(LoaderError::InvalidHeader(v)) -> ({ fail("expected InvalidBounds, got InvalidHeader"); });
+        Err(LoaderError::SpawnTaskFailed) -> ({ fail("expected InvalidBounds, got SpawnTaskFailed"); });
     };
 }
 
-export i32 kernel_main() {
+/*@Test "process lifecycle and protection" {
+    timer_interval: 3000;
+    step: 50000000;
+}*/
+void process_lifecycle_and_protection() {
     debug.println("kernel: initializing heap...");
     heap.init();
     debug.println("kernel: initializing process table...");
@@ -218,28 +215,24 @@ export i32 kernel_main() {
     i32 kpd = case mmu.create_page_directory() of {
         Some(p) -> p;
         None -> ({
-            debug.println("kernel: failed to allocate identity page directory");
-            halt_cpu();
-            return 1;
+            fail("allocate identity page directory");
+            0;
         });
     };
     Result<_, MmuError> kid_res = mmu.setup_identity_kernel_mapping(kpd);
     case kid_res of {
         Ok(_) -> 0;
         Err(AllocFailed) -> ({
-            debug.println("kernel: failed to setup identity kernel mapping");
-            halt_cpu();
-            return 1;
+            fail("setup identity mapping: allocation failed");
+            0;
         });
         Err(InvalidDirectory) -> ({
-            debug.println("kernel: unexpected InvalidDirectory for identity kernel mapping");
-            halt_cpu();
-            return 1;
+            fail("setup identity mapping: invalid directory");
+            0;
         });
         Err(UnalignedAddress(a)) -> ({
-            debug.println("kernel: unexpected UnalignedAddress for identity kernel mapping");
-            halt_cpu();
-            return 1;
+            fail("setup identity mapping: unaligned address");
+            0;
         });
     };
     mmu.enable_paging(kpd);
@@ -271,9 +264,8 @@ export i32 kernel_main() {
     i32 pid1 = case pid1_res of {
         Ok(p)  -> p;
         Err(e) -> ({
-            debug.println("FAIL: failed to spawn user process");
-            halt_cpu();
-            return 1;
+            fail("spawn normal user process");
+            0;
         });
     };
     debug.println("kernel: MBIN v2 user process spawned!");
@@ -303,9 +295,8 @@ export i32 kernel_main() {
     i32 pid2 = case spawn_res2 of {
         Ok(p)  -> p;
         Err(e) -> ({
-            debug.println("FAIL: failed to spawn fault test process");
-            halt_cpu();
-            return 1;
+            fail("spawn W^X fault process");
+            0;
         });
     };
 
@@ -316,12 +307,9 @@ export i32 kernel_main() {
             i32 code = process.get_exit_code(pid2);
             if (code == -14) {
                 debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");
-                debug.println("TEST_PASSED_OK");
             }
             assert_eq<i32>(code, -14, "process 2 did not trigger the expected page fault");
-            halt_cpu();
+            testkit_pass("process lifecycle and protection");
         }
     }
-
-    return 0;
 }

@@ -1,0 +1,59 @@
+package test_scheduler;
+
+import heap from "../../src/mm/heap.mln";
+import irq from "../../src/arch/irq.mln";
+import scheduler from "../../src/kernel/scheduler.mln";
+import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+
+// The task contexts never return to the generated harness. The task that
+// observes both counters owns the asynchronous TestKit verdict.
+extern void testkit_pass(char* name);
+
+i32 task0_count = 0;
+i32 task1_count = 0;
+i32 verdict_reported = 0;
+
+void report_context_switch_success() {
+    if (verdict_reported == 0) {
+        verdict_reported = 1;
+        assert_eq<i32>(task0_count > 1000, 1, "task0 executed after scheduling started");
+        assert_eq<i32>(task1_count > 1000, 1, "task1 executed after scheduling started");
+        assert_eq<i32>(scheduler.ticks() >= 1, 1, "timer IRQ switched task contexts");
+        testkit_pass("scheduler context switches");
+    }
+}
+
+void task1() {
+    while (1) {
+        task1_count = task1_count + 1;
+        if (task1_count > 1000 && task0_count > 1000) {
+            report_context_switch_success();
+        }
+    }
+}
+
+/*@Test "scheduler context switches" {
+    timer_interval: 3000;
+    step: 5000000;
+}*/
+void scheduler_context_switches() {
+    heap.init();
+    scheduler.init();
+
+    i32 spawned = case scheduler.spawn_task(task1) of {
+        Ok(_) -> 1;
+        Err(e) -> 0;
+    };
+    assert_eq<i32>(spawned, 1, "spawn second scheduler task");
+
+    irq.set_handler();
+    irq.enable();
+
+    while (1) {
+        task0_count = task0_count + 1;
+        if (task0_count > 1000 && task1_count > 1000) {
+            report_context_switch_success();
+        }
+    }
+}
