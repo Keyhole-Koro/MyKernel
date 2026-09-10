@@ -5,11 +5,10 @@ import irq from "../../src/arch/irq.mln";
 import scheduler from "../../src/kernel/scheduler.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
 // The task contexts never return to the generated harness. The task that
 // observes both counters owns the asynchronous TestKit verdict.
-extern void testkit_pass(char* name);
-
 i32 task0_count = 0;
 i32 task1_count = 0;
 i32 verdict_reported = 0;
@@ -20,7 +19,7 @@ void report_context_switch_success() {
         assert_eq<i32>(task0_count > 1000, 1, "task0 executed after scheduling started");
         assert_eq<i32>(task1_count > 1000, 1, "task1 executed after scheduling started");
         assert_eq<i32>(scheduler.ticks() >= 1, 1, "timer IRQ switched task contexts");
-        testkit_pass("scheduler context switches");
+        testkit.pass("scheduler context switches");
     }
 }
 

@@ -13,6 +13,7 @@ import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
 import { LoaderError } from "../../src/kernel/loader.mln";
 import { MmuError } from "../../src/mm/mmu.mln";
+import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
 void init_user_binary(i32 buf) {
     // 140-byte position-independent user program
@@ -162,8 +163,6 @@ void init_wx_fault_binary(i32 buf) {
     mem.write_byte(t + 12, 116); mem.write_byte(t + 13, 129); mem.write_byte(t + 14, 0); mem.write_byte(t + 15, 0);
 }
 
-extern void testkit_pass(char* name);
-
 void fail(char* message) {
     assert_eq<i32>(1, 0, message);
 }
@@ -309,7 +308,7 @@ void process_lifecycle_and_protection() {
                 debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");
             }
             assert_eq<i32>(code, -14, "process 2 did not trigger the expected page fault");
-            testkit_pass("process lifecycle and protection");
+            testkit.pass("process lifecycle and protection");
         }
     }
 }
