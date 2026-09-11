@@ -1,9 +1,9 @@
 import debug from "../../src/debug/debug.mln";
 import str from "../../../../toolchain/MyStdLib/str.mln";
-import bytes from "../../../../toolchain/MyStdLib/bytes.mln";
-import bitset from "../../../../toolchain/MyStdLib/bitset.mln";
-import { RingBuffer, ring_init, ring_capacity, ring_count, ring_has, ring_full, ring_push, ring_pop, ring_peek, ring_clear } from "../../../../toolchain/MyStdLib/ringbuf.mln";
-import strbuf from "../../../../toolchain/MyStdLib/strbuf.mln";
+import bytes from "../../../../toolchain/MyStdLib/text/bytes.mln";
+import bitset from "../../../../toolchain/MyStdLib/collections/bitset.mln";
+import { RingBuffer, ring_init, ring_capacity, ring_count, ring_has, ring_full, ring_push, ring_pop, ring_peek, ring_clear } from "../../../../toolchain/MyStdLib/collections/ringbuf.mln";
+import strbuf from "../../../../toolchain/MyStdLib/text/strbuf.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import assert from "../../../../toolchain/MyStdLib/assert.mln";
 import { assert_eq, assert_ne, assert_null, assert_not_null, assert_result_ok, assert_result_err } from "../../../../toolchain/MyStdLib/assert.mln";
