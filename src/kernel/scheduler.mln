@@ -59,6 +59,13 @@ export i32 ticks() {
     return g_irq_count;
 }
 
+// Stable identity for test-only task-local facilities.  The idle context is
+// zero; runnable task indexes are shifted by one so no task collides with it.
+// This exposes no scheduler mutation surface to tests.
+export i32 current_context() {
+    return current_task + 1;
+}
+
 // Number of task slots actually in use (highest spawned index + 1). The tick
 // handler runs at every timer interrupt (1 kHz real time), so it must not scan
 // all MAX_TASKS slots: with MyLang's verbose codegen a 256-slot double scan

@@ -1,0 +1,87 @@
+package test_scheduler_mock_context;
+
+import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
+import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
+import heap from "../../src/mm/heap.mln";
+import irq from "../../src/arch/irq.mln";
+import scheduler from "../../src/kernel/scheduler.mln";
+
+i32 task0_done = 0;
+i32 task1_done = 0;
+i32 task0_result = 0;
+i32 task1_result = 0;
+i32 task0_sequence = 0;
+i32 task1_sequence = 0;
+i32 verdict_reported = 0;
+
+i32 work0(i32 value) { return value + 10; }
+i32 work1(i32 value) { return value + 20; }
+i32 sequence(i32 value) { return value; }
+
+// Each fake spins while its target is active. Timer preemption then lets the
+// other task enter a different mock. On resumption call_original must still
+// select this fake's target, not the other task's most recent target.
+i32 fake_work0(i32 value) {
+    i32 spin = 0;
+    while (spin < 20000) spin = spin + 1;
+    return mock.call_original(value);
+}
+
+i32 fake_work1(i32 value) {
+    i32 spin = 0;
+    while (spin < 20000) spin = spin + 1;
+    return mock.call_original(value);
+}
+
+void report_if_complete() {
+    if (task0_done != 0 && task1_done != 0 && verdict_reported == 0) {
+        verdict_reported = 1;
+        assert.assert_true(task0_result == 10, "task0 keeps work0 as call_original target");
+        assert.assert_true(task1_result == 21, "task1 keeps work1 as call_original target");
+        assert.assert_true(task0_sequence == 10, "task0 starts its return sequence at first value");
+        assert.assert_true(task1_sequence == 10, "task1 has an independent return sequence cursor");
+        assert.assert_true(mock.calls(work0) == 1, "context histories include task0 call");
+        assert.assert_true(mock.calls(work1) == 1, "context histories include task1 call");
+        assert.assert_true(mock.calls(sequence) == 2, "context histories aggregate both sequence calls");
+        testkit.pass("mock contexts survive scheduler switching");
+    }
+}
+
+void task1() {
+    task1_sequence = sequence(1);
+    task1_result = work1(1);
+    task1_done = 1;
+    report_if_complete();
+    while (1) {}
+}
+
+/*@Test "mock contexts survive scheduler switching" {
+    timer_interval: 3000;
+    step: 10000000;
+}*/
+void mock_contexts_survive_scheduler_switching() {
+    heap.init();
+    scheduler.init();
+    mock.set_context_provider(scheduler.current_context);
+
+    mock.spy(work0).when(0).call(fake_work0);
+    mock.spy(work1).when(1).call(fake_work1);
+    mock.of(sequence).when(mock.any()).ret(10).then_ret(20);
+
+    i32 spawned = case scheduler.spawn_task(task1) of {
+        Ok(_) -> 1;
+        Err(_) -> 0;
+    };
+    assert.assert_true(spawned == 1, "spawn second task");
+
+    irq.set_handler();
+    irq.enable();
+
+    task0_sequence = sequence(0);
+    task0_result = work0(0);
+    task0_done = 1;
+    report_if_complete();
+    while (1) {}
+}
