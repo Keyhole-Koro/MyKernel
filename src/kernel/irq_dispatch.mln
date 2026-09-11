@@ -4,6 +4,7 @@ import mem from "../mm/mem.mln";
 import scheduler from "scheduler.mln";
 import serial from "../io/serial.mln";
 import mouse from "../io/mouse.mln";
+import keyboard from "../io/keyboard.mln";
 import debug from "../debug/debug.mln";
 import process from "process.mln";
 import syscall from "syscall.mln";
@@ -20,6 +21,7 @@ i32 IRQ_CAUSE_SSD    = 8;
 i32 IRQ_CAUSE_SYSCALL = 16;
 i32 IRQ_CAUSE_PAGE_FAULT = 32;
 i32 IRQ_CAUSE_PRIVILEGE_VIOLATION = 64;
+i32 IRQ_CAUSE_KEYBOARD = 128;
 
 // irq_entry's fixed prologue leaves the interrupted bp/lr and the CPU's
 // saved SR/PC directly above the synthetic frame allocated by
@@ -60,6 +62,10 @@ export void dispatch(i32 sp) {
 
     if ((cause & IRQ_CAUSE_MOUSE) != 0) {
         mouse.drain_hw();
+    }
+
+    if ((cause & IRQ_CAUSE_KEYBOARD) != 0) {
+        keyboard.drain_hw();
     }
 
     // Handle synchronous traps first

@@ -17,8 +17,11 @@ i32 MOUSE_EVT_X_ADDR      = 0x24000050;
 i32 MOUSE_EVT_Y_ADDR      = 0x24000054;
 i32 MOUSE_EVT_BTN_ADDR    = 0x24000058;
 i32 MOUSE_EVT_POP_ADDR    = 0x2400005C;
+i32 MOUSE_EVT_WHEEL_ADDR  = 0x240000B4; // signed wheel steps on the head event
 
 i32 MOUSE_BUTTON_LEFT = 0x1;
+i32 MOUSE_BUTTON_RIGHT = 0x2;
+i32 MOUSE_BUTTON_MIDDLE = 0x4;
 
 export i32 x() {
     return mem.read_word(MOUSE_X_ADDR);
@@ -28,7 +31,7 @@ export i32 y() {
     return mem.read_word(MOUSE_Y_ADDR);
 }
 
-// Raw button bitmask (bit0 = left).
+// Raw button bitmask (bit0 = left, bit1 = right, bit2 = middle).
 export i32 buttons() {
     return mem.read_word(MOUSE_BUTTONS_ADDR);
 }
@@ -37,6 +40,15 @@ export i32 buttons() {
 export i32 left_down() {
     return buttons() & MOUSE_BUTTON_LEFT;
 }
+
+export i32 right_down() {
+    return buttons() & MOUSE_BUTTON_RIGHT;
+}
+
+// Button bits, as functions so other packages can mask event_btn() with them.
+export i32 BTN_LEFT() { return MOUSE_BUTTON_LEFT; }
+export i32 BTN_RIGHT() { return MOUSE_BUTTON_RIGHT; }
+export i32 BTN_MIDDLE() { return MOUSE_BUTTON_MIDDLE; }
 
 // --- software event queue ---
 // The mouse IRQ handler drains the hardware FIFO into this ring buffer; the
@@ -47,6 +59,7 @@ i32 QUEUE_SIZE = 64;
 i32 q_x[64];
 i32 q_y[64];
 i32 q_btn[64];
+i32 q_wheel[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
@@ -59,6 +72,7 @@ export void drain_hw() {
         i32 nx = mem.read_word(MOUSE_EVT_X_ADDR);
         i32 ny = mem.read_word(MOUSE_EVT_Y_ADDR);
         i32 nb = mem.read_word(MOUSE_EVT_BTN_ADDR);
+        i32 nw = mem.read_word(MOUSE_EVT_WHEEL_ADDR);
         mem.write_word(MOUSE_EVT_POP_ADDR, 1);
 
         i32 next = (q_tail + 1) % QUEUE_SIZE;
@@ -66,6 +80,7 @@ export void drain_hw() {
             q_x[q_tail] = nx;
             q_y[q_tail] = ny;
             q_btn[q_tail] = nb;
+            q_wheel[q_tail] = nw;
             q_tail = next;
         }
     }
@@ -79,6 +94,8 @@ export i32 has_event() {
 export i32 event_x() { return q_x[q_head]; }
 export i32 event_y() { return q_y[q_head]; }
 export i32 event_btn() { return q_btn[q_head]; }
+// Wheel steps carried by the head event: positive = scroll up, 0 = none.
+export i32 event_wheel() { return q_wheel[q_head]; }
 
 export void pop_event() {
     if (q_head != q_tail) {

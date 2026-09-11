@@ -130,3 +130,37 @@ void dom_lowering() {
         i = i + 1;
     }
 }
+
+// Three levels of elements with closing tags. The lexer used to leave one
+// stale text-mode entry per nested closing tag, so the file after the
+// outermost `</Window>` was lexed as MLX text and the module failed to
+// parse ("unexpected toplevel construct") -- MYOS-014.
+i32 Row(i32 x, i32 y, i32 w, i32 h, i32 padding, i32 gap) { return 70; }
+
+/*@Test "dom lowering nests three deep" {
+    step: 10000000;
+}*/
+void dom_lowering_nested() {
+    g_append_count = 0;
+    i32 root = <Window title="Deep" x={1} y={2} w={3} h={4}>
+        <Column x={0} y={0} w={1} h={1} padding={0} gap={0}>
+            <Row x={0} y={0} w={1} h={1} padding={0} gap={0}>
+                <Button text="OK" x={0} y={0} w={1} h={1} onClick={on_click} />
+                <Text text="hi" x={0} y={0} />
+            </Row>
+            <Note text="nested" x={0} y={0} />
+        </Column>
+        <Text text="after" x={0} y={0} />
+    </Window>;
+    assert.assert_true(root == 10, "root is the window");
+    // Row > [Button, Text], Column > [Row, Note], Window > [Column, Text]
+    i32 expected_parents[6] = {70, 70, 50, 50, 10, 10};
+    i32 expected_children[6] = {20, 30, 70, 60, 50, 30};
+    assert.assert_true(g_append_count == 6, "six appends across three levels");
+    i32 i = 0;
+    while (i < g_append_count) {
+        assert.assert_true(g_append_parents[i] == expected_parents[i], "nested append parent order");
+        assert.assert_true(g_append_children[i] == expected_children[i], "nested append child order");
+        i = i + 1;
+    }
+}

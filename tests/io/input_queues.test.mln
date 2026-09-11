@@ -1,0 +1,63 @@
+import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import keyboard from "../../src/io/keyboard.mln";
+import mouse from "../../src/io/mouse.mln";
+
+// The keyboard and mouse drivers each keep a software ring buffer that the
+// IRQ handler fills from the hardware FIFO and the compositor drains. These
+// tests pin the queue contract (FIFO order, pop, empty detection, overflow
+// drops the newest) using the drivers' inject hooks, which bypass MMIO.
+
+/*@Test "keyboard queue is FIFO and drops when full" {
+    step: 2000000;
+}*/
+void keyboard_queue() {
+    assert.assert_true(keyboard.has_event() == 0, "starts empty");
+
+    keyboard.inject(1, 'a', 0);          // DOWN a
+    keyboard.inject(3, 'A', 1);          // CHAR A, shift held
+    keyboard.inject(2, 'a', 0);          // UP a
+    assert.assert_true(keyboard.has_event(), "has events");
+    assert.assert_true(keyboard.event_type(), "first is DOWN");
+    assert.assert_true(keyboard.event_code() == 'a', "down code");
+    keyboard.pop_event();
+    assert.assert_true(keyboard.event_type() == 3, "then CHAR");
+    assert.assert_true(keyboard.event_code() == 'A', "char code");
+    assert.assert_true(keyboard.event_mods(), "char carries mods");
+    keyboard.pop_event();
+    assert.assert_true(keyboard.event_type() == 2, "then UP");
+    keyboard.pop_event();
+    assert.assert_true(keyboard.has_event() == 0, "drained");
+    keyboard.pop_event(); // popping an empty queue is harmless
+    assert.assert_true(keyboard.has_event() == 0, "still empty");
+
+    // Capacity is 64 slots, one of which stays free to tell full from empty.
+    i32 i = 0;
+    while (i < 70) {
+        keyboard.inject(3, '0' + (i % 10), 0);
+        i = i + 1;
+    }
+    i32 n = 0;
+    while (keyboard.has_event() != 0) {
+        keyboard.pop_event();
+        n = n + 1;
+    }
+    assert.assert_true(n == 63, "overflowing injects are dropped, not wrapped");
+}
+
+/*@Test "key codes are stable" {
+    step: 1000000;
+}*/
+void key_codes() {
+    // The compositor and dom.mln hard-code a few of these (see
+    // dom.dispatch_key_event); pin them against the emulator's constants.rs.
+    assert.assert_true(keyboard.KEY_BACKSPACE() == 8, "backspace");
+    assert.assert_true(keyboard.KEY_ENTER() == 13, "enter");
+    assert.assert_true(keyboard.KEY_DELETE() == 127, "delete");
+    assert.assert_true(keyboard.KEY_LEFT() == 0x101, "left");
+    assert.assert_true(keyboard.KEY_RIGHT() == 0x102, "right");
+    assert.assert_true(keyboard.KEY_HOME() == 0x105, "home");
+    assert.assert_true(keyboard.KEY_END() == 0x106, "end");
+    assert.assert_true(mouse.BTN_LEFT(), "left button bit");
+    assert.assert_true(mouse.BTN_RIGHT() == 2, "right button bit");
+    assert.assert_true(mouse.BTN_MIDDLE() == 4, "middle button bit");
+}
