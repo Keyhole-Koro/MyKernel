@@ -7,6 +7,7 @@ import mem from "../../src/mm/mem.mln";
 import mmu from "../../src/mm/mmu.mln";
 import scheduler from "../../src/kernel/scheduler.mln";
 import process from "../../src/kernel/process.mln";
+import { ProcessState } from "../../src/kernel/process.mln";
 import loader from "../../src/kernel/loader.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
@@ -275,7 +276,7 @@ void process_lifecycle_and_protection() {
     // Loop in kernel task 0 until process 1 finishes
     while (1) {
         i32 state = process.get_state(pid1);
-        if (state == process.state_zombie()) {
+        if (state == Zombie) {
             i32 code = process.get_exit_code(pid1);
             if (code == 42) {
                 debug.println("SUCCESS: MBIN v2 process 1 exited cleanly with code 42!");
@@ -302,7 +303,7 @@ void process_lifecycle_and_protection() {
     // Wait for process 2 to trigger Page Fault and terminate with code -14
     while (1) {
         i32 state = process.get_state(pid2);
-        if (state == process.state_zombie()) {
+        if (state == Zombie) {
             i32 code = process.get_exit_code(pid2);
             if (code == -14) {
                 debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");

@@ -5,11 +5,13 @@ import mmu from "../mm/mmu.mln";
 import heap from "../mm/heap.mln";
 import debug from "../debug/debug.mln";
 import process from "process.mln";
+import { ProcessState } from "process.mln";
 import scheduler from "scheduler.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { MmuError } from "../mm/mmu.mln";
 import { ProcessError } from "process.mln";
+import { SchedulerError } from "scheduler.mln";
 
 export enum LoaderError {
     ProcSlotFull,        // Process slot table exhausted
@@ -278,6 +280,10 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     i32 sp = kstack_top;
     sp = sp - 4; mem.write_word(sp, entry_point);     // PC
     sp = sp - 4; mem.write_word(sp, 0x21);            // SR (SR_USER=0x20 | SR_IE=0x01)
+    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry PC slot
+    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry SR slot
+    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry lr slot
+    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry bp slot
     sp = sp - 4; mem.write_word(sp, 0);               // lr
     sp = sp - 4; mem.write_word(sp, 0);               // bp
     sp = sp - 4; mem.write_word(sp, 0);               // r0
@@ -292,13 +298,16 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     process.set_kernel_sp(pid, sp);
 
     // 7. Spawn task in scheduler
-    i32 tid = scheduler.spawn_proc_task(pid, sp);
-    if (tid < 0) {
-        debug.println("loader: failed to spawn task");
-        process.free_proc(pid);
-        return Err(LoaderError::SpawnTaskFailed);
-    }
+    Result<i32, SchedulerError> spawn_res = scheduler.spawn_proc_task(pid, sp);
+    case spawn_res of {
+        Ok(_) -> 0;
+        Err(_) -> ({
+            debug.println("loader: failed to spawn task");
+            process.free_proc(pid);
+            return Err(LoaderError::SpawnTaskFailed);
+        });
+    };
 
-    process.set_state(pid, process.state_ready());
+    process.set_state(pid, Ready);
     return Ok(pid);
 }

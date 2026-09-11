@@ -11,24 +11,20 @@ export enum ProcessError {
 }
 
 // Process States
-i32 PROC_UNUSED  = 0;
-i32 PROC_READY   = 1;
-i32 PROC_RUNNING = 2;
-i32 PROC_BLOCKED = 3;
-i32 PROC_ZOMBIE  = 4;
-
-export i32 state_unused()  { return 0; }
-export i32 state_ready()   { return 1; }
-export i32 state_running() { return 2; }
-export i32 state_blocked() { return 3; }
-export i32 state_zombie()  { return 4; }
+export enum ProcessState {
+    Unused,
+    Ready,
+    Running,
+    Blocked,
+    Zombie,
+}
 
 i32 MAX_PROCS = 16;
 i32 MAX_FDS   = 8;
 
-typedef struct {
+export struct Process {
     i32 pid;              // Process ID (1..16, 0 = Unused)
-    i32 state;            // PROC_*
+    ProcessState state;
     i32 pdbr;             // Physical address of Page Directory
     i32 kernel_stack_top; // Physical top of dedicated kernel stack
     i32 kernel_sp;        // Saved kernel stack pointer
@@ -37,7 +33,7 @@ typedef struct {
     i32 heap_break;       // Current user heap break (starts at 0x41000000)
     i32 exit_code;        // Exit code
     i32 task_id;          // Associated scheduler task index
-} Process;
+};
 
 Process g_procs[16];
 i32 g_proc_fds[128]; // 16 procs * 8 fds
@@ -49,7 +45,7 @@ export void init() {
     while (i < MAX_PROCS) {
         g_procs[i] = Process {
             pid: 0,
-            state: PROC_UNUSED,
+            state: Unused,
             pdbr: 0,
             kernel_stack_top: 0,
             kernel_sp: 0,
@@ -79,10 +75,10 @@ export Result<i32, ProcessError> alloc_proc() {
 
     i32 i = 0;
     while (i < MAX_PROCS) {
-        if (g_procs[i].state == PROC_UNUSED) {
+        if (g_procs[i].state == Unused) {
             i32 pid = i + 1;
             g_procs[i].pid = pid;
-            g_procs[i].state = PROC_READY;
+            g_procs[i].state = Ready;
             g_procs[i].exit_code = 0;
             g_procs[i].task_id = -1;
 
@@ -109,7 +105,7 @@ export void free_proc(i32 pid) {
     i32 idx = pid - 1;
     g_procs[idx] = Process {
         pid: 0,
-        state: PROC_UNUSED,
+        state: Unused,
         pdbr: 0,
         kernel_stack_top: 0,
         kernel_sp: 0,
@@ -139,12 +135,12 @@ export void set_current_pid(i32 pid) {
     g_current_pid = pid;
 }
 
-export i32 get_state(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return PROC_UNUSED; }
+export ProcessState get_state(i32 pid) {
+    if (pid <= 0 || pid > MAX_PROCS) { return Unused; }
     return g_procs[pid - 1].state;
 }
 
-export void set_state(i32 pid, i32 state) {
+export void set_state(i32 pid, ProcessState state) {
     if (pid <= 0 || pid > MAX_PROCS) { return; }
     g_procs[pid - 1].state = state;
 }

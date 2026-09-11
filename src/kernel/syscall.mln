@@ -5,6 +5,7 @@ import mmu from "../mm/mmu.mln";
 import serial from "../io/serial.mln";
 import debug from "../debug/debug.mln";
 import process from "process.mln";
+import { ProcessState } from "process.mln";
 import scheduler from "scheduler.mln";
 import loader from "loader.mln";
 import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
@@ -32,10 +33,11 @@ export i32 SYS_SPAWN = 9;
 // if they ever do, that's a kernel invariant broken, not a recoverable
 // syscall error, and is handled by panicking on the spot (see sys_sbrk).
 export enum SyscallError {
-    NoProcess,     // No process is currently executing
-    OutOfMemory,   // Physical frame allocation failed
-    HeapOverflow,  // New heap break would collide with the stack
-    BadFd,         // Unsupported file descriptor
+    NoProcess,      // No process is currently executing
+    OutOfMemory,    // Physical frame allocation failed
+    HeapOverflow,   // New heap break would collide with the stack
+    BadFd,          // Unsupported file descriptor
+    UnknownSyscall, // sys_nr doesn't match any dispatched syscall
 }
 
 // Typed result of syscall dispatch. It keeps the user-visible return value
@@ -63,6 +65,7 @@ export i32 error_code(SyscallError error) {
         OutOfMemory -> -2;
         HeapOverflow -> -3;
         BadFd -> -4;
+        UnknownSyscall -> -5;
     };
 }
 
@@ -71,7 +74,7 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 export void sys_exit(i32 code) {
     i32 pid = process.get_current_pid();
     if (pid > 0) {
-        process.set_state(pid, process.state_zombie());
+        process.set_state(pid, Zombie);
         process.set_exit_code(pid, code);
         i32 tid = process.get_task_id(pid);
         scheduler.terminate_task(tid);
@@ -230,8 +233,5 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         return Ok(outcome);
     }
 
-    DispatchOutcome outcome;
-    outcome.next_sp = sp;
-    outcome.return_value = -1;
-    return Ok(outcome);
+    return Err(SyscallError::UnknownSyscall);
 }
