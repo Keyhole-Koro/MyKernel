@@ -7,13 +7,15 @@ import heap from "../../src/mm/heap.mln";
 // this request cannot fit. Spy intercepts the terminal debug.panic call: the
 // test can assert the intended failure path without serial-output matching or
 // an emulator halt.
+void fake_panic(char* msg) {}
+
 /*@Test "heap exhaustion reports panic" { step: 1000000; }*/
 void heap_exhaustion_reports_panic() {
     heap.init();
 
     mock.spy(debug.panic)
         .when(mock.any())
-        .ret(0);
+        .call(fake_panic);
 
     i32 allocation = heap.alloc(1048576);
 
