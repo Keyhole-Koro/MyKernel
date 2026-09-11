@@ -1,80 +1,132 @@
 import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import str from "../../../../toolchain/MyStdLib/str.mln";
+import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
 
 // End-to-end check of the .dom.mln lowering contract: a tag calls the function
 // of the same name, a property is handed to the parameter of the same name
-// whatever order it is written in, and children are attached with append_child.
+// whatever order it is written in, and children are attached with append_child
+// in source order.
+//
+// Every element function below is a bare stub returning its own id. TestKit
+// spies on each one, so the assertions inspect what lowering actually called
+// (property values, call order, indirect-call targets) instead of baking
+// checks into the elements themselves -- the same style used by the
+// scheduler/process mock tests.
 
+i32 Window(char *title, i32 x, i32 y, i32 w, i32 h) { return 10; }
+i32 Button(char *text, i32 x, i32 y, i32 w, i32 h, i32 onClick) { onClick(99); return 20; }
+i32 Text(char *text, i32 x, i32 y) { return 30; }
+i32 Box(i32 x, i32 y, i32 w, i32 h, i32 background, i32 border) { return 40; }
+i32 Column(i32 x, i32 y, i32 w, i32 h, i32 padding, i32 gap) { return 50; }
+// A second-level child nested under Box, to exercise more-than-one-level
+// recursive lowering (a child that is itself a parent).
+i32 Note(char *text, i32 x, i32 y) { return 60; }
+
+// Called indirectly through the onClick parameter (a function-pointer value),
+// not by a direct call on the `on_click` identifier -- TestKit's mock/spy
+// redirect only patches direct calls, so this callback is checked by hand
+// instead of through mock.called_with/mock.calls.
 i32 g_clicks = 0;
-i32 g_appends = 0;
+i32 g_click_id = -1;
 
 void on_click(i32 id) {
-    assert.assert_true(id == 99, "Button onClick receives the indirect-call id");
     g_clicks = g_clicks + 1;
+    g_click_id = id;
 }
 
-i32 Window(char *title, i32 x, i32 y, i32 w, i32 h) {
-    assert.assert_str_eq(title, "Root", "Window title property");
-    assert.assert_true(x == 1 && y == 2 && w == 3 && h == 4,
-                       "Window properties map by name");
-    return 10;
-}
-
-i32 Button(char *text, i32 x, i32 y, i32 w, i32 h, i32 onClick) {
-    assert.assert_str_eq(text, "OK", "Button text property");
-    assert.assert_true(x == 5 && y == 6 && w == 7 && h == 8,
-                       "Button out-of-order properties map by name");
-    onClick(99);
-    return 20;
-}
-
-i32 Text(char *text, i32 x, i32 y) {
-    assert.assert_str_eq(text, "hi", "Text property");
-    assert.assert_true(x == 9 && y == 10, "Text coordinates");
-    return 30;
-}
-
-i32 Box(i32 x, i32 y, i32 w, i32 h, i32 background, i32 border) {
-    assert.assert_true(x == 10 && y == 13 && w == 15 && h == 14
-                       && background == 11 && border == 12,
-                       "Box out-of-order properties map by name");
-    return 40;
-}
-
-i32 Column(i32 x, i32 y, i32 w, i32 h, i32 padding, i32 gap) {
-    assert.assert_true(x == 30 && y == 31 && w == 40 && h == 50
-                       && padding == 5 && gap == 6,
-                       "Column out-of-order properties map by name");
-    return 50;
-}
+// append_child only needs to remember what it was called with and in what
+// order; the assertions below check the recording afterwards.
+i32 g_append_parents[8];
+i32 g_append_children[8];
+i32 g_append_count = 0;
 
 void append_child(i32 parent, i32 child) {
-    if (g_appends == 0) {
-        assert.assert_true(parent == 10 && child == 20, "Button appends to Window first");
-    } else if (g_appends == 1) {
-        assert.assert_true(parent == 10 && child == 40, "Box appends to Window second");
-    } else if (g_appends == 2) {
-        assert.assert_true(parent == 10 && child == 50, "Column appends to Window third");
-    } else if (g_appends == 3) {
-        assert.assert_true(parent == 10 && child == 30, "Text appends to Window fourth");
-    } else {
-        assert.assert_true(0, "unexpected DOM append");
-    }
-    g_appends = g_appends + 1;
+    g_append_parents[g_append_count] = parent;
+    g_append_children[g_append_count] = child;
+    g_append_count = g_append_count + 1;
 }
+
+// mock.called_with only compares raw ABI words, so a char* argument needs a
+// content predicate rather than a literal -- two "Root" string literals are
+// not guaranteed to share an address.
+i32 is_root_title(i32 addr) { return str.eq((char *)addr, "Root"); }
+i32 is_ok_text(i32 addr) { return str.eq((char *)addr, "OK"); }
+i32 is_hi_text(i32 addr) { return str.eq((char *)addr, "hi"); }
+i32 is_nested_text(i32 addr) { return str.eq((char *)addr, "nested"); }
 
 /*@Test "dom lowering" {
     step: 10000000;
 }*/
 void dom_lowering() {
-    // Properties are deliberately written out of signature order.
+    mock.spy(Window);
+    mock.spy(Button);
+    mock.spy(Box);
+    mock.spy(Column);
+    mock.spy(Text);
+    mock.spy(Note);
+
+    // Properties are deliberately written out of signature order, and Box
+    // nests a further child so recursion is exercised past one level.
     i32 root = <Window title="Root" x={1} y={2} w={3} h={4}>
         <Button x={5} text="OK" onClick={on_click} y={6} w={7} h={8} />
-        <Box background={11} h={14} x={10} border={12} y={13} w={15} />
+        <Box background={11} h={14} x={10} border={12} y={13} w={15}>
+            <Note text="nested" x={20} y={21} />
+        </Box>
         <Column gap={6} x={30} h={50} y={31} padding={5} w={40} />
         <Text text="hi" x={9} y={10} />
     </Window>;
 
     assert.assert_true(root == 10, "Window return value becomes root expression");
-    assert.assert_true(g_clicks == 1, "Button callback is invoked once");
-    assert.assert_true(g_appends == 4, "every direct Window child is appended once");
+
+    // --- Properties: one assertion per field, so a failure names the exact
+    // property that broke instead of one combined boolean. ---
+    assert.assert_true(mock.called_with(Window, mock.match(is_root_title)), "Window title property");
+    assert.assert_true(mock.called_with(Window, mock.any(), 1), "Window x property");
+    assert.assert_true(mock.called_with(Window, mock.any(), mock.any(), 2), "Window y property");
+    assert.assert_true(mock.called_with(Window, mock.any(), mock.any(), mock.any(), 3), "Window w property");
+    assert.assert_true(mock.called_with(Window, mock.any(), mock.any(), mock.any(), mock.any(), 4), "Window h property");
+
+    assert.assert_true(mock.called_with(Button, mock.match(is_ok_text)), "Button text property");
+    assert.assert_true(mock.called_with(Button, mock.any(), 5), "Button x property");
+    assert.assert_true(mock.called_with(Button, mock.any(), mock.any(), 6), "Button y property");
+    assert.assert_true(mock.called_with(Button, mock.any(), mock.any(), mock.any(), 7), "Button w property");
+    assert.assert_true(mock.called_with(Button, mock.any(), mock.any(), mock.any(), mock.any(), 8), "Button h property");
+    assert.assert_true(g_clicks == 1, "Button callback is invoked exactly once");
+    assert.assert_true(g_click_id == 99, "Button onClick receives the indirect-call id");
+
+    assert.assert_true(mock.called_with(Box, 10), "Box x property");
+    assert.assert_true(mock.called_with(Box, mock.any(), 13), "Box y property");
+    assert.assert_true(mock.called_with(Box, mock.any(), mock.any(), 15), "Box w property");
+    assert.assert_true(mock.called_with(Box, mock.any(), mock.any(), mock.any(), 14), "Box h property");
+    assert.assert_true(mock.called_with(Box, mock.any(), mock.any(), mock.any(), mock.any(), 11), "Box background property");
+    assert.assert_true(mock.called_with(Box, mock.any(), mock.any(), mock.any(), mock.any(), mock.any(), 12), "Box border property");
+
+    assert.assert_true(mock.called_with(Column, 30), "Column x property");
+    assert.assert_true(mock.called_with(Column, mock.any(), 31), "Column y property");
+    assert.assert_true(mock.called_with(Column, mock.any(), mock.any(), 40), "Column w property");
+    assert.assert_true(mock.called_with(Column, mock.any(), mock.any(), mock.any(), 50), "Column h property");
+    assert.assert_true(mock.called_with(Column, mock.any(), mock.any(), mock.any(), mock.any(), 5), "Column padding property");
+    assert.assert_true(mock.called_with(Column, mock.any(), mock.any(), mock.any(), mock.any(), mock.any(), 6), "Column gap property");
+
+    assert.assert_true(mock.called_with(Text, mock.match(is_hi_text)), "Text text property");
+    assert.assert_true(mock.called_with(Text, mock.any(), 9), "Text x property");
+    assert.assert_true(mock.called_with(Text, mock.any(), mock.any(), 10), "Text y property");
+
+    assert.assert_true(mock.called_with(Note, mock.match(is_nested_text)), "Note (nested grandchild) text property");
+    assert.assert_true(mock.called_with(Note, mock.any(), 20), "Note x property");
+    assert.assert_true(mock.called_with(Note, mock.any(), mock.any(), 21), "Note y property");
+
+    // --- Children: appended once each, in source order, to their real
+    // parent -- including the grandchild appended one level down. ---
+    i32 expected_parents[5] = {10, 40, 10, 10, 10};
+    i32 expected_children[5] = {20, 60, 40, 50, 30};
+
+    assert.assert_true(g_append_count == 5,
+                       "every DOM append is recorded (4 Window children + 1 nested Box child)");
+    i32 i = 0;
+    while (i < g_append_count) {
+        assert.assert_true(g_append_parents[i] == expected_parents[i], "append parent matches expected order");
+        assert.assert_true(g_append_children[i] == expected_children[i], "append child matches expected order");
+        i = i + 1;
+    }
 }
