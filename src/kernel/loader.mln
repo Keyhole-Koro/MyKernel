@@ -97,6 +97,17 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
     return Ok(_);
 }
 
+// Every caller reaches this helper with a PID returned by alloc_proc.  A
+// failure would mean the process table changed underneath the loader, which
+// is a kernel invariant violation rather than another loading error.
+void release_proc(i32 pid) {
+    Result<_, ProcessError> release = process.free_proc(pid);
+    case release of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared during cleanup"); });
+    };
+}
+
 // Spawns a new process from raw binary instructions located at `code_ptr`.
 // Automatically detects MBIN v2 header (0x4D42494E) for segment separation & W^X,
 // or falls back to flat binary loading for legacy compatibility.
@@ -113,6 +124,9 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             debug.println("loader: invalid pid allocated");
             return Err(LoaderError::ProcSlotFull);
         });
+        Err(InvalidFd(fd)) -> ({
+            debug.panic("loader: alloc_proc returned an invalid file descriptor error");
+        });
     };
 
     // 1. Create Page Directory and map kernel regions identity
@@ -120,7 +134,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Some(d) -> d;
         None -> ({
             debug.println("loader: failed to allocate page directory");
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
     };
@@ -129,21 +143,33 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Ok(_) -> 0;
         Err(AllocFailed) -> ({
             debug.println("loader: failed to setup identity kernel mapping");
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
         Err(e) -> ({
             debug.printf("loader: mmu error setting up identity mapping, pd=0x%x\n", pd);
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::Mmu(e));
         });
     };
-    process.set_pdbr(pid, pd);
+    Result<_, ProcessError> set_pdbr = process.set_pdbr(pid, pd);
+    case set_pdbr of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting pdbr"); });
+    };
 
     // 2. Check for MBIN v2 executable header
     i32 entry_point = USER_CODE_BASE;
     i32 initial_brk = USER_HEAP_BASE;
     i32 is_mbin = 0;
+    // Where the text segment is mapped. A v2 image is mapped at the address
+    // it was linked at (the page holding its entry point): MyLang loads
+    // symbol addresses with a 21-bit immediate, so compiled programs must
+    // be linked below 2 MB (qa/runners/build_user_apps.py uses 0x20000,
+    // unused RAM below the kernel image) rather than at USER_CODE_BASE.
+    // Their pages replace the kernel identity mapping of that range in the
+    // process's own page directory only, so isolation is unchanged.
+    i32 code_base = USER_CODE_BASE;
 
     if (code_size >= 32) {
         i32 magic = read_be32(code_ptr);
@@ -163,44 +189,45 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
 
         if (version != 1) {
             debug.println("loader: unsupported MBIN version");
-            process.free_proc(pid);
+            release_proc(pid);
             LoaderError cause = InvalidHeader(version);
             return Err(cause);
         }
         if (text_offset + text_size > code_size) {
             debug.println("loader: invalid text section bounds");
-            process.free_proc(pid);
+            release_proc(pid);
             LoaderError cause = InvalidBounds(code_size);
             return Err(cause);
         }
         if (data_offset + data_size > code_size) {
             debug.println("loader: invalid data section bounds");
-            process.free_proc(pid);
+            release_proc(pid);
             LoaderError cause = InvalidBounds(code_size);
             return Err(cause);
         }
 
         debug.printf("loader: loading MBIN v%d (entry=0x%x, text_sz=%d, data_sz=%d, bss_sz=%d)\n",
                      version, entry_point, text_size, data_size, bss_size);
+        code_base = entry_point & 0xFFFFF000;
 
         // Map Text segment as RX (Read + Execute, No Write)
-        Result<_, LoaderError> map_text = map_segment(pd, USER_CODE_BASE, code_ptr + text_offset, text_size, PTE_USER_RX);
+        Result<_, LoaderError> map_text = map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX);
         case map_text of {
             Ok(_)  -> 0;
             Err(e) -> ({
-                process.free_proc(pid);
+                release_proc(pid);
                 return Err(e);
             });
         };
 
         // Map Data segment as RW (Read + Write, No Execute)
-        i32 data_vaddr = USER_CODE_BASE + align_up_4k(text_size);
+        i32 data_vaddr = code_base + align_up_4k(text_size);
         if (data_size > 0) {
             Result<_, LoaderError> map_data = map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW);
             case map_data of {
                 Ok(_)  -> 0;
                 Err(e) -> ({
-                    process.free_proc(pid);
+                    release_proc(pid);
                     return Err(e);
                 });
             };
@@ -213,7 +240,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             case map_bss of {
                 Ok(_)  -> 0;
                 Err(e) -> ({
-                    process.free_proc(pid);
+                    release_proc(pid);
                     return Err(e);
                 });
             };
@@ -231,7 +258,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         case map_flat of {
             Ok(_)  -> 0;
             Err(e) -> ({
-                process.free_proc(pid);
+                release_proc(pid);
                 return Err(e);
             });
         };
@@ -242,7 +269,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Some(f) -> f;
         None -> ({
             debug.println("loader: out of memory for user stack frame");
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
     };
@@ -251,30 +278,48 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Ok(_) -> 0;
         Err(AllocFailed) -> ({
             debug.println("loader: failed to map user stack page");
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
         Err(e) -> ({
             debug.println("loader: mmu error mapping user stack");
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::Mmu(e));
         });
     };
 
-    // 4. Allocate kernel stack
-    i32 kstack = heap.alloc(1024);
+    // 4. Allocate kernel stack. Syscalls run on it, and a console hook
+    // (syscall.set_console) reaches into the desktop's DOM from there, so it
+    // is sized for a few nested MyLang frames rather than a bare dispatcher.
+    i32 kstack = heap.alloc(4096);
     if (kstack == 0) {
         debug.println("loader: out of memory for kernel stack");
-        process.free_proc(pid);
+        release_proc(pid);
         return Err(LoaderError::OutOfMemory);
     }
-    i32 kstack_top = kstack + 1024;
-    process.set_kernel_stack_top(pid, kstack_top);
+    i32 kstack_top = kstack + 4096;
+    Result<_, ProcessError> set_kstack_top = process.set_kernel_stack_top(pid, kstack_top);
+    case set_kstack_top of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting kernel stack"); });
+    };
 
     // 5. Initialize process registers and state
-    process.set_user_sp(pid, USER_STACK_TOP);
-    process.set_user_entry(pid, entry_point);
-    process.set_heap_break(pid, initial_brk);
+    Result<_, ProcessError> set_user_sp = process.set_user_sp(pid, USER_STACK_TOP);
+    case set_user_sp of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting user stack"); });
+    };
+    Result<_, ProcessError> set_user_entry = process.set_user_entry(pid, entry_point);
+    case set_user_entry of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting entry point"); });
+    };
+    Result<_, ProcessError> set_heap_break = process.set_heap_break(pid, initial_brk);
+    case set_heap_break of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting heap break"); });
+    };
 
     // 6. Build initial interrupt stack frame for iret to resume
     i32 sp = kstack_top;
@@ -295,7 +340,11 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     sp = sp - 4; mem.write_word(sp, 0);               // r6
     sp = sp - 4; mem.write_word(sp, 0);               // r7
 
-    process.set_kernel_sp(pid, sp);
+    Result<_, ProcessError> set_kernel_sp = process.set_kernel_sp(pid, sp);
+    case set_kernel_sp of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting kernel context"); });
+    };
 
     // 7. Spawn task in scheduler
     Result<i32, SchedulerError> spawn_res = scheduler.spawn_proc_task(pid, sp);
@@ -303,11 +352,15 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Ok(_) -> 0;
         Err(_) -> ({
             debug.println("loader: failed to spawn task");
-            process.free_proc(pid);
+            release_proc(pid);
             return Err(LoaderError::SpawnTaskFailed);
         });
     };
 
-    process.set_state(pid, Ready);
+    Result<_, ProcessError> set_ready = process.set_state(pid, Ready);
+    case set_ready of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while marking ready"); });
+    };
     return Ok(pid);
 }

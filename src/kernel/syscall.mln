@@ -5,7 +5,7 @@ import mmu from "../mm/mmu.mln";
 import serial from "../io/serial.mln";
 import debug from "../debug/debug.mln";
 import process from "process.mln";
-import { ProcessState } from "process.mln";
+import { ProcessState, ProcessError } from "process.mln";
 import scheduler from "scheduler.mln";
 import loader from "loader.mln";
 import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
@@ -71,14 +71,55 @@ export i32 error_code(SyscallError error) {
 
 i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 
+// --- console and spawn hooks (MYOS-015) ---
+// The kernel owns the syscall boundary but not the desktop: where a
+// process's stdout goes and how a path becomes an executable image are
+// MyOS decisions. MyOS registers handlers here at boot; without them the
+// syscalls fall back to the serial port and SPAWN fails with UnknownSyscall.
+//   console_write(pid, buf, count) -> bytes written (buf is a user address)
+//   console_read(pid, buf, count)  -> bytes read, 0 when no input is pending
+//   spawn(path)                    -> pid > 0, or 0 on failure
+i32 g_console_write = 0;
+i32 g_console_read = 0;
+i32 g_spawn_handler = 0;
+
+export void set_console(i32 write_handler, i32 read_handler) {
+    g_console_write = write_handler;
+    g_console_read = read_handler;
+}
+
+export void set_spawn_handler(i32 handler) {
+    g_spawn_handler = handler;
+}
+
+// The pid of the process issuing the current syscall, or 0.
+i32 current_pid_or_zero() {
+    return case process.get_current_pid() of {
+        Some(value) -> value;
+        None -> 0;
+    };
+}
+
 export void sys_exit(i32 code) {
-    i32 pid = process.get_current_pid();
-    if (pid > 0) {
-        process.set_state(pid, Zombie);
-        process.set_exit_code(pid, code);
-        i32 tid = process.get_task_id(pid);
-        scheduler.terminate_task(tid);
-    }
+    i32 pid = case process.get_current_pid() of {
+        Some(value) -> value;
+        None -> ({ return; });
+    };
+    Result<_, ProcessError> mark_zombie = process.set_state(pid, Zombie);
+    case mark_zombie of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("sys_exit: current process disappeared"); });
+    };
+    Result<_, ProcessError> set_exit_code = process.set_exit_code(pid, code);
+    case set_exit_code of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("sys_exit: current process disappeared"); });
+    };
+    Option<i32> task_id = process.get_task_id(pid);
+    case task_id of {
+        Some(tid) -> scheduler.terminate_task(tid);
+        None -> ({ debug.panic("sys_exit: current process disappeared"); });
+    };
 }
 
 export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
@@ -86,6 +127,12 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
         return Ok(0);
     }
     if (fd == 1 || fd == 2) {
+        i32 handler = g_console_write;
+        if (handler != 0) {
+            i32 pid = current_pid_or_zero();
+            i32 written = handler(pid, buf, count);
+            return Ok(written);
+        }
         i32 i = 0;
         while (i < count) {
             i32 c = mem.read_byte(buf + i);
@@ -103,6 +150,12 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
         return Ok(0);
     }
     if (fd == 0) {
+        i32 handler = g_console_read;
+        if (handler != 0) {
+            i32 pid = current_pid_or_zero();
+            i32 got = handler(pid, buf, count);
+            return Ok(got);
+        }
         i32 i = 0;
         while (i < count) {
             if (serial.has_input() == 0) {
@@ -118,12 +171,27 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     return Err(cause);
 }
 
-export Result<i32, SyscallError> sys_sbrk(i32 increment) {
-    i32 pid = process.get_current_pid();
-    if (pid <= 0) {
-        return Err(SyscallError::NoProcess);
+// SYS_SPAWN: start the executable at `path` (a NUL-terminated user-space
+// string) as a new process. The pid comes back to the caller; a failure is
+// reported as 0 so a user shell can print its own message.
+export Result<i32, SyscallError> sys_spawn(i32 path) {
+    i32 handler = g_spawn_handler;
+    if (handler == 0) {
+        return Err(SyscallError::UnknownSyscall);
     }
-    i32 cur_brk = process.get_heap_break(pid);
+    i32 pid = handler(path);
+    return Ok(pid);
+}
+
+export Result<i32, SyscallError> sys_sbrk(i32 increment) {
+    i32 pid = case process.get_current_pid() of {
+        Some(current) -> current;
+        None -> ({ return Err(SyscallError::NoProcess); });
+    };
+    i32 cur_brk = case process.get_heap_break(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(SyscallError::NoProcess); });
+    };
     if (increment == 0) {
         return Ok(cur_brk);
     }
@@ -140,7 +208,10 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
     // Map pages if new_brk crosses page boundaries
     i32 cur_page = (cur_brk + 4095) & ~4095;
     i32 target_page = (new_brk + 4095) & ~4095;
-    i32 pd = process.get_pdbr(pid);
+    i32 pd = case process.get_pdbr(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(SyscallError::NoProcess); });
+    };
 
     while (cur_page < target_page) {
         i32 frame = case mmu.alloc_page() of {
@@ -169,7 +240,11 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         cur_page = cur_page + 4096;
     }
 
-    process.set_heap_break(pid, new_brk);
+    Result<_, ProcessError> set_heap_break = process.set_heap_break(pid, new_brk);
+    case set_heap_break of {
+        Ok(_) -> 0;
+        Err(_) -> ({ return Err(SyscallError::NoProcess); });
+    };
     return Ok(cur_brk);
 }
 
@@ -231,6 +306,10 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         outcome.next_sp = scheduler.tick(sp);
         outcome.return_value = 0;
         return Ok(outcome);
+    }
+    if (sys_nr == SYS_SPAWN) {
+        Result<i32, SyscallError> result = sys_spawn(arg1);
+        return resume_after_syscall(sp, &result);
     }
 
     return Err(SyscallError::UnknownSyscall);

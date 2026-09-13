@@ -1,13 +1,12 @@
 package process;
 
-import mem from "../mm/mem.mln";
-import heap from "../mm/heap.mln";
-import debug from "../debug/debug.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
 export enum ProcessError {
     NoFreeSlot,         // Process slot table exhausted
     InvalidPid(i32),    // PID is out of range or not found
+    InvalidFd(i32),     // File-descriptor index is outside this process table
 }
 
 // Process States
@@ -98,11 +97,25 @@ export Result<i32, ProcessError> alloc_proc() {
     return Err(ProcessError::NoFreeSlot);
 }
 
-export void free_proc(i32 pid) {
+// Converts a public PID into a live process-table index.  Keeping this check
+// in one place is what lets the public API distinguish a real zero-valued
+// field from an invalid/deallocated process instead of relying on sentinels.
+Result<i32, ProcessError> index_for_pid(i32 pid) {
     if (pid <= 0 || pid > MAX_PROCS) {
-        return;
+        return Err(ProcessError::InvalidPid(pid));
     }
     i32 idx = pid - 1;
+    if (g_procs[idx].pid != pid || g_procs[idx].state == Unused) {
+        return Err(ProcessError::InvalidPid(pid));
+    }
+    return Ok(idx);
+}
+
+export Result<_, ProcessError> free_proc(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
     g_procs[idx] = Process {
         pid: 0,
         state: Unused,
@@ -125,114 +138,205 @@ export void free_proc(i32 pid) {
     if (g_current_pid == pid) {
         g_current_pid = 0;
     }
+    return Ok(_);
 }
 
-export i32 get_current_pid() {
-    return g_current_pid;
+// The kernel task/idle context has no process.  Represent that fact directly
+// instead of leaking PID 0 as a special public value.
+export Option<i32> get_current_pid() {
+    if (g_current_pid == 0) {
+        return None;
+    }
+    return Some(g_current_pid);
 }
 
-export void set_current_pid(i32 pid) {
+export Result<_, ProcessError> set_current_pid(i32 pid) {
+    i32 ignored = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
     g_current_pid = pid;
+    return Ok(_);
 }
 
-export ProcessState get_state(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return Unused; }
-    return g_procs[pid - 1].state;
+export void clear_current_pid() {
+    g_current_pid = 0;
 }
 
-export void set_state(i32 pid, ProcessState state) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].state = state;
+export Option<ProcessState> get_state(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].state);
 }
 
-export i32 get_pdbr(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].pdbr;
+export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].state = state;
+    return Ok(_);
 }
 
-export void set_pdbr(i32 pid, i32 pdbr) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].pdbr = pdbr;
+export Option<i32> get_pdbr(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].pdbr);
 }
 
-export i32 get_kernel_stack_top(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].kernel_stack_top;
+export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].pdbr = pdbr;
+    return Ok(_);
 }
 
-export void set_kernel_stack_top(i32 pid, i32 top) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].kernel_stack_top = top;
+export Option<i32> get_kernel_stack_top(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].kernel_stack_top);
 }
 
-export i32 get_kernel_sp(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].kernel_sp;
+export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].kernel_stack_top = top;
+    return Ok(_);
 }
 
-export void set_kernel_sp(i32 pid, i32 sp) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].kernel_sp = sp;
+export Option<i32> get_kernel_sp(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].kernel_sp);
 }
 
-export i32 get_user_sp(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].user_sp;
+export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].kernel_sp = sp;
+    return Ok(_);
 }
 
-export void set_user_sp(i32 pid, i32 usp) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].user_sp = usp;
+export Option<i32> get_user_sp(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].user_sp);
 }
 
-export i32 get_user_entry(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].user_entry;
+export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].user_sp = usp;
+    return Ok(_);
 }
 
-export void set_user_entry(i32 pid, i32 entry) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].user_entry = entry;
+export Option<i32> get_user_entry(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].user_entry);
 }
 
-export i32 get_heap_break(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].heap_break;
+export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].user_entry = entry;
+    return Ok(_);
 }
 
-export void set_heap_break(i32 pid, i32 brk) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].heap_break = brk;
+export Option<i32> get_heap_break(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].heap_break);
 }
 
-export i32 get_exit_code(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return 0; }
-    return g_procs[pid - 1].exit_code;
+export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].heap_break = brk;
+    return Ok(_);
 }
 
-export void set_exit_code(i32 pid, i32 code) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].exit_code = code;
+export Option<i32> get_exit_code(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].exit_code);
 }
 
-export i32 get_task_id(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return -1; }
-    return g_procs[pid - 1].task_id;
+export Result<_, ProcessError> set_exit_code(i32 pid, i32 code) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].exit_code = code;
+    return Ok(_);
 }
 
-export void set_task_id(i32 pid, i32 tid) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    g_procs[pid - 1].task_id = tid;
+export Option<i32> get_task_id(i32 pid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(_) -> ({ return None; });
+    };
+    return Some(g_procs[idx].task_id);
 }
 
-export i32 get_fd(i32 pid, i32 fd) {
-    if (pid <= 0 || pid > MAX_PROCS) { return -1; }
-    if (fd < 0 || fd >= MAX_FDS) { return -1; }
-    return g_proc_fds[(pid - 1) * MAX_FDS + fd];
+export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    g_procs[idx].task_id = tid;
+    return Ok(_);
 }
 
-export void set_fd(i32 pid, i32 fd, i32 val) {
-    if (pid <= 0 || pid > MAX_PROCS) { return; }
-    if (fd < 0 || fd >= MAX_FDS) { return; }
-    g_proc_fds[(pid - 1) * MAX_FDS + fd] = val;
+// A descriptor value of -1 means "closed"; it is valid data, not an API
+// failure.  Therefore this is Result rather than Option.
+export Result<i32, ProcessError> get_fd(i32 pid, i32 fd) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    if (fd < 0 || fd >= MAX_FDS) {
+        return Err(ProcessError::InvalidFd(fd));
+    }
+    return Ok(g_proc_fds[idx * MAX_FDS + fd]);
+}
+
+export Result<_, ProcessError> set_fd(i32 pid, i32 fd, i32 val) {
+    i32 idx = case index_for_pid(pid) of {
+        Ok(index) -> index;
+        Err(error) -> ({ return Err(error); });
+    };
+    if (fd < 0 || fd >= MAX_FDS) {
+        return Err(ProcessError::InvalidFd(fd));
+    }
+    g_proc_fds[idx * MAX_FDS + fd] = val;
+    return Ok(_);
 }

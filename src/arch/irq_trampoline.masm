@@ -36,4 +36,9 @@ irq_resume:
   pop r0
   pop bp
   pop lr
+  ; A frame captured through irq_dispatch_entry has four words between its
+  ; synthetic lr and the CPU's original SR/PC: the copied tail SR/PC and the
+  ; entry function's saved bp/lr.  Skip them so iret consumes the CPU frame
+  ; and leaves the interrupted stack exactly as it was before the IRQ.
+  addis sp, 16
   iret

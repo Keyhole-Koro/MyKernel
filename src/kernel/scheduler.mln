@@ -6,7 +6,7 @@ import heap from "../mm/heap.mln";
 import serial from "../io/serial.mln";
 import mouse from "../io/mouse.mln";
 import process from "process.mln";
-import { ProcessState } from "process.mln";
+import { ProcessState, ProcessError } from "process.mln";
 import mmu from "../mm/mmu.mln";
 import { wfi_cpu } from "../arch/wfi.masm";
 import { halt_cpu } from "../arch/halt.masm";
@@ -48,6 +48,27 @@ i32 task_wake_tick[256];  // Tick when the task should wake up
 // current_task == IDLE_TASK while it runs.
 i32 IDLE_TASK = -1;
 i32 idle_sp = 0;
+
+// Task-to-process links are created atomically by the loader.  If one stops
+// resolving while the scheduler is switching contexts, continuing with a
+// fabricated stack pointer or page directory would corrupt the machine.
+// Keep that invariant explicit at this boundary.
+void require_process_update(Result<_, ProcessError> update) {
+    case update of {
+        Ok(_) -> 0;
+        Err(_) -> ({ debug.panic("scheduler: task references an invalid process"); });
+    };
+}
+
+i32 require_process_value(Option<i32> value) {
+    return case value of {
+        Some(result) -> result;
+        None -> ({
+            debug.panic("scheduler: task references an invalid process");
+            0;
+        });
+    };
+}
 
 // The idle task: burn no CPU until the next interrupt. Never returns; the
 // timer interrupt switches away as soon as any real task becomes runnable.
@@ -122,10 +143,18 @@ export i32 tick(i32 sp) {
         task_sps[current_task] = sp;
         i32 cur_pid = task_pid[current_task];
         if (cur_pid > 0) {
-            process.set_user_sp(cur_pid, mem.read_word(KERNEL_SP_ADDR));
-            if (process.get_state(cur_pid) == Running) {
-                process.set_state(cur_pid, Ready);
-            }
+            Result<_, ProcessError> save_user_sp = process.set_user_sp(cur_pid, mem.read_word(KERNEL_SP_ADDR));
+            require_process_update(save_user_sp);
+            Option<ProcessState> current_state = process.get_state(cur_pid);
+            case current_state of {
+                Some(state) -> ({
+                    if (state == Running) {
+                        Result<_, ProcessError> make_ready = process.set_state(cur_pid, Ready);
+                        require_process_update(make_ready);
+                    }
+                });
+                None -> ({ debug.panic("scheduler: current task references an invalid process"); });
+            };
         }
     } else {
         idle_sp = sp;
@@ -140,12 +169,14 @@ export i32 tick(i32 sp) {
             current_task = next_task; // Switch to next task
             i32 next_pid = task_pid[next_task];
             if (next_pid > 0) {
-                mem.write_word(KERNEL_SP_ADDR, process.get_user_sp(next_pid));
-                mem.write_word(MMU_PDBR_ADDR, process.get_pdbr(next_pid));
-                process.set_current_pid(next_pid);
-                process.set_state(next_pid, Running);
+                mem.write_word(KERNEL_SP_ADDR, require_process_value(process.get_user_sp(next_pid)));
+                mem.write_word(MMU_PDBR_ADDR, require_process_value(process.get_pdbr(next_pid)));
+                Result<_, ProcessError> select_process = process.set_current_pid(next_pid);
+                require_process_update(select_process);
+                Result<_, ProcessError> make_running = process.set_state(next_pid, Running);
+                require_process_update(make_running);
             } else {
-                process.set_current_pid(0);
+                process.clear_current_pid();
             }
             return task_sps[next_task];
         });
@@ -154,7 +185,7 @@ export i32 tick(i32 sp) {
 
     // Nothing is runnable: run the dedicated idle context until a wake-up.
     current_task = IDLE_TASK;
-    process.set_current_pid(0);
+    process.clear_current_pid();
     return idle_sp;
 }
 
@@ -244,7 +275,8 @@ export Result<i32, SchedulerError> spawn_proc_task(i32 pid, i32 initial_sp) {
             task_sps[i] = initial_sp;
             task_state[i] = TASK_RUNNABLE;
             task_pid[i] = pid;
-            process.set_task_id(pid, i);
+            Result<_, ProcessError> set_task = process.set_task_id(pid, i);
+            require_process_update(set_task);
             if (i >= g_task_count) {
                 g_task_count = i + 1;
             }

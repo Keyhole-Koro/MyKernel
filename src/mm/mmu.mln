@@ -58,7 +58,7 @@ i32 MMIO_BASE         = 0x24000000;
 i32 MMIO_SIZE         = 0x00002000; // 8 KB
 
 i32 VRAM_BASE         = 0x30000000;
-i32 VRAM_SIZE         = 0x00300000; // 3 MB
+i32 VRAM_SIZE         = 0x00C00000; // 12 MB: covers 2048x1536x4 (display_config.mln)
 
 i32 FRAME_MASK        = 0xFFFFF000;
 

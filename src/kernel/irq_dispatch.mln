@@ -12,6 +12,7 @@ import { SyscallError, DispatchOutcome } from "syscall.mln";
 import mmu from "../mm/mmu.mln";
 import { irq_trampoline, irq_resume } from "../arch/irq_trampoline.masm";
 import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
 i32 IRQ_CAUSE_ADDR = 0x24000084;
 i32 IRQ_CAUSE_TIMER  = 1;
@@ -72,24 +73,30 @@ export void dispatch(i32 sp) {
     if ((cause & IRQ_CAUSE_PRIVILEGE_VIOLATION) != 0) {
         debug.println("irq: privilege violation in user process");
         debug.printf("irq: fault addr: 0x%x status: %i\n", mmu.get_fault_address(), mmu.get_fault_status());
-        i32 cur_pid = process.get_current_pid();
-        if (cur_pid > 0) {
-            syscall.sys_exit(-1);
-            sp = scheduler.tick(sp);
-            irq_resume(sp);
-            return; // unreachable: irq_resume restores a frame and executes iret
-        }
+        Option<i32> current = process.get_current_pid();
+        case current of {
+            Some(_) -> ({
+                syscall.sys_exit(-1);
+                sp = scheduler.tick(sp);
+                irq_resume(sp);
+                return; // unreachable: irq_resume restores a frame and executes iret
+            });
+            None -> 0;
+        };
     }
 
     if ((cause & IRQ_CAUSE_PAGE_FAULT) != 0) {
         debug.println("irq: unhandled page fault in user process");
-        i32 cur_pid = process.get_current_pid();
-        if (cur_pid > 0) {
-            syscall.sys_exit(-14);
-            sp = scheduler.tick(sp);
-            irq_resume(sp);
-            return; // unreachable: irq_resume restores a frame and executes iret
-        }
+        Option<i32> current = process.get_current_pid();
+        case current of {
+            Some(_) -> ({
+                syscall.sys_exit(-14);
+                sp = scheduler.tick(sp);
+                irq_resume(sp);
+                return; // unreachable: irq_resume restores a frame and executes iret
+            });
+            None -> 0;
+        };
     }
 
     if ((cause & IRQ_CAUSE_SYSCALL) != 0) {
