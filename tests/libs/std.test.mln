@@ -1,5 +1,6 @@
 import debug from "../../src/debug/debug.mln";
 import str from "../../../../toolchain/MyStdLib/str.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import bytes from "../../../../toolchain/MyStdLib/text/bytes.mln";
 import bitset from "../../../../toolchain/MyStdLib/collections/bitset.mln";
 import { RingBuffer, ring_init, ring_capacity, ring_count, ring_has, ring_full, ring_push, ring_pop, ring_peek, ring_clear } from "../../../../toolchain/MyStdLib/collections/ringbuf.mln";
@@ -81,9 +82,9 @@ void test_str() {
     assert_eq<i32>(str.chr("hello", 'l'), 2, "str.chr found");
     assert_eq<i32>(str.chr("hello", 'z'), -1, "str.chr missing");
 
-    assert_eq<i32>(str.find("hello world", "world"), 6, "str.find hit");
-    assert_eq<i32>(str.find("hello", "xyz"), -1, "str.find miss");
-    assert_eq<i32>(str.find("hello", ""), 0, "str.find empty needle");
+    case str.find("hello world", "world") of { Some(v) -> assert_eq<i32>(v, 6, "str.find hit"); None -> assert.assert_true(false, "str.find hit"); };
+    case str.find("hello", "xyz") of { Some(v) -> assert.assert_true(false, "str.find miss"); None -> assert.assert_true(true, "str.find miss"); };
+    case str.find("hello", "") of { Some(v) -> assert_eq<i32>(v, 0, "str.find empty"); None -> assert.assert_true(false, "str.find empty"); };
 
     assert_eq<i32>(str.itoa(0, &g_buf[0]), 1, "str.itoa zero length");
     assert_eq<i32>(str.eq(&g_buf[0], "0"), 1, "str.itoa zero");
@@ -128,8 +129,8 @@ void test_bytes() {
     assert_eq<i32>(bytes.cmp("abX", "abY", 2), 0, "bytes.cmp honours n");
     assert_eq<i32>(bytes.eq("hi", "hi", 2), 1, "bytes.eq same");
 
-    assert_eq<i32>(bytes.find("hello", 5, 'l'), 2, "bytes.find hit");
-    assert_eq<i32>(bytes.find("hello", 5, 'z'), -1, "bytes.find miss");
+    case bytes.find("hello", 5, 'l') of { Some(v) -> assert_eq<i32>(v, 2, "bytes.find hit"); None -> assert.assert_true(false, "bytes.find hit"); };
+    case bytes.find("hello", 5, 'z') of { Some(v) -> assert.assert_true(false, "bytes.find miss"); None -> assert.assert_true(true, "bytes.find miss"); };
 
     // Overlapping moves are compared byte-for-byte rather than as strings:
     // a move writes exactly n bytes and does not terminate, so whatever the
@@ -189,9 +190,9 @@ void test_bitset() {
     assert_eq<i32>(bitset.toggle(&g_bits[0], 30), 1, "bitset.toggle on");
     assert_eq<i32>(bitset.toggle(&g_bits[0], 30), 0, "bitset.toggle off");
 
-    assert_eq<i32>(bitset.find_set(&g_bits[0], 128, 0), 5, "bitset.find_set");
-    assert_eq<i32>(bitset.find_clear(&g_bits[0], 128, 0), 0, "bitset.find_clear at 0");
-    assert_eq<i32>(bitset.find_clear(&g_bits[0], 128, 5), 6, "bitset.find_clear skips set");
+    case bitset.find_set(&g_bits[0], 128, 0) of { Some(v) -> assert_eq<i32>(v, 5, "bitset.find_set"); None -> assert.assert_true(false, "bitset.find_set"); };
+    case bitset.find_clear(&g_bits[0], 128, 0) of { Some(v) -> assert_eq<i32>(v, 0, "bitset.find_clear at 0"); None -> assert.assert_true(false, "bitset.find_clear at 0"); };
+    case bitset.find_clear(&g_bits[0], 128, 5) of { Some(v) -> assert_eq<i32>(v, 6, "bitset.find_clear skips set"); None -> assert.assert_true(false, "bitset.find_clear skips set"); };
 
     // A fully set bitmap must report exhaustion, and the byte-at-a-time skip
     // inside find_clear is what this exercises.
@@ -202,11 +203,11 @@ void test_bitset() {
         i = i + 1;
     }
     assert_eq<i32>(bitset.count(&g_bits[0], 128), 128, "bitset all set");
-    assert_eq<i32>(bitset.find_clear(&g_bits[0], 128, 0), -1, "bitset.find_clear exhausted");
+    case bitset.find_clear(&g_bits[0], 128, 0) of { Some(v) -> assert.assert_true(false, "bitset.find_clear exhausted"); None -> assert.assert_true(true, "bitset.find_clear exhausted"); };
 
     bitset.clear(&g_bits[0], 100);
-    assert_eq<i32>(bitset.find_clear(&g_bits[0], 128, 0), 100, "bitset.find_clear after skip");
-    assert_eq<i32>(bitset.find_set(&g_bits[0], 128, 0), 0, "bitset.find_set at 0");
+    case bitset.find_clear(&g_bits[0], 128, 0) of { Some(v) -> assert_eq<i32>(v, 100, "bitset.find_clear after skip"); None -> assert.assert_true(false, "bitset.find_clear after skip"); };
+    case bitset.find_set(&g_bits[0], 128, 0) of { Some(v) -> assert_eq<i32>(v, 0, "bitset.find_set at 0"); None -> assert.assert_true(false, "bitset.find_set at 0"); };
 }
 
 // --- ringbuf ---------------------------------------------------------------
