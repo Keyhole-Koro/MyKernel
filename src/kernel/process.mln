@@ -11,25 +11,17 @@ export enum ProcessError {
 
 // Process States
 export enum ProcessState {
-    Unused,
     Ready,
     Running,
     Blocked,
     Zombie(i32),
 }
 
-i32 is_unused_state(ProcessState s) {
-    return case s of {
-        Unused -> 1;
-        _ -> 0;
-    };
-}
-
 i32 MAX_PROCS = 16;
 i32 MAX_FDS   = 8;
 
 export struct Process {
-    i32 pid;              // Process ID (1..16, 0 = Unused)
+    i32 pid;              // Process ID (1..16)
     ProcessState state;
     i32 pdbr;             // Physical address of Page Directory
     i32 kernel_stack_top; // Physical top of dedicated kernel stack
@@ -40,7 +32,7 @@ export struct Process {
     Option<i32> task_id;  // Associated scheduler task index, if spawned
 };
 
-Process g_procs[16];
+Option<Process> g_procs[16];
 i32 g_proc_fds[128]; // 16 procs * 8 fds
 i32 g_current_pid = 0;
 i32 g_procs_initialized = 0;
@@ -48,17 +40,8 @@ i32 g_procs_initialized = 0;
 export void init() {
     i32 i = 0;
     while (i < MAX_PROCS) {
-        g_procs[i] = Process {
-            pid: 0,
-            state: Unused,
-            pdbr: 0,
-            kernel_stack_top: 0,
-            kernel_sp: 0,
-            user_sp: 0,
-            user_entry: 0,
-            heap_break: 0,
-            task_id: None,
-        };
+        Option<Process> empty = None;
+        g_procs[i] = empty;
 
         i32 f = 0;
         while (f < MAX_FDS) {
@@ -79,11 +62,26 @@ export Result<i32, ProcessError> alloc_proc() {
 
     i32 i = 0;
     while (i < MAX_PROCS) {
-        if (is_unused_state(g_procs[i].state) != 0) {
+        i32 is_empty = case g_procs[i] of {
+            None -> 1;
+            _ -> 0;
+        };
+        if (is_empty != 0) {
             i32 pid = i + 1;
-            g_procs[i].pid = pid;
-            g_procs[i].state = Ready;
-            g_procs[i].task_id = None;
+            ProcessState ready_state = Ready;
+            Process proc = Process {
+                pid: pid,
+                state: ready_state,
+                pdbr: 0,
+                kernel_stack_top: 0,
+                kernel_sp: 0,
+                user_sp: 0,
+                user_entry: 0,
+                heap_break: 0,
+                task_id: None,
+            };
+            Option<Process> entry = Some(proc);
+            g_procs[i] = entry;
 
             // Default standard streams
             g_proc_fds[i * MAX_FDS + 0] = 0; // stdin
@@ -109,7 +107,13 @@ Result<i32, ProcessError> index_for_pid(i32 pid) {
         return Err(ProcessError::InvalidPid(pid));
     }
     i32 idx = pid - 1;
-    if (g_procs[idx].pid != pid || is_unused_state(g_procs[idx].state) != 0) {
+    i32 matches = case g_procs[idx] of {
+        Some(p) -> ({
+            if (p.pid == pid) { 1; } else { 0; }
+        });
+        None -> 0;
+    };
+    if (matches == 0) {
         return Err(ProcessError::InvalidPid(pid));
     }
     return Ok(idx);
@@ -120,17 +124,8 @@ export Result<_, ProcessError> free_proc(i32 pid) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx] = Process {
-        pid: 0,
-        state: Unused,
-        pdbr: 0,
-        kernel_stack_top: 0,
-        kernel_sp: 0,
-        user_sp: 0,
-        user_entry: 0,
-        heap_break: 0,
-        task_id: None,
-    };
+    Option<Process> empty = None;
+    g_procs[idx] = empty;
 
     i32 f = 0;
     while (f < MAX_FDS) {
@@ -171,7 +166,13 @@ export Option<ProcessState> get_state(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].state);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<ProcessState> ret = Some(p.state);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
@@ -179,8 +180,13 @@ export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].state = state;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.state = state;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_pdbr(i32 pid) {
@@ -188,7 +194,13 @@ export Option<i32> get_pdbr(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].pdbr);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> ret = Some(p.pdbr);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
@@ -196,8 +208,13 @@ export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].pdbr = pdbr;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.pdbr = pdbr;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_kernel_stack_top(i32 pid) {
@@ -205,7 +222,13 @@ export Option<i32> get_kernel_stack_top(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].kernel_stack_top);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> ret = Some(p.kernel_stack_top);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
@@ -213,8 +236,13 @@ export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].kernel_stack_top = top;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.kernel_stack_top = top;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_kernel_sp(i32 pid) {
@@ -222,7 +250,13 @@ export Option<i32> get_kernel_sp(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].kernel_sp);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> ret = Some(p.kernel_sp);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
@@ -230,8 +264,13 @@ export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].kernel_sp = sp;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.kernel_sp = sp;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_user_sp(i32 pid) {
@@ -239,7 +278,13 @@ export Option<i32> get_user_sp(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].user_sp);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> ret = Some(p.user_sp);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
@@ -247,8 +292,13 @@ export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].user_sp = usp;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.user_sp = usp;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_user_entry(i32 pid) {
@@ -256,7 +306,13 @@ export Option<i32> get_user_entry(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].user_entry);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> ret = Some(p.user_entry);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
@@ -264,8 +320,13 @@ export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].user_entry = entry;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.user_entry = entry;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_heap_break(i32 pid) {
@@ -273,7 +334,13 @@ export Option<i32> get_heap_break(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].heap_break);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> ret = Some(p.heap_break);
+            return ret;
+        });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
@@ -281,8 +348,13 @@ export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].heap_break = brk;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.heap_break = brk;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_exit_code(i32 pid) {
@@ -290,12 +362,19 @@ export Option<i32> get_exit_code(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    case g_procs[idx].state of {
-        Zombie(code) -> ({
-            Option<i32> ret = Some(code);
-            return ret;
+    case g_procs[idx] of {
+        Some(p) -> ({
+            case p.state of {
+                Zombie(code) -> ({
+                    Option<i32> ret = Some(code);
+                    return ret;
+                });
+                _ -> ({
+                    return None;
+                });
+            };
         });
-        _ -> ({
+        None -> ({
             return None;
         });
     };
@@ -307,8 +386,13 @@ export Result<_, ProcessError> set_exit_code(i32 pid, i32 code) {
         Err(error) -> ({ return Err(error); });
     };
     ProcessState zombie_state = Zombie(code);
-    g_procs[idx].state = zombie_state;
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            p.state = zombie_state;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 export Option<i32> get_task_id(i32 pid) {
@@ -316,7 +400,10 @@ export Option<i32> get_task_id(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return g_procs[idx].task_id;
+    case g_procs[idx] of {
+        Some(p) -> ({ return p.task_id; });
+        None -> ({ return None; });
+    };
 }
 
 export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
@@ -324,8 +411,14 @@ export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].task_id = Some(tid);
-    return Ok(_);
+    case g_procs[idx] of {
+        Some(p) -> ({
+            Option<i32> otid = Some(tid);
+            p.task_id = otid;
+            return Ok(_);
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
 }
 
 // Returns Some(target_fd) if open, None if closed, or Err on invalid pid/fd.
