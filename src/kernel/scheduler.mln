@@ -148,10 +148,14 @@ export i32 tick(i32 sp) {
             Option<ProcessState> current_state = process.get_state(cur_pid);
             case current_state of {
                 Some(state) -> ({
-                    if (state == Running) {
-                        Result<_, ProcessError> make_ready = process.set_state(cur_pid, Ready);
-                        require_process_update(make_ready);
-                    }
+                    case state of {
+                        Running -> ({
+                            ProcessState ready_state = Ready;
+                            Result<_, ProcessError> make_ready = process.set_state(cur_pid, ready_state);
+                            require_process_update(make_ready);
+                        });
+                        _ -> 0;
+                    };
                 });
                 None -> ({ debug.panic("scheduler: current task references an invalid process"); });
             };
@@ -173,7 +177,8 @@ export i32 tick(i32 sp) {
                 mem.write_word(MMU_PDBR_ADDR, require_process_value(process.get_pdbr(next_pid)));
                 Result<_, ProcessError> select_process = process.set_current_pid(next_pid);
                 require_process_update(select_process);
-                Result<_, ProcessError> make_running = process.set_state(next_pid, Running);
+                ProcessState running_state = Running;
+                Result<_, ProcessError> make_running = process.set_state(next_pid, running_state);
                 require_process_update(make_running);
             } else {
                 process.clear_current_pid();

@@ -357,7 +357,8 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         });
     };
 
-    Result<_, ProcessError> set_ready = process.set_state(pid, Ready);
+    ProcessState ready_state = Ready;
+    Result<_, ProcessError> set_ready = process.set_state(pid, ready_state);
     case set_ready of {
         Ok(_) -> 0;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while marking ready"); });

@@ -107,13 +107,9 @@ export void sys_exit(i32 code) {
         Some(value) -> value;
         None -> ({ return; });
     };
-    Result<_, ProcessError> mark_zombie = process.set_state(pid, Zombie);
+    ProcessState zombie_state = Zombie(code);
+    Result<_, ProcessError> mark_zombie = process.set_state(pid, zombie_state);
     case mark_zombie of {
-        Ok(_) -> 0;
-        Err(_) -> ({ debug.panic("sys_exit: current process disappeared"); });
-    };
-    Result<_, ProcessError> set_exit_code = process.set_exit_code(pid, code);
-    case set_exit_code of {
         Ok(_) -> 0;
         Err(_) -> ({ debug.panic("sys_exit: current process disappeared"); });
     };

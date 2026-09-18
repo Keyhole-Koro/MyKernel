@@ -347,12 +347,22 @@ void process_lifecycle_and_protection() {
         if (option_take<ProcessState>(&state_result, &state) == 0) {
             fail("process 1 disappeared before it exited");
         }
-        if (state == Zombie) {
+        i32 exited1 = 0;
+        i32 zombie_code1 = 0;
+        case state of {
+            Zombie(c) -> ({
+                exited1 = 1;
+                zombie_code1 = c;
+            });
+            _ -> 0;
+        };
+        if (exited1 != 0) {
             i32 code;
             Option<i32> exit_code_result = process.get_exit_code(pid1);
             if (option_take<i32>(&exit_code_result, &code) == 0) {
                 fail("process 1 disappeared before its exit code was read");
             }
+            assert_eq<i32>(zombie_code1, code, "state payload and get_exit_code must match");
             if (code == 42) {
                 debug.println("SUCCESS: MBIN v2 process 1 exited cleanly with code 42!");
                 break;
@@ -382,17 +392,28 @@ void process_lifecycle_and_protection() {
         if (option_take<ProcessState>(&state_result, &state) == 0) {
             fail("process 2 disappeared before it exited");
         }
-        if (state == Zombie) {
+        i32 exited2 = 0;
+        i32 zombie_code2 = 0;
+        case state of {
+            Zombie(c) -> ({
+                exited2 = 1;
+                zombie_code2 = c;
+            });
+            _ -> 0;
+        };
+        if (exited2 != 0) {
             i32 code;
             Option<i32> exit_code_result = process.get_exit_code(pid2);
             if (option_take<i32>(&exit_code_result, &code) == 0) {
                 fail("process 2 disappeared before its exit code was read");
             }
+            assert_eq<i32>(zombie_code2, code, "state payload and get_exit_code must match");
             if (code == -14) {
                 debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");
             }
             assert_eq<i32>(code, -14, "process 2 did not trigger the expected page fault");
             testkit.pass("process lifecycle and protection");
+            break;
         }
     }
 }
