@@ -76,7 +76,7 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
             while (b < chunk) {
                 i32 byte_val = mem.read_byte(src_ptr + offset + b);
                 mem.write_byte(frame + b, byte_val);
-                b = b + 1;
+                b++;
             }
         }
 

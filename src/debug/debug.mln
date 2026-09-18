@@ -12,7 +12,7 @@ export void print(char* s) {
     if (s) {
         while (*s) {
             serial.putc(*s);
-            s = s + 1;
+            s++;
         }
     }
 }
@@ -49,11 +49,11 @@ export void printf(char* fmt, rest args) {
     while (*fmt) {
         if (*fmt != '%') {
             serial.putc(*fmt);
-            fmt = fmt + 1;
+            fmt++;
             continue;
         }
 
-        fmt = fmt + 1;
+        fmt++;
         if (!*fmt) {
             serial.putc('%');
             break;
@@ -67,7 +67,7 @@ export void printf(char* fmt, rest args) {
                 break;
             }
             char* s = args[arg_index];
-            arg_index = arg_index + 1;
+            arg_index++;
             if (s) {
                 print(s);
             } else {
@@ -80,7 +80,7 @@ export void printf(char* fmt, rest args) {
                 break;
             }
             i32 value = args[arg_index];
-            arg_index = arg_index + 1;
+            arg_index++;
 
             // Handle negative numbers
             if (value < 0) {
@@ -94,11 +94,11 @@ export void printf(char* fmt, rest args) {
             do {
                 buffer[pos] = (char)('0' + (value % 10));
                 value = value / 10;
-                pos = pos + 1;
+                pos++;
             } while (value > 0);
 
             // Print the number in correct order
-            for (i32 i = pos - 1; i >= 0; i = i - 1) {
+            for (i32 i = pos - 1; i >= 0; i--) {
                 serial.putc(buffer[i]);
             }
         } else if (*fmt == 'c') {
@@ -107,7 +107,7 @@ export void printf(char* fmt, rest args) {
                 break;
             }
             i32 ch = args[arg_index];
-            arg_index = arg_index + 1;
+            arg_index++;
             serial.putc(ch);
         } else if (*fmt == 'x') {
             if (arg_index >= args.len) {
@@ -115,13 +115,13 @@ export void printf(char* fmt, rest args) {
                 break;
             }
             i32 value = args[arg_index];
-            arg_index = arg_index + 1;
+            arg_index++;
             hex(value);
         } else {
             serial.putc('%');
             serial.putc(*fmt);
         }
 
-        fmt = fmt + 1;
+        fmt++;
     }
 }

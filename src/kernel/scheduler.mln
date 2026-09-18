@@ -114,13 +114,13 @@ Option<i32> find_next_runnable(i32 start, i32 count) {
             return Some(next_task);
         }
         next_task = (next_task + 1) % count;
-        checked = checked + 1;
+        checked++;
     }
     return None;
 }
 
 export i32 tick(i32 sp) {
-    g_irq_count = g_irq_count + 1;
+    g_irq_count++;
 
     if (tasks_initialized == 0) {
         return sp;
