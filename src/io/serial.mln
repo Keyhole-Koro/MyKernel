@@ -2,6 +2,7 @@ package serial;
 
 import mem from "../mm/mem.mln";
 import { RingBuffer, ring_init, ring_push, ring_pop, ring_has } from "../../../../toolchain/MyStdLib/collections/ringbuf.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
 // Memory-mapped UART registers (must match constants.rs in the emulator).
 i32 SERIAL_TX_ADDR = 0x24000000;
@@ -63,10 +64,12 @@ export i32 has_input() {
     return ring_has<i32>(&in_q);
 }
 
-// Consume and return the next queued keystroke, or 0 if the queue is empty.
-export i32 read_input() {
+// Consume and return the next queued keystroke, or None if the queue is empty.
+export Option<i32> read_input() {
     ensure_queue();
     i32 value = 0;
-    ring_pop<i32>(&in_q, &value);
-    return value;
+    if (ring_pop<i32>(&in_q, &value) == 0) {
+        return None;
+    }
+    return Some(value);
 }

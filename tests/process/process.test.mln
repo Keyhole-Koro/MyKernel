@@ -168,9 +168,9 @@ void fail(char* message) {
     assert_eq<i32>(1, 0, message);
 }
 
-void assert_invalid_pid(Result<i32, ProcessError> *result, i32 expected_pid) {
+void assert_invalid_pid(Result<Option<i32>, ProcessError> *result, i32 expected_pid) {
     ProcessError error;
-    if (result_take_err<i32, ProcessError>(result, &error) == 0) {
+    if (result_take_err<Option<i32>, ProcessError>(result, &error) == 0) {
         fail("expected ProcessError::InvalidPid");
     }
     case error of {
@@ -230,7 +230,7 @@ void process_lifecycle_and_protection() {
     ProcessState missing_state;
     Option<ProcessState> no_state = process.get_state(99);
     assert_eq<i32>(option_take<ProcessState>(&no_state, &missing_state), 0, "invalid pid state must be None");
-    Result<i32, ProcessError> bad_pid = process.get_fd(99, 0);
+    Result<Option<i32>, ProcessError> bad_pid = process.get_fd(99, 0);
     assert_invalid_pid(&bad_pid, 99);
     debug.println("kernel: initializing scheduler...");
     scheduler.init();
@@ -296,6 +296,46 @@ void process_lifecycle_and_protection() {
         });
     };
     debug.println("kernel: MBIN v2 user process spawned!");
+
+    // Verify initial file descriptors for the spawned process
+    case process.get_fd(pid1, 0) of {
+        Ok(opt) -> case opt of {
+            Some(v) -> assert_eq<i32>(v, 0, "stdin fd must be 0");
+            None -> fail("stdin fd must be open");
+        };
+        Err(_) -> fail("get_fd(pid1, 0) failed");
+    };
+    case process.get_fd(pid1, 3) of {
+        Ok(opt) -> case opt of {
+            Some(_) -> fail("fd 3 must be closed initially");
+            None -> 0;
+        };
+        Err(_) -> fail("get_fd(pid1, 3) failed");
+    };
+    Option<i32> open_fd = Some(99);
+    case process.set_fd(pid1, 3, open_fd) of {
+        Ok(_) -> 0;
+        Err(_) -> fail("set_fd(pid1, 3, Some(99)) failed");
+    };
+    case process.get_fd(pid1, 3) of {
+        Ok(opt) -> case opt of {
+            Some(v) -> assert_eq<i32>(v, 99, "fd 3 must be 99 after set");
+            None -> fail("fd 3 must be Some(99)");
+        };
+        Err(_) -> fail("get_fd(pid1, 3) failed");
+    };
+    Option<i32> close_fd = None;
+    case process.set_fd(pid1, 3, close_fd) of {
+        Ok(_) -> 0;
+        Err(_) -> fail("set_fd(pid1, 3, None) failed");
+    };
+    case process.get_fd(pid1, 3) of {
+        Ok(opt) -> case opt of {
+            Some(_) -> fail("fd 3 must be closed after None set");
+            None -> 0;
+        };
+        Err(_) -> fail("get_fd(pid1, 3) failed");
+    };
 
     // Enable interrupts so preemptive/syscall context switches can happen
     irq.enable();

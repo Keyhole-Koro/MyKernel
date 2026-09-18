@@ -4,6 +4,7 @@ import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
 import serial from "../../src/io/serial.mln";
 import irq from "../../src/arch/irq.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
 // The serial IRQ handler now drains hardware RX into serial's software input
 // queue (it no longer echoes or quits itself). This test plays the consumer:
@@ -26,13 +27,15 @@ void serial_rx() {
 
     i32 done = 0;
     while (done == 0) {
-        while (serial.has_input() != 0) {
-            i32 c = serial.read_input();
-            if (c == 'q') {
-                done = 1;
-            } else {
-                serial.putc(c);
-            }
-        }
+        case serial.read_input() of {
+            Some(c) -> ({
+                if (c == 'q') {
+                    done = 1;
+                } else {
+                    serial.putc(c);
+                }
+            });
+            None -> 0;
+        };
     }
 }

@@ -120,7 +120,7 @@ export void sys_exit(i32 code) {
     Option<i32> task_id = process.get_task_id(pid);
     case task_id of {
         Some(tid) -> scheduler.terminate_task(tid);
-        None -> ({ debug.panic("sys_exit: current process disappeared"); });
+        None -> ({ debug.panic("sys_exit: current process has no scheduler task"); });
     };
 }
 
@@ -160,12 +160,13 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
         }
         i32 i = 0;
         while (i < count) {
-            if (serial.has_input() == 0) {
-                break;
-            }
-            i32 c = serial.read_input();
-            mem.write_byte(buf + i, c);
-            i = i + 1;
+            case serial.read_input() of {
+                Some(c) -> ({
+                    mem.write_byte(buf + i, c);
+                    i = i + 1;
+                });
+                None -> ({ break; });
+            };
         }
         return Ok(i);
     }

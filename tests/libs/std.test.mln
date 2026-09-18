@@ -341,18 +341,30 @@ void test_serial_queue() {
     debug.println("-- serial input queue --");
 
     assert_eq<i32>(serial.has_input(), 0, "serial queue starts empty");
-    assert_eq<i32>(serial.read_input(), 0, "serial read on empty returns 0");
+    case serial.read_input() of {
+        Some(_) -> assert.assert_true(false, "serial read on empty returns None");
+        None -> assert.assert_true(true, "serial read on empty returns None");
+    };
 
     serial.input_push('h');
     serial.input_push('i');
     assert_eq<i32>(serial.has_input(), 1, "serial has_input after push");
-    assert_eq<i32>(serial.read_input(), 'h', "serial FIFO order 1");
-    assert_eq<i32>(serial.read_input(), 'i', "serial FIFO order 2");
+    case serial.read_input() of {
+        Some(v) -> assert_eq<i32>(v, 'h', "serial FIFO order 1");
+        None -> assert.assert_true(false, "serial FIFO order 1");
+    };
+    case serial.read_input() of {
+        Some(v) -> assert_eq<i32>(v, 'i', "serial FIFO order 2");
+        None -> assert.assert_true(false, "serial FIFO order 2");
+    };
     assert_eq<i32>(serial.has_input(), 0, "serial drained");
 
     // Bytes >= 0x80 must survive the round trip rather than sign-extending.
     serial.input_push(0xFF);
-    assert_eq<i32>(serial.read_input(), 0xFF, "serial high byte round trip");
+    case serial.read_input() of {
+        Some(v) -> assert_eq<i32>(v, 0xFF, "serial high byte round trip");
+        None -> assert.assert_true(false, "serial high byte round trip");
+    };
 
     // 128 slots hold 127 keystrokes; the 128th push is dropped and the oldest
     // byte stays at the front.
@@ -361,11 +373,14 @@ void test_serial_queue() {
         serial.input_push('a' + (i & 7));
         i = i + 1;
     }
-    assert_eq<i32>(serial.read_input(), 'a', "serial kept oldest on overflow");
+    case serial.read_input() of {
+        Some(v) -> assert_eq<i32>(v, 'a', "serial kept oldest on overflow");
+        None -> assert.assert_true(false, "serial kept oldest on overflow");
+    };
 
     i32 drained = 1;
     while (serial.has_input() != 0) {
-        serial.read_input();
+        case serial.read_input() of { Some(_) -> _; None -> _; };
         drained = drained + 1;
     }
     assert_eq<i32>(drained, 127, "serial held capacity-1 keystrokes");

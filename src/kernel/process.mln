@@ -31,7 +31,7 @@ export struct Process {
     i32 user_entry;       // Virtual entry point (0x40000000)
     i32 heap_break;       // Current user heap break (starts at 0x41000000)
     i32 exit_code;        // Exit code
-    i32 task_id;          // Associated scheduler task index
+    Option<i32> task_id;  // Associated scheduler task index, if spawned
 };
 
 Process g_procs[16];
@@ -52,7 +52,7 @@ export void init() {
             user_entry: 0,
             heap_break: 0,
             exit_code: 0,
-            task_id: -1,
+            task_id: None,
         };
 
         i32 f = 0;
@@ -79,7 +79,7 @@ export Result<i32, ProcessError> alloc_proc() {
             g_procs[i].pid = pid;
             g_procs[i].state = Ready;
             g_procs[i].exit_code = 0;
-            g_procs[i].task_id = -1;
+            g_procs[i].task_id = None;
 
             // Default standard streams
             g_proc_fds[i * MAX_FDS + 0] = 0; // stdin
@@ -126,7 +126,7 @@ export Result<_, ProcessError> free_proc(i32 pid) {
         user_entry: 0,
         heap_break: 0,
         exit_code: 0,
-        task_id: -1,
+        task_id: None,
     };
 
     i32 f = 0;
@@ -304,7 +304,7 @@ export Option<i32> get_task_id(i32 pid) {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
     };
-    return Some(g_procs[idx].task_id);
+    return g_procs[idx].task_id;
 }
 
 export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
@@ -312,13 +312,12 @@ export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    g_procs[idx].task_id = tid;
+    g_procs[idx].task_id = Some(tid);
     return Ok(_);
 }
 
-// A descriptor value of -1 means "closed"; it is valid data, not an API
-// failure.  Therefore this is Result rather than Option.
-export Result<i32, ProcessError> get_fd(i32 pid, i32 fd) {
+// Returns Some(target_fd) if open, None if closed, or Err on invalid pid/fd.
+export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
@@ -326,10 +325,14 @@ export Result<i32, ProcessError> get_fd(i32 pid, i32 fd) {
     if (fd < 0 || fd >= MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
-    return Ok(g_proc_fds[idx * MAX_FDS + fd]);
+    i32 val = g_proc_fds[idx * MAX_FDS + fd];
+    if (val < 0) {
+        return Ok(None);
+    }
+    return Ok(Some(val));
 }
 
-export Result<_, ProcessError> set_fd(i32 pid, i32 fd, i32 val) {
+export Result<_, ProcessError> set_fd(i32 pid, i32 fd, Option<i32> val) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
@@ -337,6 +340,9 @@ export Result<_, ProcessError> set_fd(i32 pid, i32 fd, i32 val) {
     if (fd < 0 || fd >= MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
-    g_proc_fds[idx * MAX_FDS + fd] = val;
+    case val of {
+        Some(v) -> ({ g_proc_fds[idx * MAX_FDS + fd] = v; });
+        None -> ({ g_proc_fds[idx * MAX_FDS + fd] = -1; });
+    };
     return Ok(_);
 }
