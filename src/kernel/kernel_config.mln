@@ -1,0 +1,28 @@
+package kernel_config;
+
+// ============================================================================
+// MyKernel System Configuration & Limits
+// ============================================================================
+
+// --- Process & Task Limits ---
+export i32 MAX_PROCS = 16;
+export i32 MAX_FDS   = 8;
+export i32 MAX_TASKS = 256;
+
+// --- Memory Layout & Limits ---
+export i32 PAGE_SIZE           = 4096;
+export i32 HEAP_SIZE           = 0x100000;   // 1 MiB kernel heap
+export i32 HDR_SIZE            = 8;          // Heap allocation block header size
+export i32 KERNEL_RAM_SIZE     = 0x01000000; // 16 MB reserved for kernel RAM
+export i32 KERNEL_STACK_BASE   = 0x1F000000;
+export i32 KERNEL_STACK_SIZE   = 0x01000000; // 16 MB kernel stack
+
+// --- User Space Bounds ---
+export i32 USER_STACK_BASE     = 0x7FFFF000; // Heap must stay below this
+export i32 USER_STACK_TOP      = 0x7FFFFFE0;
+export i32 USER_HEAP_BASE      = 0x41000000;
+
+// --- Hardware & Driver Buffers ---
+export i32 QUEUE_SIZE          = 64;         // Mouse & Keyboard event FIFO depth
+export i32 MMIO_SIZE           = 0x00002000; // 8 KB
+export i32 VRAM_SIZE           = 0x01000000; // 16 MB aperture

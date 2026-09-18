@@ -3,11 +3,20 @@ package debug;
 import serial from "../io/serial.mln";
 import { halt_cpu } from "../arch/halt.masm";
 
+/**
+ * Converts a 4-bit nibble into its lowercase hexadecimal ASCII character.
+ * @param nibble 4-bit value (0-15).
+ * @return Hexadecimal character ('0'-'9', 'a'-'f').
+ */
 char hex_digit(i32 nibble) {
     char *digits = "0123456789abcdef";
     return digits[nibble & 15];
 }
 
+/**
+ * Outputs a null-terminated string to the serial console.
+ * @param s Pointer to null-terminated string to print.
+ */
 export void print(char* s) {
     if (s) {
         while (*s) {
@@ -17,18 +26,29 @@ export void print(char* s) {
     }
 }
 
+/**
+ * Outputs a null-terminated string followed by a newline to the serial console.
+ * @param s Pointer to null-terminated string to print.
+ */
 export void println(char* s) {
     print(s);
     serial.putc('\n');
 }
 
-// Reports an unrecoverable kernel invariant failure and stops execution.
+/**
+ * Reports an unrecoverable kernel invariant failure and halts the CPU.
+ * @param msg Error message describing the panic reason.
+ */
 export void panic(char* msg) {
     print("panic: ");
     println(msg);
     halt_cpu();
 }
 
+/**
+ * Prints a 32-bit integer as hexadecimal to the serial console.
+ * @param value Integer value to display in hex.
+ */
 export void hex(i32 value) {
     i32 shift = 28;
     i32 started = 0;
@@ -43,6 +63,13 @@ export void hex(i32 value) {
     }
 }
 
+/**
+ * Formatted print to the serial console.
+ *
+ * Supports format specifiers: %s (string), %i / %d (decimal int), %c (char), %x (hex), %% (percent).
+ * @param fmt Format string.
+ * @param args Variable arguments matching format specifiers.
+ */
 export void printf(char* fmt, rest args) {
     i32 arg_index = 0;
 

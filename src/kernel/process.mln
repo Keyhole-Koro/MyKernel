@@ -17,8 +17,7 @@ export enum ProcessState {
     Zombie(i32),
 }
 
-i32 MAX_PROCS = 16;
-i32 MAX_FDS   = 8;
+import kernel_config from "kernel_config.mln";
 
 export struct Process {
     i32 pid;              // Process ID (1..16)
@@ -37,15 +36,18 @@ i32 g_proc_fds[128]; // 16 procs * 8 fds
 i32 g_current_pid = 0;
 i32 g_procs_initialized = 0;
 
+/**
+ * Initializes the process table and file descriptor arrays to clean default state.
+ */
 export void init() {
     i32 i = 0;
-    while (i < MAX_PROCS) {
+    while (i < kernel_config.MAX_PROCS) {
         Option<Process> empty = None;
         g_procs[i] = empty;
 
         i32 f = 0;
-        while (f < MAX_FDS) {
-            g_proc_fds[i * MAX_FDS + f] = -1;
+        while (f < kernel_config.MAX_FDS) {
+            g_proc_fds[i * kernel_config.MAX_FDS + f] = -1;
             f++;
         }
         i++;
@@ -54,14 +56,17 @@ export void init() {
     g_procs_initialized = 1;
 }
 
-// Allocate a new process slot. Returns Ok(pid) or Err(NoFreeSlot) if table is full.
+/**
+ * Allocates a new process slot and initializes standard file descriptors (stdin, stdout, stderr).
+ * @return Ok(pid) with allocated process ID (1-based), or Err(NoFreeSlot) if table is full.
+ */
 export Result<i32, ProcessError> alloc_proc() {
     if (g_procs_initialized == 0) {
         init();
     }
 
     i32 i = 0;
-    while (i < MAX_PROCS) {
+    while (i < kernel_config.MAX_PROCS) {
         i32 is_empty = case g_procs[i] of {
             None -> 1;
             _ -> 0;
@@ -84,12 +89,12 @@ export Result<i32, ProcessError> alloc_proc() {
             g_procs[i] = entry;
 
             // Default standard streams
-            g_proc_fds[i * MAX_FDS + 0] = 0; // stdin
-            g_proc_fds[i * MAX_FDS + 1] = 1; // stdout
-            g_proc_fds[i * MAX_FDS + 2] = 2; // stderr
+            g_proc_fds[i * kernel_config.MAX_FDS + 0] = 0; // stdin
+            g_proc_fds[i * kernel_config.MAX_FDS + 1] = 1; // stdout
+            g_proc_fds[i * kernel_config.MAX_FDS + 2] = 2; // stderr
             i32 f = 3;
-            while (f < MAX_FDS) {
-                g_proc_fds[i * MAX_FDS + f] = -1;
+            while (f < kernel_config.MAX_FDS) {
+                g_proc_fds[i * kernel_config.MAX_FDS + f] = -1;
                 f++;
             }
             return Ok(pid);
@@ -99,11 +104,13 @@ export Result<i32, ProcessError> alloc_proc() {
     return Err(ProcessError::NoFreeSlot);
 }
 
-// Converts a public PID into a live process-table index.  Keeping this check
-// in one place is what lets the public API distinguish a real zero-valued
-// field from an invalid/deallocated process instead of relying on sentinels.
+/**
+ * Converts a 1-based PID into a live process table index.
+ * @param pid Process ID to look up.
+ * @return Ok(index) if PID is valid and currently allocated, or Err(InvalidPid) otherwise.
+ */
 Result<i32, ProcessError> index_for_pid(i32 pid) {
-    if (pid <= 0 || pid > MAX_PROCS) {
+    if (pid <= 0 || pid > kernel_config.MAX_PROCS) {
         return Err(ProcessError::InvalidPid(pid));
     }
     i32 idx = pid - 1;
@@ -119,6 +126,11 @@ Result<i32, ProcessError> index_for_pid(i32 pid) {
     return Ok(idx);
 }
 
+/**
+ * Frees an allocated process slot and resets its file descriptors.
+ * @param pid Process ID to free.
+ * @return Ok(_) on success, or Err(InvalidPid) if process does not exist.
+ */
 export Result<_, ProcessError> free_proc(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -128,8 +140,8 @@ export Result<_, ProcessError> free_proc(i32 pid) {
     g_procs[idx] = empty;
 
     i32 f = 0;
-    while (f < MAX_FDS) {
-        g_proc_fds[idx * MAX_FDS + f] = -1;
+    while (f < kernel_config.MAX_FDS) {
+        g_proc_fds[idx * kernel_config.MAX_FDS + f] = -1;
         f++;
     }
 
@@ -139,8 +151,10 @@ export Result<_, ProcessError> free_proc(i32 pid) {
     return Ok(_);
 }
 
-// The kernel task/idle context has no process.  Represent that fact directly
-// instead of leaking PID 0 as a special public value.
+/**
+ * Returns the PID of the currently executing user process.
+ * @return Some(pid) if a user process is active, or None if executing kernel task.
+ */
 export Option<i32> get_current_pid() {
     if (g_current_pid == 0) {
         return None;
@@ -148,6 +162,11 @@ export Option<i32> get_current_pid() {
     return Some(g_current_pid);
 }
 
+/**
+ * Sets the PID of the currently executing process.
+ * @param pid Process ID to mark as current.
+ * @return Ok(_) on success, or Err(InvalidPid) if PID is invalid.
+ */
 export Result<_, ProcessError> set_current_pid(i32 pid) {
     i32 ignored = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -157,10 +176,18 @@ export Result<_, ProcessError> set_current_pid(i32 pid) {
     return Ok(_);
 }
 
+/**
+ * Clears the active process ID, indicating kernel/idle context.
+ */
 export void clear_current_pid() {
     g_current_pid = 0;
 }
 
+/**
+ * Retrieves the lifecycle state of a process.
+ * @param pid Process ID.
+ * @return Some(state) if found, or None if PID is invalid/unallocated.
+ */
 export Option<ProcessState> get_state(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -175,6 +202,12 @@ export Option<ProcessState> get_state(i32 pid) {
     };
 }
 
+/**
+ * Updates the lifecycle state of a process.
+ * @param pid Process ID.
+ * @param state New process state.
+ * @return Ok(_) on success, or Err(InvalidPid) if process not found.
+ */
 export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -189,6 +222,11 @@ export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
     };
 }
 
+/**
+ * Retrieves the page directory base register (physical address) of a process.
+ * @param pid Process ID.
+ * @return Some(pdbr) if found, or None if invalid.
+ */
 export Option<i32> get_pdbr(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -203,6 +241,12 @@ export Option<i32> get_pdbr(i32 pid) {
     };
 }
 
+/**
+ * Sets the page directory base register (physical address) of a process.
+ * @param pid Process ID.
+ * @param pdbr Physical address of page directory.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -217,6 +261,11 @@ export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
     };
 }
 
+/**
+ * Retrieves the top of the dedicated kernel stack for a process.
+ * @param pid Process ID.
+ * @return Some(top) address if found, or None if invalid.
+ */
 export Option<i32> get_kernel_stack_top(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -231,6 +280,12 @@ export Option<i32> get_kernel_stack_top(i32 pid) {
     };
 }
 
+/**
+ * Sets the top of the dedicated kernel stack for a process.
+ * @param pid Process ID.
+ * @param top Address of top of kernel stack.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -245,6 +300,11 @@ export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
     };
 }
 
+/**
+ * Retrieves the saved kernel stack pointer for a process.
+ * @param pid Process ID.
+ * @return Some(sp) if found, or None if invalid.
+ */
 export Option<i32> get_kernel_sp(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -259,6 +319,12 @@ export Option<i32> get_kernel_sp(i32 pid) {
     };
 }
 
+/**
+ * Sets the saved kernel stack pointer for a process.
+ * @param pid Process ID.
+ * @param sp Kernel stack pointer to store.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -273,6 +339,11 @@ export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
     };
 }
 
+/**
+ * Retrieves the saved user stack pointer for a process.
+ * @param pid Process ID.
+ * @return Some(usp) if found, or None if invalid.
+ */
 export Option<i32> get_user_sp(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -287,6 +358,12 @@ export Option<i32> get_user_sp(i32 pid) {
     };
 }
 
+/**
+ * Sets the saved user stack pointer for a process.
+ * @param pid Process ID.
+ * @param usp User stack pointer to store.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -301,6 +378,11 @@ export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
     };
 }
 
+/**
+ * Retrieves the virtual entry point of a user process.
+ * @param pid Process ID.
+ * @return Some(entry) if found, or None if invalid.
+ */
 export Option<i32> get_user_entry(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -315,6 +397,12 @@ export Option<i32> get_user_entry(i32 pid) {
     };
 }
 
+/**
+ * Sets the virtual entry point of a user process.
+ * @param pid Process ID.
+ * @param entry Virtual address of entry point.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -329,6 +417,11 @@ export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
     };
 }
 
+/**
+ * Retrieves the current heap break virtual address of a process.
+ * @param pid Process ID.
+ * @return Some(heap_break) if found, or None if invalid.
+ */
 export Option<i32> get_heap_break(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -343,6 +436,12 @@ export Option<i32> get_heap_break(i32 pid) {
     };
 }
 
+/**
+ * Updates the current heap break virtual address of a process.
+ * @param pid Process ID.
+ * @param brk New heap break virtual address.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -357,6 +456,11 @@ export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
     };
 }
 
+/**
+ * Retrieves the exit status code of a Zombie process.
+ * @param pid Process ID.
+ * @return Some(code) if process is in Zombie state, or None otherwise.
+ */
 export Option<i32> get_exit_code(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -380,6 +484,12 @@ export Option<i32> get_exit_code(i32 pid) {
     };
 }
 
+/**
+ * Marks a process as Zombie with the given exit code.
+ * @param pid Process ID.
+ * @param code Process exit code.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_exit_code(i32 pid, i32 code) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -395,6 +505,11 @@ export Result<_, ProcessError> set_exit_code(i32 pid, i32 code) {
     };
 }
 
+/**
+ * Retrieves the associated scheduler task ID for a process.
+ * @param pid Process ID.
+ * @return Some(task_id) if linked, or None if unlinked/invalid.
+ */
 export Option<i32> get_task_id(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -406,6 +521,12 @@ export Option<i32> get_task_id(i32 pid) {
     };
 }
 
+/**
+ * Links a scheduler task ID to a process.
+ * @param pid Process ID.
+ * @param tid Scheduler task ID.
+ * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ */
 export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
@@ -421,33 +542,45 @@ export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
     };
 }
 
-// Returns Some(target_fd) if open, None if closed, or Err on invalid pid/fd.
+/**
+ * Returns the underlying descriptor for an open process file descriptor slot.
+ * @param pid Process ID.
+ * @param fd Process file descriptor index (0..7).
+ * @return Ok(Some(target_fd)) if open, Ok(None) if slot is closed, or Err on invalid pid/fd.
+ */
 export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    if (fd < 0 || fd >= MAX_FDS) {
+    if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
-    i32 val = g_proc_fds[idx * MAX_FDS + fd];
+    i32 val = g_proc_fds[idx * kernel_config.MAX_FDS + fd];
     if (val < 0) {
         return Ok(None);
     }
     return Ok(Some(val));
 }
 
+/**
+ * Updates or closes a file descriptor slot in a process table.
+ * @param pid Process ID.
+ * @param fd Process file descriptor index (0..7).
+ * @param val Some(target_fd) to set target descriptor, or None to close slot.
+ * @return Ok(_) on success, or Err on invalid pid/fd.
+ */
 export Result<_, ProcessError> set_fd(i32 pid, i32 fd, Option<i32> val) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    if (fd < 0 || fd >= MAX_FDS) {
+    if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
     case val of {
-        Some(v) -> ({ g_proc_fds[idx * MAX_FDS + fd] = v; });
-        None -> ({ g_proc_fds[idx * MAX_FDS + fd] = -1; });
+        Some(v) -> ({ g_proc_fds[idx * kernel_config.MAX_FDS + fd] = v; });
+        None -> ({ g_proc_fds[idx * kernel_config.MAX_FDS + fd] = -1; });
     };
     return Ok(_);
 }

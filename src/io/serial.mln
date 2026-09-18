@@ -10,20 +10,28 @@ i32 SERIAL_RX_ADDR = 0x24000004;
 i32 SERIAL_LSR_ADDR = 0x24000005;
 i32 SERIAL_LSR_DR = 0x01;
 
-// Transmit one byte.
+/**
+ * Transmits a single byte over the serial UART.
+ * @param c Byte value to transmit.
+ */
 export void putc(i32 c) {
     mem.write_word(SERIAL_TX_ADDR, c);
 }
 
-// Non-zero while a received byte is waiting in the hardware RX register.
+/**
+ * Checks whether a byte is waiting in the hardware UART RX register.
+ * @return Non-zero if RX data is ready, 0 otherwise.
+ */
 export i32 rx_ready() {
     return mem.read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR;
 }
 
-// Consume and return the next received byte from hardware (call only when
-// rx_ready()). Only the serial IRQ handler should read hardware RX; consumers
-// (the shell) read the software input queue below instead, so a byte is never
-// stolen by whoever polls the hardware first.
+/**
+ * Consumes and returns the next received byte directly from the hardware RX register.
+ *
+ * Should only be called when rx_ready() returns non-zero.
+ * @return Received byte value in range 0-255.
+ */
 export i32 read_rx() {
     return mem.read_word(SERIAL_RX_ADDR) & 0xFF;
 }
@@ -42,9 +50,9 @@ i32 in_storage[128];
 RingBuffer<i32> in_q;
 i32 in_ready = 0;
 
-// The queue has no boot-time init call to hang off: the IRQ handler can fire
-// before any task runs, and every consumer is a bare export. Preparing it on
-// first touch keeps that contract while letting RingBuffer own the layout.
+/**
+ * Initializes the input ring buffer on first use if not already initialized.
+ */
 void ensure_queue() {
     if (in_ready == 0) {
         ring_init<i32>(&in_q, &in_storage[0], 128);
@@ -52,23 +60,34 @@ void ensure_queue() {
     }
 }
 
-// Called by the serial IRQ handler for each received byte.
+/**
+ * Pushes a received byte into the software input queue.
+ *
+ * Called by the serial IRQ handler for each incoming byte.
+ * @param c Received byte to push.
+ */
 export void input_push(i32 c) {
     ensure_queue();
     ring_push<i32>(&in_q, c & 0xFF);
 }
 
-// Non-zero while a keystroke is waiting in the input queue.
-export i32 has_input() {
+/**
+ * Checks whether any keystrokes are waiting in the software input queue.
+ * @return True if input is available, false otherwise.
+ */
+export bool has_input() {
     ensure_queue();
     return ring_has<i32>(&in_q);
 }
 
-// Consume and return the next queued keystroke, or None if the queue is empty.
+/**
+ * Consumes and returns the next keystroke from the input queue, if available.
+ * @return Some(byte) if a keystroke was queued, or None if empty.
+ */
 export Option<i32> read_input() {
     ensure_queue();
     i32 value = 0;
-    if (ring_pop<i32>(&in_q, &value) == 0) {
+    if (!ring_pop<i32>(&in_q, &value)) {
         return None;
     }
     return Some(value);

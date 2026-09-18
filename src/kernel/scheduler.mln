@@ -22,7 +22,8 @@ export enum SchedulerError {
 // Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
 
-i32 MAX_TASKS = 256;
+import kernel_config from "kernel_config.mln";
+
 i32 task_sps[256];
 i32 task_pid[256]; // 0 = kernel task, >0 = user process PID
 i32 current_task = 0;
@@ -49,10 +50,10 @@ i32 task_wake_tick[256];  // Tick when the task should wake up
 i32 IDLE_TASK = -1;
 i32 idle_sp = 0;
 
-// Task-to-process links are created atomically by the loader.  If one stops
-// resolving while the scheduler is switching contexts, continuing with a
-// fabricated stack pointer or page directory would corrupt the machine.
-// Keep that invariant explicit at this boundary.
+/**
+ * Asserts that a process state update succeeded, panicking if invalid.
+ * @param update Result of the process table update.
+ */
 void require_process_update(Result<_, ProcessError> update) {
     case update of {
         Ok(_) -> 0;
@@ -60,6 +61,11 @@ void require_process_update(Result<_, ProcessError> update) {
     };
 }
 
+/**
+ * Unwraps an optional process table value, panicking if None.
+ * @param value Optional process attribute value.
+ * @return Unwrapped integer value.
+ */
 i32 require_process_value(Option<i32> value) {
     return case value of {
         Some(result) -> result;
@@ -70,8 +76,9 @@ i32 require_process_value(Option<i32> value) {
     };
 }
 
-// The idle task: burn no CPU until the next interrupt. Never returns; the
-// timer interrupt switches away as soon as any real task becomes runnable.
+/**
+ * Main function for the idle kernel task (wfi in an infinite loop).
+ */
 void idle_main() {
     while (1) {
         wfi_cpu();
@@ -84,14 +91,20 @@ void idle_main() {
 //
 // Exported so the trampoline can resolve the label; MyLang mangles it to
 // `scheduler_irq_handler`, which irq_trampoline.masm imports.
-// Current timer-tick count. Lets callers measure elapsed ticks (e.g. frame time).
+/**
+ * Returns the current elapsed timer tick count.
+ * @return Number of timer interrupts since boot.
+ */
 export i32 ticks() {
     return g_irq_count;
 }
 
-// Stable identity for test-only task-local facilities.  The idle context is
-// zero; runnable task indexes are shifted by one so no task collides with it.
-// This exposes no scheduler mutation surface to tests.
+/**
+ * Returns a stable identifier for the current execution context.
+ *
+ * Used primarily by tests to distinguish between contexts.
+ * @return Context index (0 for idle, >0 for normal tasks).
+ */
 export i32 current_context() {
     return current_task + 1;
 }
@@ -104,8 +117,12 @@ export i32 current_context() {
 // Scanning only the live slots keeps the handler a few hundred instructions.
 i32 g_task_count = 0;
 
-// Returns Some(index) of the next runnable task starting at `start`,
-// scanning at most `count` slots. Returns None if none are runnable.
+/**
+ * Finds the index of the next runnable task in the scheduler table.
+ * @param start Starting index to search from.
+ * @param count Number of task slots to scan.
+ * @return Some(task_idx) if a runnable task is found, or None if all are sleeping/empty.
+ */
 Option<i32> find_next_runnable(i32 start, i32 count) {
     i32 next_task = start;
     i32 checked = 0;
@@ -119,6 +136,13 @@ Option<i32> find_next_runnable(i32 start, i32 count) {
     return None;
 }
 
+/**
+ * Timer interrupt handler that performs preemptive round-robin scheduling.
+ *
+ * Updates tick count, wakes sleeping tasks, saves current task context, switches MMU page directories if necessary, and returns the next task's stack pointer.
+ * @param sp Stack pointer of the interrupted context frame.
+ * @return Stack pointer of the next task to resume.
+ */
 export i32 tick(i32 sp) {
     g_irq_count++;
 
@@ -194,7 +218,10 @@ export i32 tick(i32 sp) {
     return idle_sp;
 }
 
-// Voluntarily sleep for `ticks` timer interrupts
+/**
+ * Suspends execution of the current task for a specified duration in timer ticks.
+ * @param ticks Number of timer ticks to sleep.
+ */
 export void sleep(i32 ticks) {
     // Capture our own slot: current_task changes under us once the scheduler
     // switches away, and only our own state says when we may run on.
@@ -214,11 +241,12 @@ export void sleep(i32 ticks) {
 
 // (Demo tasks have been removed. You can use spawn_task() to launch apps here!)
 
-// Construct an initial context frame at the top of a stack and return the
-// stack pointer to resume it with (via the IRQ trampoline's restore path).
-// Pushed in reverse order of pops. irq_resume skips the four-word entry tail
-// between lr and SR/PC, so fresh contexts use that same layout as contexts
-// captured by irq_trampoline.
+/**
+ * Constructs an initial interrupt-style register frame at the top of a stack.
+ * @param func_ptr Function entry point address.
+ * @param stack_bottom Top address of the allocated stack area (stack grows downward).
+ * @return Initial stack pointer pointing to the prepared frame.
+ */
 i32 build_context(i32 func_ptr, i32 stack_bottom) {
     i32 sp = stack_bottom;
 
@@ -242,14 +270,24 @@ i32 build_context(i32 func_ptr, i32 stack_bottom) {
     return sp;
 }
 
+/**
+ * Initializes a task's saved context on its initial stack.
+ * @param task_idx Index in the task table.
+ * @param func_ptr Entry point function pointer.
+ * @param stack_bottom Top address of the allocated stack memory.
+ */
 void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
     task_sps[task_idx] = build_context(func_ptr, stack_bottom);
 }
 
-// Spawns a new task. Returns Ok(task_id) on success, or Err(SchedulerError) on failure.
+/**
+ * Spawns a new kernel task running the given function with a 1 KiB heap-allocated stack.
+ * @param func_ptr Function entry point address.
+ * @return Ok(task_id) on success, or Err(SchedulerError) on OOM or slot exhaustion.
+ */
 export Result<i32, SchedulerError> spawn_task(i32 func_ptr) {
     i32 i = 0;
-    while (i < MAX_TASKS) {
+    while (i < kernel_config.MAX_TASKS) {
         if (task_state[i] == TASK_EMPTY) {
             i32 stack = heap.alloc(1024);
             if (stack == 0) {
@@ -271,11 +309,15 @@ export Result<i32, SchedulerError> spawn_task(i32 func_ptr) {
     return Err(SchedulerError::TaskSlotFull);
 }
 
-// Spawns a user process task with an already prepared initial kernel stack pointer.
-// Returns Ok(task_id) on success, or Err(SchedulerError) on failure.
+/**
+ * Registers a user process task in the scheduler with a pre-configured stack pointer.
+ * @param pid Associated process ID.
+ * @param initial_sp Prepared initial kernel stack pointer.
+ * @return Ok(task_id) on success, or Err(SchedulerError) on slot exhaustion.
+ */
 export Result<i32, SchedulerError> spawn_proc_task(i32 pid, i32 initial_sp) {
     i32 i = 0;
-    while (i < MAX_TASKS) {
+    while (i < kernel_config.MAX_TASKS) {
         if (task_state[i] == TASK_EMPTY) {
             task_sps[i] = initial_sp;
             task_state[i] = TASK_RUNNABLE;
@@ -293,20 +335,24 @@ export Result<i32, SchedulerError> spawn_proc_task(i32 pid, i32 initial_sp) {
     return Err(SchedulerError::TaskSlotFull);
 }
 
-// Terminate a task slot
+/**
+ * Terminates a task slot and marks it as empty.
+ * @param task_idx Task index to terminate.
+ */
 export void terminate_task(i32 task_idx) {
-    if (task_idx >= 0 && task_idx < MAX_TASKS) {
+    if (task_idx >= 0 && task_idx < kernel_config.MAX_TASKS) {
         task_state[task_idx] = TASK_EMPTY;
         task_pid[task_idx] = 0;
     }
 }
 
-// Initializes the scheduler. Marks the current execution context as Task 0.
-// Requires heap.init() to have run (the idle stack is heap-allocated).
+/**
+ * Initializes the round-robin scheduler, sets up the dedicated idle context, and marks the current thread as Task 0.
+ */
 export void init() {
     // Initialize task states to EMPTY
     i32 i = 0;
-    while (i < MAX_TASKS) {
+    while (i < kernel_config.MAX_TASKS) {
         task_state[i] = TASK_EMPTY;
         task_pid[i] = 0;
         i++;

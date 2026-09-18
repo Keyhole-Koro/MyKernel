@@ -27,23 +27,41 @@ export i32 MOD_ALT   = 4;
 // Key codes carried by DOWN/UP events. Printable keys use their lowercase
 // ASCII; everything else is >= 0x100. Exported as functions because another
 // package cannot read this package's globals, only call it.
+/** Key code for Backspace (8). */
 export i32 KEY_BACKSPACE() { return 8; }
+/** Key code for Tab (9). */
 export i32 KEY_TAB()       { return 9; }
+/** Key code for Enter (13). */
 export i32 KEY_ENTER()     { return 13; }
+/** Key code for Escape (27). */
 export i32 KEY_ESCAPE()    { return 27; }
+/** Key code for Space (32). */
 export i32 KEY_SPACE()     { return 32; }
+/** Key code for Delete (127). */
 export i32 KEY_DELETE()    { return 127; }
+/** Key code for Left Arrow (0x101). */
 export i32 KEY_LEFT()      { return 0x101; }
+/** Key code for Right Arrow (0x102). */
 export i32 KEY_RIGHT()     { return 0x102; }
+/** Key code for Up Arrow (0x103). */
 export i32 KEY_UP()        { return 0x103; }
+/** Key code for Down Arrow (0x104). */
 export i32 KEY_DOWN()      { return 0x104; }
+/** Key code for Home (0x105). */
 export i32 KEY_HOME()      { return 0x105; }
+/** Key code for End (0x106). */
 export i32 KEY_END()       { return 0x106; }
+/** Key code for Page Up (0x107). */
 export i32 KEY_PAGE_UP()   { return 0x107; }
+/** Key code for Page Down (0x108). */
 export i32 KEY_PAGE_DOWN() { return 0x108; }
+/** Key code for Shift (0x110). */
 export i32 KEY_SHIFT()     { return 0x110; }
+/** Key code for Ctrl (0x111). */
 export i32 KEY_CTRL()      { return 0x111; }
+/** Key code for Alt (0x112). */
 export i32 KEY_ALT()       { return 0x112; }
+/** Key code for F1 (0x121). */
 export i32 KEY_F1()        { return 0x121; }
 
 // --- software event queue ---
@@ -56,8 +74,11 @@ i32 q_mods[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
-// Called by the keyboard IRQ handler. A full software queue drops the
-// incoming event: losing a keystroke is preferable to blocking in an IRQ.
+/**
+ * Drains all pending hardware events into the software event ring buffer.
+ *
+ * Called by the keyboard IRQ handler. Drops events if the ring buffer is full.
+ */
 export void drain_hw() {
     while (mem.read_word(KBD_EVT_STATUS_ADDR) != 0) {
         i32 t = mem.read_word(KBD_EVT_TYPE_ADDR);
@@ -75,22 +96,50 @@ export void drain_hw() {
     }
 }
 
-export i32 has_event() {
-    if (q_head == q_tail) { return 0; }
-    return 1;
+/**
+ * Checks whether the keyboard event queue contains unread events.
+ * @return True if at least one event is pending, false otherwise.
+ */
+export bool has_event() {
+    if (q_head == q_tail) { return false; }
+    return true;
 }
 
+/**
+ * Returns the event type of the current head event.
+ * @return Event type (EVT_DOWN, EVT_UP, or EVT_CHAR).
+ */
 export i32 event_type() { return q_type[q_head]; }
+
+/**
+ * Returns the key code or character code of the current head event.
+ * @return Key code or ASCII value.
+ */
 export i32 event_code() { return q_code[q_head]; }
+
+/**
+ * Returns the modifier bitmask of the current head event.
+ * @return Modifier flags bitwise OR'd (MOD_SHIFT, MOD_CTRL, MOD_ALT).
+ */
 export i32 event_mods() { return q_mods[q_head]; }
 
+/**
+ * Consumes and pops the head event from the queue.
+ */
 export void pop_event() {
     if (q_head != q_tail) {
         q_head = (q_head + 1) % QUEUE_SIZE;
     }
 }
 
-// Test/automation hook: queue an event as if the IRQ handler had drained it.
+/**
+ * Injects a synthetic keyboard event into the queue.
+ *
+ * Used for testing and automation to simulate keystrokes.
+ * @param type Event type (e.g. EVT_DOWN, EVT_CHAR, EVT_UP).
+ * @param code Key code or ASCII code.
+ * @param mods Active modifier key mask.
+ */
 export void inject(i32 type, i32 code, i32 mods) {
     i32 next = (q_tail + 1) % QUEUE_SIZE;
     if (next != q_head) {

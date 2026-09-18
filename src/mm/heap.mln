@@ -13,47 +13,82 @@ import debug from "../debug/debug.mln";
 // The free list is kept sorted by address so free() can merge neighbours.
 // A block's physical end is  h + HDR_SIZE + size.
 
-i32 HEAP_SIZE = 0x100000; // 1 MiB
+import kernel_config from "../kernel/kernel_config.mln";
+
 i32 HDR_SIZE = 8;
 i32 ALIGN = 4;
 
 i32 g_free_head = 0;
 
+/**
+ * Reads a 32-bit word from a physical/virtual memory address.
+ * @param addr Memory address to read.
+ * @return 32-bit word value.
+ */
 i32 read_word(i32 addr) {
     i32 *p = (i32 *)addr;
     return *p;
 }
 
+/**
+ * Writes a 32-bit word to a physical/virtual memory address.
+ * @param addr Memory address to write.
+ * @param value 32-bit word value to store.
+ */
 void write_word(i32 addr, i32 value) {
     i32 *p = (i32 *)addr;
     *p = value;
 }
 
+/**
+ * Rounds an integer up to the 4-byte heap alignment boundary.
+ * @param n Size in bytes to align.
+ * @return 4-byte aligned size.
+ */
 i32 align_up(i32 n) {
     return (n + (ALIGN - 1)) & ~(ALIGN - 1);
 }
 
+/** Reads the payload size in bytes from a block header. */
 i32 block_size(i32 h) { return read_word(h + 0); }
+/** Reads the next free block address from a block header. */
 i32 block_next(i32 h) { return read_word(h + 4); }
+/** Sets the payload size in bytes in a block header. */
 void set_size(i32 h, i32 v) { write_word(h + 0, v); }
+/** Sets the next free block pointer in a block header. */
 void set_next(i32 h, i32 v) { write_word(h + 4, v); }
 
-// Physical address just past the end of block h.
+/**
+ * Calculates the physical address just past the end of block h.
+ * @param h Address of block header.
+ * @return One byte past the block payload.
+ */
 i32 block_end(i32 h) {
     return h + HDR_SIZE + block_size(h);
 }
 
+/**
+ * Initializes the kernel heap manager starting after the loaded kernel image.
+ *
+ * Sets up a single free block spanning the whole 1 MiB heap region.
+ */
 export void init() {
     i32 base = heap_image_end();
     base = align_up(base);
 
     // One big free block spanning the whole heap region.
-    set_size(base, HEAP_SIZE - HDR_SIZE);
+    set_size(base, kernel_config.HEAP_SIZE - HDR_SIZE);
     set_next(base, 0);
     g_free_head = base;
 }
 
-// Returns a payload address. Panics if no block is large enough.
+/**
+ * Allocates a contiguous memory block of at least `size` bytes from the kernel heap.
+ *
+ * Uses first-fit allocation and splits remaining space when viable. Panics on OOM.
+ * @param size Requested allocation size in bytes.
+ * @return Pointer to allocated payload memory.
+ */
 export i32 alloc(i32 size) {
     if (size <= 0) {
         return 0;
@@ -95,8 +130,12 @@ export i32 alloc(i32 size) {
     return 0; // unreachable
 }
 
-// Returns a block (by payload address) to the free list, keeping the list
-// address-ordered and merging with physically-adjacent free neighbours.
+/**
+ * Returns a previously allocated block to the free list.
+ *
+ * Maintains address order in the free list and coalesces with adjacent free neighbours.
+ * @param ptr Pointer to payload memory to free (no-op if 0).
+ */
 export void free(i32 ptr) {
     if (ptr != 0) {
         i32 block = ptr - HDR_SIZE;

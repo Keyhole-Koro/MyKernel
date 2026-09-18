@@ -50,17 +50,29 @@ export struct DispatchOutcome {
     i32 return_value;
 };
 
+/**
+ * Extracts the next stack pointer from a syscall dispatch outcome.
+ * @param outcome Pointer to dispatch outcome structure.
+ * @return Stack pointer to resume.
+ */
 export i32 outcome_next_sp(DispatchOutcome *outcome) {
     return outcome->next_sp;
 }
 
+/**
+ * Extracts the user-visible return value from a syscall dispatch outcome.
+ * @param outcome Pointer to dispatch outcome structure.
+ * @return Syscall return value (e.g. byte count, PID, or 0).
+ */
 export i32 outcome_return_value(DispatchOutcome *outcome) {
     return outcome->return_value;
 }
 
-// Raw return values are an ABI detail of the final user-space boundary.
-// Keep the mapping next to the typed error definition; irq_dispatch invokes it
-// only after handling Result<i32, SyscallError>.
+/**
+ * Converts a typed SyscallError into its raw user-space negative error code.
+ * @param error Syscall error variant.
+ * @return Negative error code (e.g. -1 for NoProcess, -2 for OOM, -3 for HeapOverflow).
+ */
 export i32 error_code(SyscallError error) {
     return case error of {
         NoProcess -> -1;
@@ -85,16 +97,28 @@ i32 g_console_write = 0;
 i32 g_console_read = 0;
 i32 g_spawn_handler = 0;
 
+/**
+ * Registers OS-level console I/O hook functions for stdout/stdin redirection.
+ * @param write_handler Function pointer taking (pid, buf, count) and returning bytes written.
+ * @param read_handler Function pointer taking (pid, buf, count) and returning bytes read.
+ */
 export void set_console(i32 write_handler, i32 read_handler) {
     g_console_write = write_handler;
     g_console_read = read_handler;
 }
 
+/**
+ * Registers OS-level process spawning hook function for SYS_SPAWN.
+ * @param handler Function pointer taking path and returning PID or 0.
+ */
 export void set_spawn_handler(i32 handler) {
     g_spawn_handler = handler;
 }
 
-// The pid of the process issuing the current syscall, or 0.
+/**
+ * Returns the PID of the current process or 0 if none is active.
+ * @return Current PID or 0.
+ */
 i32 current_pid_or_zero() {
     return case process.get_current_pid() of {
         Some(value) -> value;
@@ -102,6 +126,10 @@ i32 current_pid_or_zero() {
     };
 }
 
+/**
+ * Terminates the current process with an exit code and marks it Zombie.
+ * @param code Process exit code.
+ */
 export void sys_exit(i32 code) {
     i32 pid = case process.get_current_pid() of {
         Some(value) -> value;
@@ -120,6 +148,13 @@ export void sys_exit(i32 code) {
     };
 }
 
+/**
+ * Writes data from a user buffer to an open file descriptor (e.g. stdout/stderr).
+ * @param fd File descriptor index (1 = stdout, 2 = stderr).
+ * @param buf Virtual memory address of source buffer.
+ * @param count Number of bytes to write.
+ * @return Ok(written) with number of bytes written, or Err(BadFd).
+ */
 export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
     if (count <= 0) {
         return Ok(0);
@@ -143,6 +178,13 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
     return Err(cause);
 }
 
+/**
+ * Reads data into a user buffer from an open file descriptor (e.g. stdin).
+ * @param fd File descriptor index (0 = stdin).
+ * @param buf Virtual memory address of destination buffer.
+ * @param count Maximum number of bytes to read.
+ * @return Ok(read_bytes) with number of bytes read, or Err(BadFd).
+ */
 export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     if (count <= 0) {
         return Ok(0);
@@ -156,13 +198,16 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
         }
         i32 i = 0;
         while (i < count) {
-            case serial.read_input() of {
+            Option<i32> opt_c = serial.read_input();
+            i32 has_c = case opt_c of {
                 Some(c) -> ({
                     mem.write_byte(buf + i, c);
                     i++;
+                    1;
                 });
-                None -> ({ break; });
+                None -> 0;
             };
+            if (has_c == 0) { break; }
         }
         return Ok(i);
     }
@@ -170,9 +215,11 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     return Err(cause);
 }
 
-// SYS_SPAWN: start the executable at `path` (a NUL-terminated user-space
-// string) as a new process. The pid comes back to the caller; a failure is
-// reported as 0 so a user shell can print its own message.
+/**
+ * Starts a new process from the executable file at the specified path.
+ * @param path Pointer to null-terminated file path string.
+ * @return Ok(pid) on success, or Err(UnknownSyscall) if spawn handler is unset.
+ */
 export Result<i32, SyscallError> sys_spawn(i32 path) {
     i32 handler = g_spawn_handler;
     if (handler == 0) {
@@ -182,6 +229,11 @@ export Result<i32, SyscallError> sys_spawn(i32 path) {
     return Ok(pid);
 }
 
+/**
+ * Adjusts the process's data segment break, allocating and mapping new pages as needed.
+ * @param increment Number of bytes to expand the heap by (0 queries current break).
+ * @return Ok(prev_brk) with previous heap break on success, or Err(SyscallError) on error.
+ */
 export Result<i32, SyscallError> sys_sbrk(i32 increment) {
     i32 pid = case process.get_current_pid() of {
         Some(current) -> current;
@@ -247,8 +299,12 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
     return Ok(cur_brk);
 }
 
-// The syscall layer keeps both successes and failures typed. irq_dispatch is
-// the only layer that writes the raw ABI result into the interrupted r1 frame.
+/**
+ * Packages a syscall result into a typed DispatchOutcome for IRQ dispatch.
+ * @param sp Stack pointer to restore upon syscall return.
+ * @param result Pointer to typed syscall outcome result.
+ * @return Ok(DispatchOutcome) containing next SP and return value, or Err(SyscallError).
+ */
 Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, SyscallError> *result) {
     i32 ret = 0;
     if (result_take_ok<i32, SyscallError>(result, &ret) != 0) {
@@ -263,6 +319,13 @@ Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, S
     return Err(error);
 }
 
+/**
+ * Top-level system call dispatcher called from irq_dispatch.
+ *
+ * Decodes the syscall number and arguments from the saved stack frame and executes the corresponding service.
+ * @param sp Stack pointer of saved user interrupt frame.
+ * @return Ok(DispatchOutcome) describing next SP and return value, or Err(SyscallError).
+ */
 export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     // Stack frame layout (from irq_trampoline.masm):
     // [sp+0]:  r7 (arg3)

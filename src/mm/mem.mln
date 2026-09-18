@@ -3,21 +3,41 @@ package mem;
 // Generic word access to an absolute address. Works for RAM (e.g. building task
 // stack frames) and memory-mapped I/O alike; the bus routes by address.
 
+/**
+ * Writes a 32-bit word to the specified memory address.
+ * @param addr Destination memory address.
+ * @param value 32-bit word value to write.
+ */
 export void write_word(i32 addr, i32 value) {
     i32 *p = (i32 *)addr;
     *p = value;
 }
 
+/**
+ * Reads a 32-bit word from the specified memory address.
+ * @param addr Source memory address.
+ * @return 32-bit word value read from memory.
+ */
 export i32 read_word(i32 addr) {
     i32 *p = (i32 *)addr;
     return *p;
 }
 
+/**
+ * Writes a single byte to the specified memory address.
+ * @param addr Destination memory address.
+ * @param value Byte value to write.
+ */
 export void write_byte(i32 addr, i32 value) {
     char *p = (char *)addr;
     *p = (char)value;
 }
 
+/**
+ * Reads a single unsigned byte from the specified memory address.
+ * @param addr Source memory address.
+ * @return Byte value in range 0-255.
+ */
 export i32 read_byte(i32 addr) {
     char *p = (char *)addr;
     return (i32)(*p) & 0xFF;

@@ -8,16 +8,26 @@ import mem from "../mm/mem.mln";
 // emulator (runtime/MyEmulator/src/constants.rs).
 i32 IRQ_VECTOR_ADDR = 0x24000080;
 
-// Install the low-level trampoline as the interrupt handler. Until this is
-// called the vector slot is 0 and the emulator suppresses interrupts.
+/**
+ * Installs the low-level trampoline as the interrupt handler.
+ *
+ * Until this is called, the vector slot is 0 and the emulator suppresses interrupts.
+ */
 export void set_handler() {
     mem.write_word(IRQ_VECTOR_ADDR, hw_irq_vector_target());
 }
 
+/**
+ * Enables hardware interrupts globally.
+ */
 export void enable() {
     hw_irq_enable();
 }
 
+/**
+ * Disables hardware interrupts globally.
+ */
 export void disable() {
     hw_irq_disable();
 }
+

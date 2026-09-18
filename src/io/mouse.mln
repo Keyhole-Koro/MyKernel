@@ -23,31 +23,53 @@ i32 MOUSE_BUTTON_LEFT = 0x1;
 i32 MOUSE_BUTTON_RIGHT = 0x2;
 i32 MOUSE_BUTTON_MIDDLE = 0x4;
 
+/**
+ * Reads the current mouse cursor X coordinate from hardware register.
+ * @return Current X coordinate in pixels.
+ */
 export i32 x() {
     return mem.read_word(MOUSE_X_ADDR);
 }
 
+/**
+ * Reads the current mouse cursor Y coordinate from hardware register.
+ * @return Current Y coordinate in pixels.
+ */
 export i32 y() {
     return mem.read_word(MOUSE_Y_ADDR);
 }
 
-// Raw button bitmask (bit0 = left, bit1 = right, bit2 = middle).
+/**
+ * Reads the current raw button bitmask from hardware register.
+ *
+ * Bit 0 = Left button, Bit 1 = Right button, Bit 2 = Middle button.
+ * @return Button state bitmask.
+ */
 export i32 buttons() {
     return mem.read_word(MOUSE_BUTTONS_ADDR);
 }
 
-// Non-zero while the left button is held down.
+/**
+ * Checks whether the left mouse button is currently held down.
+ * @return Non-zero if held down, 0 otherwise.
+ */
 export i32 left_down() {
     return buttons() & MOUSE_BUTTON_LEFT;
 }
 
+/**
+ * Checks whether the right mouse button is currently held down.
+ * @return Non-zero if held down, 0 otherwise.
+ */
 export i32 right_down() {
     return buttons() & MOUSE_BUTTON_RIGHT;
 }
 
-// Button bits, as functions so other packages can mask event_btn() with them.
+/** Left mouse button bitmask (0x1). */
 export i32 BTN_LEFT() { return MOUSE_BUTTON_LEFT; }
+/** Right mouse button bitmask (0x2). */
 export i32 BTN_RIGHT() { return MOUSE_BUTTON_RIGHT; }
+/** Middle mouse button bitmask (0x4). */
 export i32 BTN_MIDDLE() { return MOUSE_BUTTON_MIDDLE; }
 
 // --- software event queue ---
@@ -63,10 +85,11 @@ i32 q_wheel[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
-// Called by the mouse IRQ handler: drain the hardware event FIFO into the
-// software queue. If the software queue is full the incoming event is dropped;
-// consumers must treat the live registers as the authoritative current state,
-// so a dropped event can delay a repaint but never wedge button state.
+/**
+ * Drains all pending hardware mouse events into the software event ring buffer.
+ *
+ * Called by the mouse IRQ handler. Drops incoming events if the queue is full.
+ */
 export void drain_hw() {
     while (mem.read_word(MOUSE_EVT_STATUS_ADDR) != 0) {
         i32 nx = mem.read_word(MOUSE_EVT_X_ADDR);
@@ -86,24 +109,60 @@ export void drain_hw() {
     }
 }
 
-export i32 has_event() {
-    if (q_head == q_tail) { return 0; }
-    return 1;
+/**
+ * Checks whether the mouse event queue contains unread events.
+ * @return True if at least one event is pending, false otherwise.
+ */
+export bool has_event() {
+    if (q_head == q_tail) { return false; }
+    return true;
 }
 
+/**
+ * Returns the X coordinate of the current head event.
+ * @return Event X coordinate in pixels.
+ */
 export i32 event_x() { return q_x[q_head]; }
+
+/**
+ * Returns the Y coordinate of the current head event.
+ * @return Event Y coordinate in pixels.
+ */
 export i32 event_y() { return q_y[q_head]; }
+
+/**
+ * Returns the button bitmask of the current head event.
+ * @return Event button bitmask.
+ */
 export i32 event_btn() { return q_btn[q_head]; }
-// Wheel steps carried by the head event: positive = scroll up, 0 = none.
+
+/**
+ * Returns the signed wheel scroll steps of the current head event.
+ *
+ * Positive values indicate scrolling up, negative scrolling down, 0 none.
+ * @return Wheel scroll delta.
+ */
 export i32 event_wheel() { return q_wheel[q_head]; }
 
+/**
+ * Consumes and pops the head event from the queue.
+ */
 export void pop_event() {
     if (q_head != q_tail) {
         q_head = (q_head + 1) % QUEUE_SIZE;
     }
 }
 
-// True if point (px, py) lies inside the rectangle (rx, ry, rw, rh).
+/**
+ * Determines whether a 2D point lies within an axis-aligned bounding rectangle.
+ * @param px Point X coordinate.
+ * @param py Point Y coordinate.
+ * @param rx Rectangle left origin X.
+ * @param ry Rectangle top origin Y.
+ * @param rw Rectangle width.
+ * @param rh Rectangle height.
+ * @return 1 if inside, 0 otherwise.
+ */
 export i32 in_rect(i32 px, i32 py, i32 rx, i32 ry, i32 rw, i32 rh) {
     if (px < rx) { return 0; }
     if (py < ry) { return 0; }

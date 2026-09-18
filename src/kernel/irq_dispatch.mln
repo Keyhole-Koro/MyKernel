@@ -31,6 +31,13 @@ i32 IRQ_CAUSE_KEYBOARD = 128;
 // TODO(irq-abi): replace these compiler-prologue offsets with a first-class
 // interrupt/naked entry ABI (or a compiler-generated frame descriptor). Any
 // codegen change to irq_entry's prologue must update this layout.
+/**
+ * Completes the synthetic interrupt frame with saved registers from the compiler prologue.
+ *
+ * Copies bp, lr, SR, and PC into the frame reserved tail so irq_resume() can restore a contiguous frame.
+ * @param frame Pointer to synthetic interrupt frame.
+ * @return Frame pointer with completed register state.
+ */
 i32 complete_interrupt_frame(i32 frame) {
     mem.write_word(frame + 32, mem.read_word(frame + 48)); // bp
     mem.write_word(frame + 36, mem.read_word(frame + 52)); // lr
@@ -39,14 +46,22 @@ i32 complete_interrupt_frame(i32 frame) {
     return frame;
 }
 
-// IRQ vector entry. irq_trampoline() preserves the interrupted state and
-// returns a synthetic frame pointer, then dispatch() owns all typed logic.
-// dispatch() reaches irq_resume(), which restores a selected frame and irets.
+/**
+ * Top-level hardware interrupt entry point called from the vector table.
+ *
+ * Preserves CPU state via trampoline, dispatches to interrupt handlers, and never returns directly.
+ */
 export void entry() {
     dispatch(complete_interrupt_frame(irq_trampoline()));
     debug.panic("irq dispatcher returned unexpectedly");
 }
 
+/**
+ * Dispatches interrupt causes (serial, mouse, keyboard, faults, syscall, timer).
+ *
+ * Handles pending hardware events, traps, system calls, and timer ticks before resuming execution.
+ * @param sp Stack pointer of the saved interrupt frame.
+ */
 export void dispatch(i32 sp) {
     i32 cause = mem.read_word(IRQ_CAUSE_ADDR);
     

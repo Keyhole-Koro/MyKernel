@@ -35,7 +35,11 @@ i32 PTE_USER_RWX    = 0x0F; // Legacy / flat fallback: VALID | WRITABLE | EXEC |
 
 i32 MBIN_MAGIC      = 0x4D42494E; // 'MBIN'
 
-// Reads a 32-bit big-endian word from memory
+/**
+ * Reads a 32-bit big-endian unsigned integer from memory.
+ * @param addr Memory address to read from.
+ * @return 32-bit integer decoded from big-endian bytes.
+ */
 i32 read_be32(i32 addr) {
     i32 b0 = mem.read_byte(addr);
     i32 b1 = mem.read_byte(addr + 1);
@@ -44,7 +48,11 @@ i32 read_be32(i32 addr) {
     return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
 }
 
-// Aligns an address/size up to a 4 KiB boundary
+/**
+ * Rounds an address or size up to the nearest 4 KiB page boundary.
+ * @param val Address or size to align.
+ * @return 4 KiB aligned value.
+ */
 i32 align_up_4k(i32 val) {
     i32 rem = val & 4095;
     if (rem == 0) {
@@ -53,8 +61,18 @@ i32 align_up_4k(i32 val) {
     return (val - rem) + 4096;
 }
 
-// Copies `size` bytes from `src_ptr` into physical frames and maps them at `vaddr_base`
-// with `pte_flags`. If `src_ptr` is 0, the frames remain zero-filled (used for BSS).
+/**
+ * Allocates physical frames and maps them into virtual memory at vaddr_base.
+ *
+ * If src_ptr is non-zero, copies `size` bytes from src_ptr into the allocated frames.
+ * If src_ptr is 0, the frames remain zero-filled (for BSS sections).
+ * @param pd Page directory physical address.
+ * @param vaddr_base Base virtual address for the mapping.
+ * @param src_ptr Pointer to source data, or 0 for zeroed pages.
+ * @param size Segment size in bytes.
+ * @param pte_flags Page table entry permission flags (e.g. PTE_USER_RX, PTE_USER_RW).
+ * @return Ok(_) on success, or Err(LoaderError) on allocation/MMU failure.
+ */
 Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size, i32 pte_flags) {
     i32 offset = 0;
     while (offset < size) {
@@ -97,9 +115,10 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
     return Ok(_);
 }
 
-// Every caller reaches this helper with a PID returned by alloc_proc.  A
-// failure would mean the process table changed underneath the loader, which
-// is a kernel invariant violation rather than another loading error.
+/**
+ * Releases an allocated process during error cleanup.
+ * @param pid Process ID to release.
+ */
 void release_proc(i32 pid) {
     Result<_, ProcessError> release = process.free_proc(pid);
     case release of {
@@ -108,10 +127,15 @@ void release_proc(i32 pid) {
     };
 }
 
-// Spawns a new process from raw binary instructions located at `code_ptr`.
-// Automatically detects MBIN v2 header (0x4D42494E) for segment separation & W^X,
-// or falls back to flat binary loading for legacy compatibility.
-// Returns Ok(pid) on success or Err(LoaderError) on failure.
+/**
+ * Spawns a new user process from raw binary instructions in memory.
+ *
+ * Automatically detects MBIN v2 header for segment separation (W^X) or falls back
+ * to flat binary loading for legacy compatibility.
+ * @param code_ptr Memory pointer to executable binary.
+ * @param code_size Binary size in bytes.
+ * @return Ok(pid) with allocated process ID on success, or Err(LoaderError) on failure.
+ */
 export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     Result<i32, ProcessError> proc_res = process.alloc_proc();
     i32 pid = case proc_res of {
