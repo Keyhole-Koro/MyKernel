@@ -14,7 +14,9 @@ import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
 // scheduler/process mock tests.
 
 i32 Window(char *title, i32 x, i32 y, i32 w, i32 h) { return 10; }
-i32 Button(char *text, i32 x, i32 y, i32 w, i32 h, i32 onClick) { onClick(99); return 20; }
+// onClick arrives as the compiler's trampoline with the handler ABI
+// (owner, id, arg); the trampoline forwards `id` to on_click(i32 id).
+i32 Button(char *text, i32 x, i32 y, i32 w, i32 h, i32 onClick) { onClick(0, 99, 0); return 20; }
 i32 Text(char *text, i32 x, i32 y) { return 30; }
 i32 Box(i32 x, i32 y, i32 w, i32 h, i32 background, i32 border) { return 40; }
 i32 Column(i32 x, i32 y, i32 w, i32 h, i32 padding, i32 gap) { return 50; }
