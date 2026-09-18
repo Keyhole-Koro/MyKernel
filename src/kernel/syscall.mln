@@ -13,15 +13,17 @@ import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { MmuError } from "../mm/mmu.mln";
 
 // Syscall numbers
-export i32 SYS_EXIT  = 1;
-export i32 SYS_READ  = 2;
-export i32 SYS_WRITE = 3;
-export i32 SYS_OPEN  = 4;
-export i32 SYS_CLOSE = 5;
-export i32 SYS_SEEK  = 6;
-export i32 SYS_SBRK  = 7;
-export i32 SYS_YIELD = 8;
-export i32 SYS_SPAWN = 9;
+export enum Syscall {
+    EXIT = 1,
+    READ,
+    WRITE,
+    OPEN,
+    CLOSE,
+    SEEK,
+    SBRK,
+    YIELD,
+    SPAWN,
+}
 
 // Typed failure reasons for syscalls that do real work (multi-step, can fail
 // for more than one reason). Consumed only via Result<T, SyscallError>/case,
@@ -282,32 +284,32 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     i32 arg1   = mem.read_word(sp + 8);
     i32 arg2   = mem.read_word(sp + 4);
     i32 arg3   = mem.read_word(sp + 0);
-    if (sys_nr == SYS_EXIT) {
+    if (sys_nr == Syscall::EXIT) {
         sys_exit(arg1);
         DispatchOutcome outcome;
         outcome.next_sp = scheduler.tick(sp);
         outcome.return_value = 0;
         return Ok(outcome);
     }
-    if (sys_nr == SYS_READ) {
+    if (sys_nr == Syscall::READ) {
         Result<i32, SyscallError> result = sys_read(arg1, arg2, arg3);
         return resume_after_syscall(sp, &result);
     }
-    if (sys_nr == SYS_WRITE) {
+    if (sys_nr == Syscall::WRITE) {
         Result<i32, SyscallError> result = sys_write(arg1, arg2, arg3);
         return resume_after_syscall(sp, &result);
     }
-    if (sys_nr == SYS_SBRK) {
+    if (sys_nr == Syscall::SBRK) {
         Result<i32, SyscallError> result = sys_sbrk(arg1);
         return resume_after_syscall(sp, &result);
     }
-    if (sys_nr == SYS_YIELD) {
+    if (sys_nr == Syscall::YIELD) {
         DispatchOutcome outcome;
         outcome.next_sp = scheduler.tick(sp);
         outcome.return_value = 0;
         return Ok(outcome);
     }
-    if (sys_nr == SYS_SPAWN) {
+    if (sys_nr == Syscall::SPAWN) {
         Result<i32, SyscallError> result = sys_spawn(arg1);
         return resume_after_syscall(sp, &result);
     }

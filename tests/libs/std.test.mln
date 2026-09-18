@@ -79,8 +79,8 @@ void test_str() {
     assert_eq<i32>(str.cat(&g_buf[0], "12"), 10, "str.cat returns total");
     assert_eq<i32>(str.eq(&g_buf[0], "clicks: 12"), 1, "str.cat content");
 
-    assert_eq<i32>(str.chr("hello", 'l'), 2, "str.chr found");
-    assert_eq<i32>(str.chr("hello", 'z'), -1, "str.chr missing");
+    case str.chr("hello", 'l') of { Some(v) -> assert_eq<i32>(v, 2, "str.chr found"); None -> assert.assert_true(false, "str.chr found"); };
+    case str.chr("hello", 'z') of { Some(v) -> assert.assert_true(false, "str.chr missing"); None -> assert.assert_true(true, "str.chr missing"); };
 
     case str.find("hello world", "world") of { Some(v) -> assert_eq<i32>(v, 6, "str.find hit"); None -> assert.assert_true(false, "str.find hit"); };
     case str.find("hello", "xyz") of { Some(v) -> assert.assert_true(false, "str.find miss"); None -> assert.assert_true(true, "str.find miss"); };
