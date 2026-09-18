@@ -135,7 +135,7 @@ export i32 tick(i32 sp) {
                 task_state[i] = TASK_RUNNABLE; // Wake up!
             }
         }
-        i = i + 1;
+        i++;
     }
 
     // Save the interrupted context: a real task's slot, or the idle context.
@@ -259,7 +259,7 @@ export Result<i32, SchedulerError> spawn_task(i32 func_ptr) {
             }
             return Ok(i);
         }
-        i = i + 1;
+        i++;
     }
     
     debug.println("Error: Task slots exhausted! (MAX_TASKS reached)");
@@ -282,7 +282,7 @@ export Result<i32, SchedulerError> spawn_proc_task(i32 pid, i32 initial_sp) {
             }
             return Ok(i);
         }
-        i = i + 1;
+        i++;
     }
     debug.println("scheduler: out of task slots for process");
     return Err(SchedulerError::TaskSlotFull);
@@ -304,7 +304,7 @@ export void init() {
     while (i < MAX_TASKS) {
         task_state[i] = TASK_EMPTY;
         task_pid[i] = 0;
-        i = i + 1;
+        i++;
     }
 
     // Build the dedicated idle context. 512 bytes is plenty: the wfi loop

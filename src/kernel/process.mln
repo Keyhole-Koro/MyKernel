@@ -58,9 +58,9 @@ export void init() {
         i32 f = 0;
         while (f < MAX_FDS) {
             g_proc_fds[i * MAX_FDS + f] = -1;
-            f = f + 1;
+            f++;
         }
-        i = i + 1;
+        i++;
     }
     g_current_pid = 0;
     g_procs_initialized = 1;
@@ -88,11 +88,11 @@ export Result<i32, ProcessError> alloc_proc() {
             i32 f = 3;
             while (f < MAX_FDS) {
                 g_proc_fds[i * MAX_FDS + f] = -1;
-                f = f + 1;
+                f++;
             }
             return Ok(pid);
         }
-        i = i + 1;
+        i++;
     }
     return Err(ProcessError::NoFreeSlot);
 }
@@ -132,7 +132,7 @@ export Result<_, ProcessError> free_proc(i32 pid) {
     i32 f = 0;
     while (f < MAX_FDS) {
         g_proc_fds[idx * MAX_FDS + f] = -1;
-        f = f + 1;
+        f++;
     }
 
     if (g_current_pid == pid) {

@@ -139,7 +139,7 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
         while (i < count) {
             i32 c = mem.read_byte(buf + i);
             serial.putc(c);
-            i = i + 1;
+            i++;
         }
         return Ok(count);
     }
@@ -163,7 +163,7 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
             case serial.read_input() of {
                 Some(c) -> ({
                     mem.write_byte(buf + i, c);
-                    i = i + 1;
+                    i++;
                 });
                 None -> ({ break; });
             };
