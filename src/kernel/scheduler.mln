@@ -286,15 +286,27 @@ void init_task(i32 task_idx, i32 func_ptr, i32 stack_bottom) {
  * @return Ok(task_id) on success, or Err(SchedulerError) on OOM or slot exhaustion.
  */
 export Result<i32, SchedulerError> spawn_task(i32 func_ptr) {
+    return spawn_task_sized(func_ptr, 1024);
+}
+
+/**
+ * Spawns a new kernel task with a stack of the given size (bytes, heap-allocated).
+ * A task that runs application code -- deep call chains, buffers on the
+ * stack -- needs more than the 1 KiB a polling loop gets by.
+ * @param func_ptr Function entry point address.
+ * @param stack_bytes Stack size in bytes.
+ * @return Ok(task_id) on success, or Err(SchedulerError) on OOM or slot exhaustion.
+ */
+export Result<i32, SchedulerError> spawn_task_sized(i32 func_ptr, i32 stack_bytes) {
     i32 i = 0;
     while (i < kernel_config.MAX_TASKS) {
         if (task_state[i] == TASK_EMPTY) {
-            i32 stack = heap.alloc(1024);
+            i32 stack = heap.alloc(stack_bytes);
             if (stack == 0) {
                 debug.println("Error: Out of memory for task stack!");
                 return Err(SchedulerError::OutOfMemory);
             }
-            init_task(i, func_ptr, stack + 1024);
+            init_task(i, func_ptr, stack + stack_bytes);
             task_state[i] = TASK_RUNNABLE;
             task_pid[i] = 0; // Kernel task
             if (i >= g_task_count) {

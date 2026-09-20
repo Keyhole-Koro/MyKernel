@@ -1,0 +1,86 @@
+package ipc;
+
+// Channels: fixed-size messages between tasks.
+//
+// A channel is a ring of MSG_WORDS-word slots with one producer and one
+// consumer (each index is written by one side only, so two kernel tasks
+// preempting each other need no lock). send() copies a message in and
+// fails when the ring is full; recv() copies the oldest out; wait() sleeps
+// until one arrives. Messages are words: pointers in them are only
+// meaningful while both ends share an address space -- when one end is a
+// user process, the syscall layer copies what a pointer names before the
+// message crosses (MYOS-022).
+//
+// The UI protocol runs on three of these (MyOS/src/ui/ui_channel.mln):
+// requests to the UI server, replies back, and events to the apps.
+
+import scheduler from "scheduler.mln";
+
+export i32 MSG_WORDS = 16;
+i32 CHANNELS_MAX = 8;
+i32 SLOTS = 32;
+
+i32 g_used[8];
+i32 g_head[8];     // next slot to read
+i32 g_tail[8];     // next slot to write
+i32 g_ring[4096];  // CHANNELS_MAX * SLOTS * MSG_WORDS
+
+// A new channel: its id (1..), or 0 when none is left.
+export i32 create() {
+    i32 c = 0;
+    while (c < CHANNELS_MAX) {
+        if (g_used[c] == 0) {
+            g_used[c] = 1;
+            g_head[c] = 0;
+            g_tail[c] = 0;
+            return c + 1;
+        }
+        c++;
+    }
+    return 0;
+}
+
+i32 slot_base(i32 c, i32 slot) {
+    return (c * SLOTS + slot) * MSG_WORDS;
+}
+
+// Queue `words` (MSG_WORDS of them). False when the channel is full or invalid.
+export bool send(i32 ch, i32 *words) {
+    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
+    i32 c = ch - 1;
+    i32 next = g_tail[c] + 1;
+    if (next >= SLOTS) { next = 0; }
+    if (next == g_head[c]) { return false; }
+    i32 at = slot_base(c, g_tail[c]);
+    i32 i = 0;
+    while (i < MSG_WORDS) { g_ring[at + i] = words[i]; i++; }
+    g_tail[c] = next;
+    return true;
+}
+
+export bool pending(i32 ch) {
+    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
+    i32 c = ch - 1;
+    return g_head[c] != g_tail[c];
+}
+
+// Take the oldest message into `out` (MSG_WORDS). False when there is none.
+export bool recv(i32 ch, i32 *out) {
+    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
+    i32 c = ch - 1;
+    if (g_head[c] == g_tail[c]) { return false; }
+    i32 at = slot_base(c, g_head[c]);
+    i32 i = 0;
+    while (i < MSG_WORDS) { out[i] = g_ring[at + i]; i++; }
+    i32 next = g_head[c] + 1;
+    if (next >= SLOTS) { next = 0; }
+    g_head[c] = next;
+    return true;
+}
+
+// Sleep (a tick at a time) until a message arrives, then take it.
+export void wait(i32 ch, i32 *out) {
+    while (!recv(ch, out)) {
+        scheduler.sleep(1);
+    }
+}
