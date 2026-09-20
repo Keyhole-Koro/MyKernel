@@ -130,7 +130,7 @@ void release_proc(i32 pid) {
 /**
  * Spawns a new user process from raw binary instructions in memory.
  *
- * Automatically detects MBIN v2 header for segment separation (W^X) or falls back
+ * Automatically detects an MBIN header (version 1 or 2) for segment separation (W^X) or falls back
  * to flat binary loading for legacy compatibility.
  * @param code_ptr Memory pointer to executable binary.
  * @param code_size Binary size in bytes.
@@ -182,7 +182,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting pdbr"); });
     };
 
-    // 2. Check for MBIN v2 executable header
+    // 2. Check for an MBIN executable header
     i32 entry_point = USER_CODE_BASE;
     i32 initial_brk = USER_HEAP_BASE;
     i32 is_mbin = 0;
@@ -211,7 +211,9 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         i32 data_size   = read_be32(code_ptr + 24);
         i32 bss_size    = read_be32(code_ptr + 28);
 
-        if (version != 1) {
+        // Header version 2 adds a section directory offset after bss_size;
+        // the segments are laid out the same, so both load alike.
+        if (version != 1 && version != 2) {
             debug.println("loader: unsupported MBIN version");
             release_proc(pid);
             LoaderError cause = InvalidHeader(version);
