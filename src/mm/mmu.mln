@@ -67,6 +67,25 @@ i32 FRAME_MASK        = 0xFFFFF000;
  * @return Some(frame_addr) on success, or None on out of memory.
  */
 export Option<i32> alloc_page() {
+    i32 page = case alloc_page_uninitialized() of {
+        Some(p) -> p;
+        None -> ({ return None; });
+    };
+    // Zero out the page
+    i32 i = 0;
+    while (i < PAGE_SIZE) {
+        mem.write_word(page + i, 0);
+        i = i + 4;
+    }
+    return Some(page);
+}
+
+/**
+ * Allocates a 4 KiB-aligned frame without clearing it: for a caller that
+ * fills the whole page anyway (the loader copying a segment).
+ * @return Some(frame_addr) on success, or None on out of memory.
+ */
+export Option<i32> alloc_page_uninitialized() {
     // Allocate 8192 bytes so we can guarantee a 4096-byte aligned base
     i32 raw = heap.alloc(PAGE_SIZE * 2);
     if (raw == 0) {
@@ -74,13 +93,6 @@ export Option<i32> alloc_page() {
         return None;
     }
     i32 aligned = (raw + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
-
-    // Zero out the page
-    i32 i = 0;
-    while (i < PAGE_SIZE) {
-        mem.write_word(aligned + i, 0);
-        i = i + 4;
-    }
     return Some(aligned);
 }
 
@@ -202,7 +214,16 @@ export Result<_, MmuError> map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 si
  * @param pd_addr Physical address of the page directory.
  * @return Ok(_) on success, or Err(MmuError) on failure.
  */
-export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
+// The kernel's page tables are shared: the first page directory that gets
+// the identity mapping builds them (thousands of map_page calls, over a
+// second of emulated time), and every later directory takes the same
+// tables by copying the directory entries. The one table a process changes
+// -- the first 4 MB, where its text and data are mapped over the identity
+// range -- is copied for it, so the shared one stays the kernel's.
+i32 g_shared_ready = 0;
+i32 g_shared_pd = 0;      // the directory the shared tables were built in
+
+Result<_, MmuError> build_identity_tables(i32 pd_addr) {
     // 1. Map lower 16 MB of physical RAM (Kernel image, heaps)
     // Read/Write/Execute, Kernel Mode only
     Result<_, MmuError> r1 = map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC);
@@ -246,10 +267,44 @@ export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
     return Ok(_);
 }
 
-/**
- * Enables hardware MMU address translation using the given page directory.
- * @param pd_addr Physical address of the page directory to load into PDBR.
- */
+export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
+    if (g_shared_ready == 0) {
+        Result<_, MmuError> built = build_identity_tables(pd_addr);
+        case built of {
+            Ok(_)  -> 0;
+            Err(e) -> ({ return Err(e); });
+        };
+        g_shared_pd = pd_addr;
+        g_shared_ready = 1;
+        return Ok(_);
+    }
+    // Share every kernel table; give this directory its own copy of the
+    // first one, the only one a process overwrites entries in.
+    i32 pdi = 0;
+    while (pdi < 1024) {
+        i32 pde = mem.read_word(g_shared_pd + pdi * 4);
+        if ((pde & PTE_VALID) != 0) {
+            if (pdi == 0) {
+                i32 copy = case alloc_page() of {
+                    Some(p) -> p;
+                    None -> ({ return Err(MmuError::AllocFailed); });
+                };
+                i32 src = pde & FRAME_MASK;
+                i32 k = 0;
+                while (k < PAGE_SIZE) {
+                    mem.write_word(copy + k, mem.read_word(src + k));
+                    k = k + 4;
+                }
+                mem.write_word(pd_addr + pdi * 4, (copy & FRAME_MASK) | (pde & 0xFFF));
+            } else {
+                mem.write_word(pd_addr + pdi * 4, pde);
+            }
+        }
+        pdi++;
+    }
+    return Ok(_);
+}
+
 export void enable_paging(i32 pd_addr) {
     mem.write_word(MMU_PDBR_ADDR, pd_addr);
     mem.write_word(MMU_CTRL_ADDR, 1);

@@ -23,7 +23,11 @@ export enum LoaderError {
 }
 
 i32 USER_CODE_BASE  = 0x40000000;
-export i32 USER_STACK_BASE = 0x7FFFF000; // Heap must stay below this (see syscall.sys_sbrk)
+// The user stack: USER_STACK_PAGES pages ending just below the top of the
+// address space. A GUI app's view() and handlers build markup and copy
+// text on the stack, which one page does not hold.
+i32 USER_STACK_PAGES = 4;
+export i32 USER_STACK_BASE = 0x7FFFC000; // Heap must stay below this (see syscall.sys_sbrk)
 i32 USER_STACK_TOP  = 0x7FFFFFE0;
 i32 USER_HEAP_BASE  = 0x41000000;
 
@@ -76,7 +80,15 @@ i32 align_up_4k(i32 val) {
 Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size, i32 pte_flags) {
     i32 offset = 0;
     while (offset < size) {
-        i32 frame = case mmu.alloc_page() of {
+        i32 chunk = 4096;
+        if (offset + chunk > size) {
+            chunk = size - offset;
+        }
+        // A page the copy fills completely need not be cleared first.
+        Option<i32> got = None;
+        if (src_ptr != 0 && chunk == 4096) { got = mmu.alloc_page_uninitialized(); }
+        else { got = mmu.alloc_page(); }
+        i32 frame = case got of {
             Some(f) -> f;
             None -> ({
                 debug.println("loader: out of memory for frame");
@@ -84,13 +96,16 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
             });
         };
 
-        i32 chunk = 4096;
-        if (offset + chunk > size) {
-            chunk = size - offset;
-        }
-
         if (src_ptr != 0) {
             i32 b = 0;
+            if (((src_ptr + offset) & 3) == 0) {
+                // Word copies where the source allows: a byte loop over a
+                // 60 KB image is a visible part of an app's start-up time.
+                while (b + 4 <= chunk) {
+                    mem.write_word(frame + b, mem.read_word(src_ptr + offset + b));
+                    b = b + 4;
+                }
+            }
             while (b < chunk) {
                 i32 byte_val = mem.read_byte(src_ptr + offset + b);
                 mem.write_byte(frame + b, byte_val);
@@ -236,7 +251,8 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
                      version, entry_point, text_size, data_size, bss_size);
         code_base = entry_point & 0xFFFFF000;
 
-        // Map Text segment as RX (Read + Execute, No Write)
+        // Map Text segment as RX (Read + Execute, No Write). Globals live
+        // in the data segment (the compiler's `.data`), so text is code only.
         Result<_, LoaderError> map_text = map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX);
         case map_text of {
             Ok(_)  -> 0;
@@ -290,40 +306,30 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         };
     }
 
-    // 3. Allocate user stack page (RW, No Execute)
-    i32 stack_frame = case mmu.alloc_page() of {
-        Some(f) -> f;
-        None -> ({
-            debug.println("loader: out of memory for user stack frame");
-            release_proc(pid);
-            return Err(LoaderError::OutOfMemory);
-        });
-    };
-    Result<_, MmuError> map_stack_res = mmu.map_page(pd, USER_STACK_BASE, stack_frame, PTE_USER_RW);
-    case map_stack_res of {
-        Ok(_) -> 0;
-        Err(AllocFailed) -> ({
-            debug.println("loader: failed to map user stack page");
-            release_proc(pid);
-            return Err(LoaderError::OutOfMemory);
-        });
+    // 3. Allocate the user stack pages (RW, No Execute), zero-filled
+    Result<_, LoaderError> map_stack = map_segment(pd, USER_STACK_BASE, 0, USER_STACK_PAGES * 4096, PTE_USER_RW);
+    case map_stack of {
+        Ok(_)  -> 0;
         Err(e) -> ({
-            debug.println("loader: mmu error mapping user stack");
+            debug.println("loader: cannot map the user stack");
             release_proc(pid);
-            return Err(LoaderError::Mmu(e));
+            return Err(e);
         });
     };
 
-    // 4. Allocate kernel stack. Syscalls run on it, and a console hook
-    // (syscall.set_console) reaches into the desktop's DOM from there, so it
-    // is sized for a few nested MyLang frames rather than a bare dispatcher.
-    i32 kstack = heap.alloc(4096);
+    // 4. Allocate kernel stack. Syscalls run on it: the OS_CALL handler
+    // reaches the filesystem (SSD I/O) and the UI channels from there, so
+    // it is sized for a real call chain of MyLang frames, not a bare
+    // dispatcher -- an overflow here silently corrupts whatever heap block
+    // sits below it.
+    i32 KSTACK_BYTES = 16384;
+    i32 kstack = heap.alloc(KSTACK_BYTES);
     if (kstack == 0) {
         debug.println("loader: out of memory for kernel stack");
         release_proc(pid);
         return Err(LoaderError::OutOfMemory);
     }
-    i32 kstack_top = kstack + 4096;
+    i32 kstack_top = kstack + KSTACK_BYTES;
     Result<_, ProcessError> set_kstack_top = process.set_kernel_stack_top(pid, kstack_top);
     case set_kstack_top of {
         Ok(_) -> 0;

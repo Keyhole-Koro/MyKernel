@@ -9,6 +9,7 @@ import debug from "../debug/debug.mln";
 import process from "process.mln";
 import syscall from "syscall.mln";
 import { SyscallError, DispatchOutcome } from "syscall.mln";
+import irq from "../arch/irq.mln";
 import mmu from "../mm/mmu.mln";
 import { irq_trampoline, irq_resume } from "../arch/irq_trampoline.masm";
 import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
@@ -63,6 +64,7 @@ export void entry() {
  * @param sp Stack pointer of the saved interrupt frame.
  */
 export void dispatch(i32 sp) {
+    i32 was_enabled = irq.enter_handler();
     i32 cause = mem.read_word(IRQ_CAUSE_ADDR);
     
     // Ack the handled interrupts to hardware
@@ -92,7 +94,8 @@ export void dispatch(i32 sp) {
         case current of {
             Some(_) -> ({
                 syscall.sys_exit(-1);
-                sp = scheduler.tick(sp);
+                sp = scheduler.reschedule(sp);
+                irq.leave_handler(was_enabled);
                 irq_resume(sp);
                 return; // unreachable: irq_resume restores a frame and executes iret
             });
@@ -106,7 +109,8 @@ export void dispatch(i32 sp) {
         case current of {
             Some(_) -> ({
                 syscall.sys_exit(-14);
-                sp = scheduler.tick(sp);
+                sp = scheduler.reschedule(sp);
+                irq.leave_handler(was_enabled);
                 irq_resume(sp);
                 return; // unreachable: irq_resume restores a frame and executes iret
             });
@@ -133,5 +137,6 @@ export void dispatch(i32 sp) {
         sp = scheduler.tick(sp);
     }
 
+    irq.leave_handler(was_enabled);
     irq_resume(sp);
 }

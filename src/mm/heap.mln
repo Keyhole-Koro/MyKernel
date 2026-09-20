@@ -14,6 +14,7 @@ import debug from "../debug/debug.mln";
 // A block's physical end is  h + HDR_SIZE + size.
 
 import kernel_config from "../kernel/kernel_config.mln";
+import irq from "../arch/irq.mln";
 
 i32 HDR_SIZE = 8;
 i32 ALIGN = 4;
@@ -63,6 +64,8 @@ void set_next(i32 h, i32 v) { write_word(h + 4, v); }
  * @param h Address of block header.
  * @return One byte past the block payload.
  */
+i32 g_heap_base = 0;
+
 i32 block_end(i32 h) {
     return h + HDR_SIZE + block_size(h);
 }
@@ -80,6 +83,7 @@ export void init() {
     set_size(base, kernel_config.HEAP_SIZE - HDR_SIZE);
     set_next(base, 0);
     g_free_head = base;
+    g_heap_base = base;
 }
 
 /**
@@ -89,7 +93,7 @@ export void init() {
  * @param size Requested allocation size in bytes.
  * @return Pointer to allocated payload memory.
  */
-export i32 alloc(i32 size) {
+i32 alloc_unlocked(i32 size) {
     if (size <= 0) {
         return 0;
     }
@@ -136,7 +140,13 @@ export i32 alloc(i32 size) {
  * Maintains address order in the free list and coalesces with adjacent free neighbours.
  * @param ptr Pointer to payload memory to free (no-op if 0).
  */
-export void free(i32 ptr) {
+void free_unlocked(i32 ptr) {
+    if (ptr != 0 && g_heap_base != 0) {
+        if (ptr < g_heap_base || ptr >= g_heap_base + kernel_config.HEAP_SIZE) {
+            debug.printf("heap: free of a pointer outside the heap: %x\n", ptr);
+            debug.panic("heap: bad free");
+        }
+    }
     if (ptr != 0) {
         i32 block = ptr - HDR_SIZE;
 
@@ -168,4 +178,30 @@ export void free(i32 ptr) {
             set_next(prev, block_next(block));
         }
     }
+}
+
+// The heap is shared by every task and by syscalls (which run in a
+// process's context on the timer's schedule), so the free list is walked
+// and rewritten with interrupts off once the scheduler is live: a tick
+// landing inside alloc() on one task while another task -- or a syscall
+// handler -- allocates would leave two blocks overlapping. Before
+// enable_locking() (boot, interrupts still off) the sections run bare, so
+// they cannot switch interrupts on early.
+i32 g_locking = 0;
+
+export void enable_locking() { g_locking = 1; }
+
+export i32 alloc(i32 size) {
+    if (g_locking == 0) { return alloc_unlocked(size); }
+    i32 was = irq.save_disable();
+    i32 p = alloc_unlocked(size);
+    irq.restore(was);
+    return p;
+}
+
+export void free(i32 ptr) {
+    if (g_locking == 0) { free_unlocked(ptr); return; }
+    i32 was = irq.save_disable();
+    free_unlocked(ptr);
+    irq.restore(was);
 }

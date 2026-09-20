@@ -2,9 +2,10 @@ import assert from "../../../../toolchain/MyStdLib/assert.mln";
 import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
 import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
+import kernel_config from "../../src/kernel/kernel_config.mln";
 
-// The allocator has a one-megabyte arena including its first block header, so
-// this request cannot fit. Spy intercepts the terminal debug.panic call: the
+// The allocator's arena is kernel_config.HEAP_SIZE including its first block
+// header, so a request of the whole size cannot fit. Spy intercepts the terminal debug.panic call: the
 // test can assert the intended failure path without serial-output matching or
 // an emulator halt.
 void fake_panic(char* msg) {}
@@ -17,7 +18,7 @@ void heap_exhaustion_reports_panic() {
         .when(mock.any())
         .call(fake_panic);
 
-    i32 allocation = heap.alloc(1048576);
+    i32 allocation = heap.alloc(kernel_config.HEAP_SIZE);
 
     assert.assert_true(allocation == 0, "OOM returns zero after intercepted panic");
     assert.assert_true(mock.calls(debug.panic) == 1, "OOM reports exactly one panic");

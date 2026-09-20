@@ -20,8 +20,45 @@ export void set_handler() {
 /**
  * Enables hardware interrupts globally.
  */
+// Software mirror of the CPU's interrupt-enable bit: the ISA has no way to
+// read it back, and a critical section must restore what it found rather
+// than switch interrupts on -- inside a syscall or interrupt handler they
+// are off, and turning them on there lets the timer switch tasks in the
+// middle of the kernel's work.
+i32 g_enabled = 0;
+
 export void enable() {
+    g_enabled = 1;
     hw_irq_enable();
+}
+
+// Enter a critical section: interrupts off, returns whether they were on.
+export i32 save_disable() {
+    hw_irq_disable();
+    i32 prev = g_enabled;
+    g_enabled = 0;
+    return prev;
+}
+
+// Leave it: interrupts back on only if save_disable() found them on.
+export void restore(i32 prev) {
+    if (prev != 0) {
+        g_enabled = 1;
+        hw_irq_enable();
+    }
+}
+
+// The interrupt dispatcher entered with interrupts off by hardware: note
+// it, remembering what the interrupted code had, and hand that back at
+// exit (iret restores the real bit; this keeps the mirror honest).
+export i32 enter_handler() {
+    i32 prev = g_enabled;
+    g_enabled = 0;
+    return prev;
+}
+
+export void leave_handler(i32 prev) {
+    g_enabled = prev;
 }
 
 /**
@@ -29,5 +66,6 @@ export void enable() {
  */
 export void disable() {
     hw_irq_disable();
+    g_enabled = 0;
 }
 

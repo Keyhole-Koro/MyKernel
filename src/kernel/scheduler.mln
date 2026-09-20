@@ -145,7 +145,17 @@ Option<i32> find_next_runnable(i32 start, i32 count) {
  */
 export i32 tick(i32 sp) {
     g_irq_count++;
+    return reschedule(sp);
+}
 
+/**
+ * Picks the next task without counting a tick: what a syscall that gives
+ * the CPU away (YIELD, EXIT) calls, so the clock only advances on real
+ * timer interrupts.
+ * @param sp Stack pointer of the interrupted context frame.
+ * @return Stack pointer of the next task to resume.
+ */
+export i32 reschedule(i32 sp) {
     if (tasks_initialized == 0) {
         return sp;
     }
@@ -216,6 +226,23 @@ export i32 tick(i32 sp) {
     current_task = IDLE_TASK;
     process.clear_current_pid();
     return idle_sp;
+}
+
+/**
+ * A YIELD syscall: the calling process sleeps until the next tick rather
+ * than running again as soon as the round-robin comes back to it -- a
+ * polling loop (an app waiting for a reply or an event) would otherwise
+ * burn every slice the CPU has. Called from the syscall path with the
+ * interrupted frame; returns the frame to resume, like tick().
+ * @param sp Stack pointer of the interrupted context frame.
+ * @return Stack pointer of the next task to resume.
+ */
+export i32 yield_until_tick(i32 sp) {
+    if (current_task >= 0) {
+        task_wake_tick[current_task] = g_irq_count + 1;
+        task_state[current_task] = TASK_SLEEPING;
+    }
+    return reschedule(sp);
 }
 
 /**

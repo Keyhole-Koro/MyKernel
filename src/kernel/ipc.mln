@@ -17,13 +17,13 @@ package ipc;
 import scheduler from "scheduler.mln";
 
 export i32 MSG_WORDS = 16;
-i32 CHANNELS_MAX = 8;
-i32 SLOTS = 32;
+i32 CHANNELS_MAX = 40;   // the UI protocol takes two per process plus one
+i32 SLOTS = 16;
 
-i32 g_used[8];
-i32 g_head[8];     // next slot to read
-i32 g_tail[8];     // next slot to write
-i32 g_ring[4096];  // CHANNELS_MAX * SLOTS * MSG_WORDS
+i32 g_used[40];
+i32 g_head[40];     // next slot to read
+i32 g_tail[40];     // next slot to write
+i32 g_ring[10240];  // CHANNELS_MAX * SLOTS * MSG_WORDS
 
 // A new channel: its id (1..), or 0 when none is left.
 export i32 create() {

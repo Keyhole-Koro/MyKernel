@@ -11,7 +11,7 @@ export i32 MAX_TASKS = 256;
 
 // --- Memory Layout & Limits ---
 export i32 PAGE_SIZE           = 4096;
-export i32 HEAP_SIZE           = 0x100000;   // 1 MiB kernel heap
+export i32 HEAP_SIZE           = 0x800000;   // 8 MiB kernel heap: process frames (text, stacks, page tables) come from it
 export i32 HDR_SIZE            = 8;          // Heap allocation block header size
 export i32 KERNEL_RAM_SIZE     = 0x01000000; // 16 MB reserved for kernel RAM
 export i32 KERNEL_STACK_BASE   = 0x1F000000;

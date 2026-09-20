@@ -23,6 +23,7 @@ export enum Syscall {
     SBRK,
     YIELD,
     SPAWN,
+    OS_CALL,   // (service, args): an OS service outside the kernel, see set_os_handler
 }
 
 // Typed failure reasons for syscalls that do real work (multi-step, can fail
@@ -96,6 +97,20 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 i32 g_console_write = 0;
 i32 g_console_read = 0;
 i32 g_spawn_handler = 0;
+i32 g_os_handler = 0;
+
+/**
+ * Registers the OS_CALL handler: every service the OS offers a process
+ * beyond the kernel's own syscalls -- the UI protocol, the filesystem,
+ * process control -- goes through one syscall, OS_CALL(service, args), and
+ * this handler (pid, service, args) -> i32 decides what a service means.
+ * `args` is a user address; the handler reads and writes it through the
+ * process's page tables, which are active for the syscall's duration.
+ * @param handler Function pointer taking (pid, service, args) and returning an i32.
+ */
+export void set_os_handler(i32 handler) {
+    g_os_handler = handler;
+}
 
 /**
  * Registers OS-level console I/O hook functions for stdout/stdin redirection.
@@ -347,7 +362,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::EXIT) {
         sys_exit(arg1);
         DispatchOutcome outcome;
-        outcome.next_sp = scheduler.tick(sp);
+        outcome.next_sp = scheduler.reschedule(sp);
         outcome.return_value = 0;
         return Ok(outcome);
     }
@@ -365,13 +380,23 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     }
     if (sys_nr == Syscall::YIELD) {
         DispatchOutcome outcome;
-        outcome.next_sp = scheduler.tick(sp);
+        outcome.next_sp = scheduler.yield_until_tick(sp);
         outcome.return_value = 0;
         return Ok(outcome);
     }
     if (sys_nr == Syscall::SPAWN) {
         Result<i32, SyscallError> result = sys_spawn(arg1);
         return resume_after_syscall(sp, &result);
+    }
+    if (sys_nr == Syscall::OS_CALL) {
+        i32 handler = g_os_handler;
+        if (handler == 0) { return Err(SyscallError::UnknownSyscall); }
+        i32 pid = current_pid_or_zero();
+        i32 value = handler(pid, arg1, arg2);
+        DispatchOutcome outcome;
+        outcome.next_sp = sp;
+        outcome.return_value = value;
+        return Ok(outcome);
     }
 
     return Err(SyscallError::UnknownSyscall);
