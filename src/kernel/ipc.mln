@@ -18,12 +18,12 @@ import scheduler from "scheduler.mln";
 
 export i32 MSG_WORDS = 16;
 i32 CHANNELS_MAX = 40;   // the UI protocol takes two per process plus one
-i32 SLOTS = 16;
+i32 SLOTS = 32;
 
 i32 g_used[40];
 i32 g_head[40];     // next slot to read
 i32 g_tail[40];     // next slot to write
-i32 g_ring[10240];  // CHANNELS_MAX * SLOTS * MSG_WORDS
+i32 g_ring[20480];  // CHANNELS_MAX * SLOTS * MSG_WORDS
 
 // A new channel: its id (1..), or 0 when none is left.
 export i32 create() {
@@ -56,6 +56,30 @@ export bool send(i32 ch, i32 *words) {
     while (i < MSG_WORDS) { g_ring[at + i] = words[i]; i++; }
     g_tail[c] = next;
     return true;
+}
+
+// Whether a queued message has `w1` and `w2` in words 1 and 2: how a
+// sender coalesces (a timer tick already waiting need not be queued again).
+export bool has(i32 ch, i32 w1, i32 w2) {
+    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
+    i32 c = ch - 1;
+    i32 i = g_head[c];
+    while (i != g_tail[c]) {
+        i32 at = slot_base(c, i);
+        if (g_ring[at + 1] == w1 && g_ring[at + 2] == w2) { return true; }
+        i = i + 1;
+        if (i >= SLOTS) { i = 0; }
+    }
+    return false;
+}
+
+// How many messages are waiting.
+export i32 count(i32 ch) {
+    if (ch <= 0 || ch > CHANNELS_MAX) { return 0; }
+    i32 c = ch - 1;
+    i32 n = g_tail[c] - g_head[c];
+    if (n < 0) { n = n + SLOTS; }
+    return n;
 }
 
 export bool pending(i32 ch) {
