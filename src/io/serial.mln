@@ -1,7 +1,7 @@
 package serial;
 
 import mem from "../mm/mem.mln";
-import { RingBuffer, ring_init, ring_push, ring_pop, ring_has } from "../../../../toolchain/MyStdLib/collections/ringbuf.mln";
+import { RingBuffer } from "../../../../toolchain/MyStdLib/collections/ringbuf.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
 // Memory-mapped UART registers (must match constants.rs in the emulator).
@@ -55,7 +55,7 @@ i32 in_ready = 0;
  */
 void ensure_queue() {
     if (in_ready == 0) {
-        ring_init<i32>(&in_q, &in_storage[0], 128);
+        in_q.init(&in_storage[0], 128);
         in_ready = 1;
     }
 }
@@ -68,7 +68,7 @@ void ensure_queue() {
  */
 export void input_push(i32 c) {
     ensure_queue();
-    ring_push<i32>(&in_q, c & 0xFF);
+    in_q.push(c & 0xFF);
 }
 
 /**
@@ -77,7 +77,7 @@ export void input_push(i32 c) {
  */
 export bool has_input() {
     ensure_queue();
-    return ring_has<i32>(&in_q);
+    return in_q.has();
 }
 
 /**
@@ -87,7 +87,7 @@ export bool has_input() {
 export Option<i32> read_input() {
     ensure_queue();
     i32 value = 0;
-    if (!ring_pop<i32>(&in_q, &value)) {
+    if (!in_q.pop(&value)) {
         return None;
     }
     return Some(value);
