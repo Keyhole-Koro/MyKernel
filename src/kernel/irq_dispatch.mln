@@ -14,15 +14,25 @@ import mmu from "../mm/mmu.mln";
 import { irq_trampoline, irq_resume } from "../arch/irq_trampoline.masm";
 import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
 
+/** Memory-mapped hardware register containing pending interrupt-cause bits. */
 i32 IRQ_CAUSE_ADDR = 0x24000084;
+/** Bit mask for timer interrupts in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_TIMER  = 1;
+/** Bit mask for mouse interrupts in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_MOUSE  = 2;
+/** Bit mask for serial input interrupts in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_SERIAL = 4;
+/** Bit mask for storage-device interrupts in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_SSD    = 8;
+/** Bit mask for software system-call traps in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_SYSCALL = 16;
+/** Bit mask for page-fault traps in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_PAGE_FAULT = 32;
+/** Bit mask for user-mode privilege-violation traps in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_PRIVILEGE_VIOLATION = 64;
+/** Bit mask for keyboard interrupts in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_KEYBOARD = 128;
 
 // irq_entry's fixed prologue leaves the interrupted bp/lr and the CPU's
@@ -70,58 +80,60 @@ export void dispatch(i32 sp) {
     // Ack the handled interrupts to hardware
     mem.write_word(IRQ_CAUSE_ADDR, cause);
 
-    if ((cause & IRQ_CAUSE_SERIAL) != 0) {
+    if (cause & IRQ_CAUSE_SERIAL) {
         // Drain the hardware RX register into the software input queue.
-        while (serial.rx_ready() != 0) {
+        while (serial.rx_ready()) {
             i32 c = serial.read_rx();
             serial.input_push(c);
         }
     }
 
-    if ((cause & IRQ_CAUSE_MOUSE) != 0) {
+    if (cause & IRQ_CAUSE_MOUSE) {
         mouse.drain_hw();
     }
 
-    if ((cause & IRQ_CAUSE_KEYBOARD) != 0) {
+    if (cause & IRQ_CAUSE_KEYBOARD) {
         keyboard.drain_hw();
     }
 
     // Handle synchronous traps first
-    if ((cause & IRQ_CAUSE_PRIVILEGE_VIOLATION) != 0) {
+    if (cause & IRQ_CAUSE_PRIVILEGE_VIOLATION) {
         debug.println("irq: privilege violation in user process");
         debug.printf("irq: fault addr: 0x%x status: %i\n", mmu.get_fault_address(), mmu.get_fault_status());
         Option<i32> current = process.get_current_pid();
         case current of {
             Some(_) -> ({
-                syscall.sys_exit(-1);
+                ProcessExitStatus status = ProcessExitStatus::PrivilegeViolation;
+                syscall.sys_exit_status(status);
                 sp = scheduler.reschedule(sp);
                 irq.leave_handler(was_enabled);
                 irq_resume(sp);
                 return; // unreachable: irq_resume restores a frame and executes iret
             });
-            None -> 0;
+            None -> _;
         };
     }
 
-    if ((cause & IRQ_CAUSE_PAGE_FAULT) != 0) {
+    if (cause & IRQ_CAUSE_PAGE_FAULT) {
         debug.println("irq: unhandled page fault in user process");
         Option<i32> current = process.get_current_pid();
         case current of {
             Some(_) -> ({
-                syscall.sys_exit(-14);
+                ProcessExitStatus status = ProcessExitStatus::PageFault;
+                syscall.sys_exit_status(status);
                 sp = scheduler.reschedule(sp);
                 irq.leave_handler(was_enabled);
                 irq_resume(sp);
                 return; // unreachable: irq_resume restores a frame and executes iret
             });
-            None -> 0;
+            None -> _;
         };
     }
 
-    if ((cause & IRQ_CAUSE_SYSCALL) != 0) {
+    if (cause & IRQ_CAUSE_SYSCALL) {
         Result<DispatchOutcome, SyscallError> result = syscall.dispatch(sp);
         DispatchOutcome outcome;
-        if (result_take_ok<DispatchOutcome, SyscallError>(&result, &outcome) != 0) {
+        if (result_take_ok<DispatchOutcome, SyscallError>(&result, &outcome)) {
             i32 return_value = syscall.outcome_return_value(&outcome);
             i32 next_sp = syscall.outcome_next_sp(&outcome);
             mem.write_word(sp + 24, return_value);
@@ -133,7 +145,7 @@ export void dispatch(i32 sp) {
         }
     }
 
-    if ((cause & IRQ_CAUSE_TIMER) != 0) {
+    if (cause & IRQ_CAUSE_TIMER) {
         sp = scheduler.tick(sp);
     }
 

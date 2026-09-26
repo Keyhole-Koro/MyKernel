@@ -91,7 +91,7 @@ i32 q_tail = 0;
  * Called by the mouse IRQ handler. Drops incoming events if the queue is full.
  */
 export void drain_hw() {
-    while (mem.read_word(MOUSE_EVT_STATUS_ADDR) != 0) {
+    while (mem.read_word(MOUSE_EVT_STATUS_ADDR)) {
         i32 nx = mem.read_word(MOUSE_EVT_X_ADDR);
         i32 ny = mem.read_word(MOUSE_EVT_Y_ADDR);
         i32 nb = mem.read_word(MOUSE_EVT_BTN_ADDR);

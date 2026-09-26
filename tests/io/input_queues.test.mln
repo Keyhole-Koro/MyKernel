@@ -37,7 +37,7 @@ void keyboard_queue() {
         i = i + 1;
     }
     i32 n = 0;
-    while (keyboard.has_event() != 0) {
+    while (keyboard.has_event()) {
         keyboard.pop_event();
         n = n + 1;
     }

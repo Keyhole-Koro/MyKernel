@@ -379,7 +379,7 @@ void test_serial_queue() {
     };
 
     i32 drained = 1;
-    while (serial.has_input() != 0) {
+    while (serial.has_input()) {
         case serial.read_input() of { Some(_) -> _; None -> _; };
         drained = drained + 1;
     }
