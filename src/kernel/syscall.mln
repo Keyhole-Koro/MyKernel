@@ -10,42 +10,35 @@ import scheduler from "scheduler.mln";
 import loader from "loader.mln";
 import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
-import { MmuError } from "../mm/mmu.mln";
+import { MmuError } from "../../../../contracts/process/loader.contract.mln";
+import { SpawnError } from "../../../../contracts/process/spawn.contract.mln";
+import { Syscall } from "../../../../contracts/myos/syscall.contract.mln";
+import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
 
-// Syscall numbers
-export enum Syscall {
-    EXIT = 1,
-    READ,
-    WRITE,
-    OPEN,
-    CLOSE,
-    SEEK,
-    SBRK,
-    YIELD,
-    SPAWN,
-    OS_CALL,   // (service, args): an OS service outside the kernel, see set_os_handler
-}
-
-// Typed failure reasons for syscalls that do real work (multi-step, can fail
-// for more than one reason). Consumed only via Result<T, SyscallError>/case,
-// same as MmuError/LoaderError/ProcessError -- never accessed as a bare
-// cross-package member, so the enum-linking pitfall in dom.mln doesn't apply.
-// InvalidDirectory/UnalignedAddress deliberately aren't here: sys_sbrk only
-// ever hands the MMU a pdbr from a live process and page-aligned addresses
-// it computed itself, so those MmuError variants can't legitimately occur --
-// if they ever do, that's a kernel invariant broken, not a recoverable
-// syscall error, and is handled by panicking on the spot (see sys_sbrk).
+/**
+ * Failure reasons returned by recoverable, multi-step syscall operations.
+ * These variants are consumed through Result<SyscallError> rather than being
+ * accessed as bare cross-package enum members. InvalidDirectory and
+ * UnalignedAddress are intentionally absent: sys_sbrk computes valid aligned
+ * addresses from a live process, so either MMU error indicates a broken
+ * kernel invariant and triggers a panic instead of a recoverable syscall error.
+ */
 export enum SyscallError {
     NoProcess,      // No process is currently executing
     OutOfMemory,    // Physical frame allocation failed
     HeapOverflow,   // New heap break would collide with the stack
     BadFd,          // Unsupported file descriptor
     UnknownSyscall, // sys_nr doesn't match any dispatched syscall
+    SpawnFailed,    // Process launch failed; detailed reason is in SpawnError APIs
 }
 
-// Typed result of syscall dispatch. It keeps the user-visible return value
-// together with the frame to resume; SYS_EXIT/SYS_YIELD may choose another
-// frame through the scheduler.
+/**
+ * Typed result of syscall dispatch, pairing the user-visible value with the
+ * frame to resume. SYS_EXIT, SYS_YIELD, and SYS_WAIT_NOTIFICATION may choose
+ * another frame through the scheduler.
+ * @property next_sp Stack pointer of the context IRQ dispatch should resume.
+ * @property return_value Value written to the user's syscall return register.
+ */
 export struct DispatchOutcome {
     i32 next_sp;
     i32 return_value;
@@ -72,7 +65,7 @@ export i32 outcome_return_value(DispatchOutcome *outcome) {
 /**
  * Converts a typed SyscallError into its raw user-space negative error code.
  * @param error Syscall error variant.
- * @return Negative error code (e.g. -1 for NoProcess, -2 for OOM, -3 for HeapOverflow).
+ * @return Raw syscall error code (e.g. -1 for NoProcess, -2 for OOM, -6 for spawn failure).
  */
 export i32 error_code(SyscallError error) {
     return case error of {
@@ -81,6 +74,7 @@ export i32 error_code(SyscallError error) {
         HeapOverflow -> -3;
         BadFd -> -4;
         UnknownSyscall -> -5;
+        SpawnFailed -> -6;
     };
 }
 
@@ -93,7 +87,7 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 // syscalls fall back to the serial port and SPAWN fails with UnknownSyscall.
 //   console_write(pid, buf, count) -> bytes written (buf is a user address)
 //   console_read(pid, buf, count)  -> bytes read, 0 when no input is pending
-//   spawn(path)                    -> pid > 0, or 0 on failure
+//   spawn(path, Result<i32, SpawnError>* out) -> typed launch result
 i32 g_console_write = 0;
 i32 g_console_read = 0;
 i32 g_spawn_handler = 0;
@@ -123,37 +117,34 @@ export void set_console(i32 write_handler, i32 read_handler) {
 }
 
 /**
- * Registers OS-level process spawning hook function for SYS_SPAWN.
- * @param handler Function pointer taking path and returning PID or 0.
+ * Registers the OS-level process spawning hook for SYS_SPAWN.
+ * @param handler Function pointer taking (path, Result<i32, SpawnError>* out).
  */
 export void set_spawn_handler(i32 handler) {
     g_spawn_handler = handler;
 }
 
 /**
- * Returns the PID of the current process or 0 if none is active.
- * @return Current PID or 0.
+ * Terminates the current process with an application-supplied exit code.
+ * @param code Arbitrary application exit code, stored as ProcessExitStatus::Code.
  */
-i32 current_pid_or_zero() {
-    return case process.get_current_pid() of {
-        Some(value) -> value;
-        None -> 0;
-    };
+export void sys_exit(i32 code) {
+    ProcessExitStatus status = ProcessExitStatus::Code(code);
+    sys_exit_status(status);
 }
 
 /**
- * Terminates the current process with an exit code and marks it Zombie.
- * @param code Process exit code.
+ * Terminates the current process with a typed kernel or application exit status.
+ * @param status Process exit status to preserve in the Zombie state.
  */
-export void sys_exit(i32 code) {
+export void sys_exit_status(ProcessExitStatus status) {
     i32 pid = case process.get_current_pid() of {
         Some(value) -> value;
         None -> ({ return; });
     };
-    ProcessState zombie_state = Zombie(code);
-    Result<_, ProcessError> mark_zombie = process.set_state(pid, zombie_state);
+    Result<_, ProcessError> mark_zombie = process.set_exit_status(pid, status);
     case mark_zombie of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("sys_exit: current process disappeared"); });
     };
     Option<i32> task_id = process.get_task_id(pid);
@@ -168,7 +159,7 @@ export void sys_exit(i32 code) {
  * @param fd File descriptor index (1 = stdout, 2 = stderr).
  * @param buf Virtual memory address of source buffer.
  * @param count Number of bytes to write.
- * @return Ok(written) with number of bytes written, or Err(BadFd).
+ * @return Ok(written), Err(BadFd) for an unsupported fd, or Err(NoProcess) if a configured handler has no current process.
  */
 export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
     if (count <= 0) {
@@ -177,7 +168,10 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
     if (fd == 1 || fd == 2) {
         i32 handler = g_console_write;
         if (handler != 0) {
-            i32 pid = current_pid_or_zero();
+            i32 pid = case process.get_current_pid() of {
+                Some(value) -> value;
+                None -> ({ return Err(SyscallError::NoProcess); });
+            };
             i32 written = handler(pid, buf, count);
             return Ok(written);
         }
@@ -198,7 +192,7 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
  * @param fd File descriptor index (0 = stdin).
  * @param buf Virtual memory address of destination buffer.
  * @param count Maximum number of bytes to read.
- * @return Ok(read_bytes) with number of bytes read, or Err(BadFd).
+ * @return Ok(read_bytes), Err(BadFd) for an unsupported fd, or Err(NoProcess) if a configured handler has no current process.
  */
 export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     if (count <= 0) {
@@ -207,22 +201,25 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     if (fd == 0) {
         i32 handler = g_console_read;
         if (handler != 0) {
-            i32 pid = current_pid_or_zero();
+            i32 pid = case process.get_current_pid() of {
+                Some(value) -> value;
+                None -> ({ return Err(SyscallError::NoProcess); });
+            };
             i32 got = handler(pid, buf, count);
             return Ok(got);
         }
         i32 i = 0;
         while (i < count) {
             Option<i32> opt_c = serial.read_input();
-            i32 has_c = case opt_c of {
+            bool has_c = case opt_c of {
                 Some(c) -> ({
                     mem.write_byte(buf + i, c);
                     i++;
-                    1;
+                    true;
                 });
-                None -> 0;
+                None -> false;
             };
-            if (has_c == 0) { break; }
+            if (!has_c) { break; }
         }
         return Ok(i);
     }
@@ -233,14 +230,24 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
 /**
  * Starts a new process from the executable file at the specified path.
  * @param path Pointer to null-terminated file path string.
- * @return Ok(pid) on success, or Err(UnknownSyscall) if spawn handler is unset.
+ * @return Ok(pid) on success, or Err(NoProcess), Err(UnknownSyscall), or Err(SpawnFailed).
  */
 export Result<i32, SyscallError> sys_spawn(i32 path) {
+    Option<i32> current = process.get_current_pid();
+    case current of {
+        Some(_) -> _;
+        None -> ({ return Err(SyscallError::NoProcess); });
+    };
     i32 handler = g_spawn_handler;
     if (handler == 0) {
         return Err(SyscallError::UnknownSyscall);
     }
-    i32 pid = handler(path);
+    Result<i32, SpawnError> spawn_result;
+    handler(path, (i32)(&spawn_result));
+    i32 pid = 0;
+    if (!result_take_ok<i32, SpawnError>(&spawn_result, &pid)) {
+        return Err(SyscallError::SpawnFailed);
+    }
     return Ok(pid);
 }
 
@@ -288,7 +295,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         };
         Result<_, MmuError> map_res = mmu.map_page(pd, cur_page, frame, PTE_USER_RW);
         case map_res of {
-            Ok(_) -> 0;
+            Ok(_) -> _;
             Err(AllocFailed) -> ({
                 return Err(SyscallError::OutOfMemory);
             });
@@ -308,7 +315,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
 
     Result<_, ProcessError> set_heap_break = process.set_heap_break(pid, new_brk);
     case set_heap_break of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ return Err(SyscallError::NoProcess); });
     };
     return Ok(cur_brk);
@@ -322,7 +329,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
  */
 Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, SyscallError> *result) {
     i32 ret = 0;
-    if (result_take_ok<i32, SyscallError>(result, &ret) != 0) {
+    if (result_take_ok<i32, SyscallError>(result, &ret)) {
         DispatchOutcome outcome;
         outcome.next_sp = sp;
         outcome.return_value = ret;
@@ -391,11 +398,20 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::OS_CALL) {
         i32 handler = g_os_handler;
         if (handler == 0) { return Err(SyscallError::UnknownSyscall); }
-        i32 pid = current_pid_or_zero();
+        i32 pid = case process.get_current_pid() of {
+            Some(value) -> value;
+            None -> ({ return Err(SyscallError::NoProcess); });
+        };
         i32 value = handler(pid, arg1, arg2);
         DispatchOutcome outcome;
         outcome.next_sp = sp;
         outcome.return_value = value;
+        return Ok(outcome);
+    }
+    if (sys_nr == Syscall::WAIT_NOTIFICATION) {
+        DispatchOutcome outcome;
+        outcome.next_sp = scheduler.wait_notification(sp, arg1);
+        outcome.return_value = 0;
         return Ok(outcome);
     }
 

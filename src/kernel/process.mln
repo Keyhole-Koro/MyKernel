@@ -2,26 +2,40 @@ package process;
 
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
 
+/** Failure cases returned by process-table operations. */
 export enum ProcessError {
     NoFreeSlot,         // Process slot table exhausted
     InvalidPid(i32),    // PID is out of range or not found
     InvalidFd(i32),     // File-descriptor index is outside this process table
 }
 
-// Process States
+/** Lifecycle state tracked for each allocated process. */
 export enum ProcessState {
     Ready,
     Running,
     Blocked,
-    Zombie(i32),
+    Zombie(ProcessExitStatus),
 }
 
 import kernel_config from "kernel_config.mln";
 
+/**
+ * Kernel metadata for one allocated user process.
+ * @property pid 1-based process identifier corresponding to its process-table slot.
+ * @property state Current lifecycle state; Zombie carries a ProcessExitStatus.
+ * @property pdbr Physical address of the process page directory; zero until initialized.
+ * @property kernel_stack_top Top address of the dedicated kernel stack.
+ * @property kernel_sp Saved kernel stack pointer used to resume the process.
+ * @property user_sp Saved user stack pointer for the process context.
+ * @property user_entry Virtual address at which the process begins execution.
+ * @property heap_break Current end of the user heap in virtual memory.
+ * @property task_id Scheduler task slot associated with the process, if it has one.
+ */
 export struct Process {
     i32 pid;              // Process ID (1..16)
-    ProcessState state;
+    ProcessState state;   // Zombie carries ProcessExitStatus
     i32 pdbr;             // Physical address of Page Directory
     i32 kernel_stack_top; // Physical top of dedicated kernel stack
     i32 kernel_sp;        // Saved kernel stack pointer
@@ -32,7 +46,7 @@ export struct Process {
 };
 
 Option<Process> g_procs[16];
-i32 g_proc_fds[128]; // 16 procs * 8 fds
+Option<i32> g_proc_fds[128]; // 16 procs * 8 fds
 i32 g_current_pid = 0;
 i32 g_procs_initialized = 0;
 
@@ -40,6 +54,7 @@ i32 g_procs_initialized = 0;
  * Initializes the process table and file descriptor arrays to clean default state.
  */
 export void init() {
+    Option<i32> no_fd = None;
     i32 i = 0;
     while (i < kernel_config.MAX_PROCS) {
         Option<Process> empty = None;
@@ -47,7 +62,7 @@ export void init() {
 
         i32 f = 0;
         while (f < kernel_config.MAX_FDS) {
-            g_proc_fds[i * kernel_config.MAX_FDS + f] = -1;
+            g_proc_fds[i * kernel_config.MAX_FDS + f] = no_fd;
             f++;
         }
         i++;
@@ -71,7 +86,7 @@ export Result<i32, ProcessError> alloc_proc() {
             None -> 1;
             _ -> 0;
         };
-        if (is_empty != 0) {
+        if (is_empty) {
             i32 pid = i + 1;
             ProcessState ready_state = Ready;
             Process proc = Process {
@@ -89,12 +104,16 @@ export Result<i32, ProcessError> alloc_proc() {
             g_procs[i] = entry;
 
             // Default standard streams
-            g_proc_fds[i * kernel_config.MAX_FDS + 0] = 0; // stdin
-            g_proc_fds[i * kernel_config.MAX_FDS + 1] = 1; // stdout
-            g_proc_fds[i * kernel_config.MAX_FDS + 2] = 2; // stderr
+            Option<i32> stdin_fd = Some(0);
+            Option<i32> stdout_fd = Some(1);
+            Option<i32> stderr_fd = Some(2);
+            Option<i32> no_fd = None;
+            g_proc_fds[i * kernel_config.MAX_FDS + 0] = stdin_fd;
+            g_proc_fds[i * kernel_config.MAX_FDS + 1] = stdout_fd;
+            g_proc_fds[i * kernel_config.MAX_FDS + 2] = stderr_fd;
             i32 f = 3;
             while (f < kernel_config.MAX_FDS) {
-                g_proc_fds[i * kernel_config.MAX_FDS + f] = -1;
+                g_proc_fds[i * kernel_config.MAX_FDS + f] = no_fd;
                 f++;
             }
             return Ok(pid);
@@ -114,13 +133,13 @@ Result<i32, ProcessError> index_for_pid(i32 pid) {
         return Err(ProcessError::InvalidPid(pid));
     }
     i32 idx = pid - 1;
-    i32 matches = case g_procs[idx] of {
+    bool matches = case g_procs[idx] of {
         Some(p) -> ({
-            if (p.pid == pid) { 1; } else { 0; }
+            p.pid == pid;
         });
-        None -> 0;
+        None -> false;
     };
-    if (matches == 0) {
+    if (!matches) {
         return Err(ProcessError::InvalidPid(pid));
     }
     return Ok(idx);
@@ -139,9 +158,10 @@ export Result<_, ProcessError> free_proc(i32 pid) {
     Option<Process> empty = None;
     g_procs[idx] = empty;
 
+    Option<i32> no_fd = None;
     i32 f = 0;
     while (f < kernel_config.MAX_FDS) {
-        g_proc_fds[idx * kernel_config.MAX_FDS + f] = -1;
+        g_proc_fds[idx * kernel_config.MAX_FDS + f] = no_fd;
         f++;
     }
 
@@ -457,11 +477,11 @@ export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
 }
 
 /**
- * Retrieves the exit status code of a Zombie process.
+ * Retrieves the typed exit status of a Zombie process.
  * @param pid Process ID.
- * @return Some(code) if process is in Zombie state, or None otherwise.
+ * @return Some(status) if process is in Zombie state, or None otherwise.
  */
-export Option<i32> get_exit_code(i32 pid) {
+export Option<ProcessExitStatus> get_exit_status(i32 pid) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
         Err(_) -> ({ return None; });
@@ -469,8 +489,8 @@ export Option<i32> get_exit_code(i32 pid) {
     case g_procs[idx] of {
         Some(p) -> ({
             case p.state of {
-                Zombie(code) -> ({
-                    Option<i32> ret = Some(code);
+                Zombie(status) -> ({
+                    Option<ProcessExitStatus> ret = Some(status);
                     return ret;
                 });
                 _ -> ({
@@ -485,17 +505,17 @@ export Option<i32> get_exit_code(i32 pid) {
 }
 
 /**
- * Marks a process as Zombie with the given exit code.
+ * Marks a process as Zombie with the given typed exit status.
  * @param pid Process ID.
- * @param code Process exit code.
+ * @param status Process exit status.
  * @return Ok(_) on success, or Err(InvalidPid) if invalid.
  */
-export Result<_, ProcessError> set_exit_code(i32 pid, i32 code) {
+export Result<_, ProcessError> set_exit_status(i32 pid, ProcessExitStatus status) {
     i32 idx = case index_for_pid(pid) of {
         Ok(index) -> index;
         Err(error) -> ({ return Err(error); });
     };
-    ProcessState zombie_state = Zombie(code);
+    ProcessState zombie_state = Zombie(status);
     case g_procs[idx] of {
         Some(p) -> ({
             p.state = zombie_state;
@@ -556,11 +576,7 @@ export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
     if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
-    i32 val = g_proc_fds[idx * kernel_config.MAX_FDS + fd];
-    if (val < 0) {
-        return Ok(None);
-    }
-    return Ok(Some(val));
+    return Ok(g_proc_fds[idx * kernel_config.MAX_FDS + fd]);
 }
 
 /**
@@ -578,9 +594,6 @@ export Result<_, ProcessError> set_fd(i32 pid, i32 fd, Option<i32> val) {
     if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
-    case val of {
-        Some(v) -> ({ g_proc_fds[idx * kernel_config.MAX_FDS + fd] = v; });
-        None -> ({ g_proc_fds[idx * kernel_config.MAX_FDS + fd] = -1; });
-    };
+    g_proc_fds[idx * kernel_config.MAX_FDS + fd] = val;
     return Ok(_);
 }

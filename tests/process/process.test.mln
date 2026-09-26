@@ -8,12 +8,12 @@ import mmu from "../../src/mm/mmu.mln";
 import scheduler from "../../src/kernel/scheduler.mln";
 import process from "../../src/kernel/process.mln";
 import { ProcessState, ProcessError } from "../../src/kernel/process.mln";
+import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
 import loader from "../../src/kernel/loader.mln";
 import { Result, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option, option_take } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
-import { LoaderError } from "../../src/kernel/loader.mln";
-import { MmuError } from "../../src/mm/mmu.mln";
+import { LoaderError, MmuError } from "../../../../contracts/process/loader.contract.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
 void init_user_binary(i32 buf) {
@@ -170,7 +170,7 @@ void fail(char* message) {
 
 void assert_invalid_pid(Result<Option<i32>, ProcessError> *result, i32 expected_pid) {
     ProcessError error;
-    if (result_take_err<Option<i32>, ProcessError>(result, &error) == 0) {
+    if (!result_take_err<Option<i32>, ProcessError>(result, &error)) {
         fail("expected ProcessError::InvalidPid");
     }
     case error of {
@@ -226,10 +226,10 @@ void process_lifecycle_and_protection() {
     // from being mistaken for valid process data by callers.
     i32 current_pid;
     Option<i32> no_current = process.get_current_pid();
-    assert_eq<i32>(option_take<i32>(&no_current, &current_pid), 0, "initial current process must be None");
+    assert_eq<bool>(option_take<i32>(&no_current, &current_pid), false, "initial current process must be None");
     ProcessState missing_state;
     Option<ProcessState> no_state = process.get_state(99);
-    assert_eq<i32>(option_take<ProcessState>(&no_state, &missing_state), 0, "invalid pid state must be None");
+    assert_eq<bool>(option_take<ProcessState>(&no_state, &missing_state), false, "invalid pid state must be None");
     Result<Option<i32>, ProcessError> bad_pid = process.get_fd(99, 0);
     assert_invalid_pid(&bad_pid, 99);
     debug.println("kernel: initializing scheduler...");
@@ -344,30 +344,22 @@ void process_lifecycle_and_protection() {
     while (1) {
         ProcessState state;
         Option<ProcessState> state_result = process.get_state(pid1);
-        if (option_take<ProcessState>(&state_result, &state) == 0) {
+        if (!option_take<ProcessState>(&state_result, &state)) {
             fail("process 1 disappeared before it exited");
         }
-        i32 exited1 = 0;
-        i32 zombie_code1 = 0;
-        case state of {
-            Zombie(c) -> ({
-                exited1 = 1;
-                zombie_code1 = c;
-            });
-            _ -> 0;
-        };
-        if (exited1 != 0) {
-            i32 code;
-            Option<i32> exit_code_result = process.get_exit_code(pid1);
-            if (option_take<i32>(&exit_code_result, &code) == 0) {
-                fail("process 1 disappeared before its exit code was read");
+        bool exited1 = case state of { Zombie(_) -> true; _ -> false; };
+        if (exited1) {
+            ProcessExitStatus exit_status;
+            Option<ProcessExitStatus> exit_status_result = process.get_exit_status(pid1);
+            if (!option_take<ProcessExitStatus>(&exit_status_result, &exit_status)) {
+                fail("process 1 disappeared before its exit status was read");
             }
-            assert_eq<i32>(zombie_code1, code, "state payload and get_exit_code must match");
-            if (code == 42) {
-                debug.println("SUCCESS: MBIN v2 process 1 exited cleanly with code 42!");
-                break;
-            }
-            assert_eq<i32>(code, 42, "unexpected exit code for process 1");
+            bool normal_exit = case exit_status of {
+                ProcessExitStatus::Code(code) -> code == 42;
+                _ -> false;
+            };
+            assert_eq<bool>(normal_exit, true, "unexpected exit status for process 1");
+            debug.println("SUCCESS: MBIN v2 process 1 exited cleanly with code 42!");
             break;
         }
     }
@@ -385,33 +377,26 @@ void process_lifecycle_and_protection() {
         });
     };
 
-    // Wait for process 2 to trigger Page Fault and terminate with code -14
+    // Wait for process 2 to terminate with the typed PageFault reason.
     while (1) {
         ProcessState state;
         Option<ProcessState> state_result = process.get_state(pid2);
-        if (option_take<ProcessState>(&state_result, &state) == 0) {
+        if (!option_take<ProcessState>(&state_result, &state)) {
             fail("process 2 disappeared before it exited");
         }
-        i32 exited2 = 0;
-        i32 zombie_code2 = 0;
-        case state of {
-            Zombie(c) -> ({
-                exited2 = 1;
-                zombie_code2 = c;
-            });
-            _ -> 0;
-        };
-        if (exited2 != 0) {
-            i32 code;
-            Option<i32> exit_code_result = process.get_exit_code(pid2);
-            if (option_take<i32>(&exit_code_result, &code) == 0) {
-                fail("process 2 disappeared before its exit code was read");
+        bool exited2 = case state of { Zombie(_) -> true; _ -> false; };
+        if (exited2) {
+            ProcessExitStatus exit_status;
+            Option<ProcessExitStatus> exit_status_result = process.get_exit_status(pid2);
+            if (!option_take<ProcessExitStatus>(&exit_status_result, &exit_status)) {
+                fail("process 2 disappeared before its exit status was read");
             }
-            assert_eq<i32>(zombie_code2, code, "state payload and get_exit_code must match");
-            if (code == -14) {
-                debug.println("SUCCESS: W^X protection prevented write to text section! (exit code -14)");
-            }
-            assert_eq<i32>(code, -14, "process 2 did not trigger the expected page fault");
+            bool page_fault = case exit_status of {
+                ProcessExitStatus::PageFault -> true;
+                _ -> false;
+            };
+            assert_eq<bool>(page_fault, true, "process 2 did not terminate for the expected page fault");
+            debug.println("SUCCESS: W^X protection prevented write to text section!");
             testkit.pass("process lifecycle and protection");
             break;
         }
