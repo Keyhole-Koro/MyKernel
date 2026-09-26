@@ -36,7 +36,7 @@ i32 fake_work1(i32 value) {
 }
 
 void report_if_complete() {
-    if (task0_done != 0 && task1_done != 0 && verdict_reported == 0) {
+    if (task0_done && task1_done && verdict_reported == 0) {
         verdict_reported = 1;
         assert.assert_true(task0_result == 10, "task0 keeps work0 as call_original target");
         assert.assert_true(task1_result == 21, "task1 keeps work1 as call_original target");

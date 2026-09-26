@@ -13,7 +13,7 @@ import { halt_cpu } from "../arch/halt.masm";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
-// Typed failure reasons for scheduler operations.
+/** Failure cases returned by task-creation scheduler operations. */
 export enum SchedulerError {
     OutOfMemory,   // Memory allocation failed for task stack
     TaskSlotFull,  // Task slots exhausted (MAX_TASKS reached)
@@ -34,14 +34,18 @@ i32 KERNEL_SP_ADDR = 0x24000110;
 
 // Task state constants
 enum TaskState {
-    TASK_RUNNABLE = 0,
-    TASK_SLEEPING = 1,
-    TASK_EMPTY = 2
+    TASK_RUNNABLE,
+    TASK_SLEEPING,
+    TASK_EMPTY,
+    TASK_BLOCKED
 }
 
 // Task state management
 i32 task_state[256];
 i32 task_wake_tick[256];  // Tick when the task should wake up
+i32 task_notification_pending[256]; // sticky bits already delivered
+i32 task_notification_armed[256];   // bits whose readiness was observed empty/full
+i32 task_notification_wait[256];    // bits the blocked task is sleeping on
 
 // Dedicated idle context. When no task is runnable the scheduler switches to
 // this context (a wfi loop) instead of resuming a sleeping task's stack, so
@@ -56,7 +60,7 @@ i32 idle_sp = 0;
  */
 void require_process_update(Result<_, ProcessError> update) {
     case update of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("scheduler: task references an invalid process"); });
     };
 }
@@ -77,7 +81,7 @@ i32 require_process_value(Option<i32> value) {
 }
 
 /**
- * Main function for the idle kernel task (wfi in an infinite loop).
+ * Main function for the idle kernel task; waits for interrupts indefinitely.
  */
 void idle_main() {
     while (1) {
@@ -121,7 +125,7 @@ i32 g_task_count = 0;
  * Finds the index of the next runnable task in the scheduler table.
  * @param start Starting index to search from.
  * @param count Number of task slots to scan.
- * @return Some(task_idx) if a runnable task is found, or None if all are sleeping/empty.
+ * @return Some(task_idx) if a runnable task is found, or None if all are sleeping/blocked/empty.
  */
 Option<i32> find_next_runnable(i32 start, i32 count) {
     i32 next_task = start;
@@ -188,7 +192,7 @@ export i32 reschedule(i32 sp) {
                             Result<_, ProcessError> make_ready = process.set_state(cur_pid, ready_state);
                             require_process_update(make_ready);
                         });
-                        _ -> 0;
+                        _ -> _;
                     };
                 });
                 None -> ({ debug.panic("scheduler: current task references an invalid process"); });
@@ -219,7 +223,7 @@ export i32 reschedule(i32 sp) {
             }
             return task_sps[next_task];
         });
-        None -> 0;
+        None -> _;
     };
 
     // Nothing is runnable: run the dedicated idle context until a wake-up.
@@ -243,6 +247,104 @@ export i32 yield_until_tick(i32 sp) {
         task_state[current_task] = TASK_SLEEPING;
     }
     return reschedule(sp);
+}
+
+/**
+ * Arms a sticky notification for the current task.
+ *
+ * Queue endpoints call this while handling the failed readiness check. Since
+ * syscalls run with interrupts disabled, the check and arm are atomic with
+ * respect to producers on this single-core kernel.
+ * @param mask Notification bit or bits to arm; zero is ignored.
+ */
+export void arm_notification(i32 mask) {
+    if (current_task < 0 || mask == 0) { return; }
+    task_notification_armed[current_task] = task_notification_armed[current_task] | mask;
+}
+
+/**
+ * Clears armed and pending readiness bits after the current task completes an operation.
+ * @param mask Notification bit or bits to clear; zero is ignored.
+ */
+export void disarm_notification(i32 mask) {
+    if (current_task < 0 || mask == 0) { return; }
+    task_notification_armed[current_task] = task_notification_armed[current_task] & (~mask);
+    task_notification_pending[current_task] = task_notification_pending[current_task] & (~mask);
+}
+
+/**
+ * Blocks the current task until one of `mask`'s armed notification bits is
+ * delivered. A bit delivered after the endpoint check but before this syscall
+ * remains pending and is consumed without sleeping.
+ *
+ * @param sp Saved interrupt frame of the calling task.
+ * @param mask Notification bits to wait for.
+ * @return Stack pointer of the context that should run next.
+ */
+export i32 wait_notification(i32 sp, i32 mask) {
+    if (current_task < 0 || mask == 0) { return sp; }
+    i32 me = current_task;
+    task_notification_armed[me] = task_notification_armed[me] | mask;
+    i32 ready = task_notification_pending[me] & mask;
+    if (ready) {
+        task_notification_pending[me] = task_notification_pending[me] & (~ready);
+        task_notification_armed[me] = task_notification_armed[me] & (~mask);
+        return sp;
+    }
+    task_notification_wait[me] = mask;
+    task_state[me] = TASK_BLOCKED;
+    return reschedule(sp);
+}
+
+// Delivers bits to one task. Only armed bits are retained: if data was queued
+// before a consumer observed the queue empty, the consumer will find the data
+// directly and does not need a notification.
+/**
+ * Delivers matching armed notification bits to one task and wakes it if it is waiting.
+ * @param task_idx Scheduler task-table index.
+ * @param mask Notification bit or bits being delivered.
+ */
+void notify_task(i32 task_idx, i32 mask) {
+    if (task_idx < 0 || task_idx >= g_task_count) { return; }
+    if (task_state[task_idx] == TASK_EMPTY) { return; }
+    i32 matched = task_notification_armed[task_idx] & mask;
+    if (matched == 0) { return; }
+    task_notification_pending[task_idx] = task_notification_pending[task_idx] | matched;
+    if (task_state[task_idx] == TASK_BLOCKED &&
+        (task_notification_wait[task_idx] & matched)) {
+        i32 waited = task_notification_wait[task_idx];
+        i32 reason = task_notification_pending[task_idx] & waited;
+        task_notification_pending[task_idx] = task_notification_pending[task_idx] & (~reason);
+        task_notification_armed[task_idx] = task_notification_armed[task_idx] & (~waited);
+        task_notification_wait[task_idx] = 0;
+        task_state[task_idx] = TASK_RUNNABLE;
+    }
+}
+
+/**
+ * Delivers a transport notification to armed tasks belonging to a process.
+ * @param pid Process ID whose tasks should receive the notification.
+ * @param mask Notification bit or bits being delivered.
+ */
+export void notify_pid(i32 pid, i32 mask) {
+    i32 i = 0;
+    while (i < g_task_count) {
+        if (task_pid[i] == pid) { notify_task(i, mask); }
+        i++;
+    }
+}
+
+/**
+ * Delivers a global notification to all tasks that armed matching bits.
+ * Used when a shared request ring gains space.
+ * @param mask Notification bit or bits being delivered.
+ */
+export void notify_armed(i32 mask) {
+    i32 i = 0;
+    while (i < g_task_count) {
+        notify_task(i, mask);
+        i++;
+    }
 }
 
 /**
@@ -336,6 +438,9 @@ export Result<i32, SchedulerError> spawn_task_sized(i32 func_ptr, i32 stack_byte
             init_task(i, func_ptr, stack + stack_bytes);
             task_state[i] = TASK_RUNNABLE;
             task_pid[i] = 0; // Kernel task
+            task_notification_pending[i] = 0;
+            task_notification_armed[i] = 0;
+            task_notification_wait[i] = 0;
             if (i >= g_task_count) {
                 g_task_count = i + 1; // grow the live-slot range the tick scans
             }
@@ -361,6 +466,9 @@ export Result<i32, SchedulerError> spawn_proc_task(i32 pid, i32 initial_sp) {
             task_sps[i] = initial_sp;
             task_state[i] = TASK_RUNNABLE;
             task_pid[i] = pid;
+            task_notification_pending[i] = 0;
+            task_notification_armed[i] = 0;
+            task_notification_wait[i] = 0;
             Result<_, ProcessError> set_task = process.set_task_id(pid, i);
             require_process_update(set_task);
             if (i >= g_task_count) {
@@ -382,11 +490,15 @@ export void terminate_task(i32 task_idx) {
     if (task_idx >= 0 && task_idx < kernel_config.MAX_TASKS) {
         task_state[task_idx] = TASK_EMPTY;
         task_pid[task_idx] = 0;
+        task_notification_pending[task_idx] = 0;
+        task_notification_armed[task_idx] = 0;
+        task_notification_wait[task_idx] = 0;
     }
 }
 
 /**
- * Initializes the round-robin scheduler, sets up the dedicated idle context, and marks the current thread as Task 0.
+ * Initializes scheduler slots, creates the dedicated idle context, and registers
+ * the boot context as the first runnable task.
  */
 export void init() {
     // Initialize task states to EMPTY
@@ -394,6 +506,9 @@ export void init() {
     while (i < kernel_config.MAX_TASKS) {
         task_state[i] = TASK_EMPTY;
         task_pid[i] = 0;
+        task_notification_pending[i] = 0;
+        task_notification_armed[i] = 0;
+        task_notification_wait[i] = 0;
         i++;
     }
 

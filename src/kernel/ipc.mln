@@ -1,50 +1,75 @@
 package ipc;
 
-// Channels: fixed-size messages between tasks.
+/**
+ * Fixed-capacity message channels shared by kernel tasks and user processes.
+ * Channel IDs are 1-based. Each ring reserves one slot to distinguish full
+ * from empty, so a channel can hold at most SLOTS - 1 messages. Operations
+ * are serialized by the syscall/interrupt path on this single-core kernel.
+ * Message words containing pointers are only meaningful in a shared address
+ * space; user-facing callers must copy pointed-to data across the boundary.
+ */
 //
-// A channel is a ring of MSG_WORDS-word slots with one producer and one
-// consumer (each index is written by one side only, so two kernel tasks
-// preempting each other need no lock). send() copies a message in and
-// fails when the ring is full; recv() copies the oldest out; wait() sleeps
+// A channel is a ring of MSG_WORDS-word slots. The application request channel
+// has multiple producers, but syscall handlers run with interrupts disabled on
+// this single-core kernel, so send operations are serialized. send() copies a
+// message in and fails when the ring is full; recv() copies the oldest out; wait() sleeps
 // until one arrives. Messages are words: pointers in them are only
 // meaningful while both ends share an address space -- when one end is a
 // user process, the syscall layer copies what a pointer names before the
 // message crosses (MYOS-022).
 //
-// The UI protocol runs on three of these (MyOS/src/ui/ui_channel.mln):
+// The application protocol runs on these (MyOS/src/ipc/channel.mln):
 // requests to the UI server, replies back, and events to the apps.
 
 import scheduler from "scheduler.mln";
+import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 
-export i32 MSG_WORDS = 16;
+// 24 words leave 64 inline bytes after an Event's five scalar words. Keeping
+// event text in the ring slot avoids queuing a pointer to reused server memory.
+/** Number of 32-bit words in each message slot. */
+export i32 MSG_WORDS = 24;
 i32 CHANNELS_MAX = 40;   // the UI protocol takes two per process plus one
 i32 SLOTS = 32;
 
 i32 g_used[40];
 i32 g_head[40];     // next slot to read
 i32 g_tail[40];     // next slot to write
-i32 g_ring[20480];  // CHANNELS_MAX * SLOTS * MSG_WORDS
+i32 g_ring[30720];  // CHANNELS_MAX * SLOTS * MSG_WORDS
 
-// A new channel: its id (1..), or 0 when none is left.
-export i32 create() {
+/**
+ * Allocates the next unused message channel.
+ * @return Some(channel_id) with a 1-based ID, or None when all channels are used.
+ */
+export Option<i32> create() {
     i32 c = 0;
     while (c < CHANNELS_MAX) {
         if (g_used[c] == 0) {
             g_used[c] = 1;
             g_head[c] = 0;
             g_tail[c] = 0;
-            return c + 1;
+            return Some(c + 1);
         }
         c++;
     }
-    return 0;
+    return None;
 }
 
+/**
+ * Calculates the first word index of a slot in the flattened ring buffer.
+ * @param c Zero-based channel table index.
+ * @param slot Zero-based slot index within that channel.
+ * @return Word offset of the slot in g_ring.
+ */
 i32 slot_base(i32 c, i32 slot) {
     return (c * SLOTS + slot) * MSG_WORDS;
 }
 
-// Queue `words` (MSG_WORDS of them). False when the channel is full or invalid.
+/**
+ * Copies one message into a channel's queue.
+ * @param ch 1-based channel ID returned by create().
+ * @param words Pointer to at least MSG_WORDS message words.
+ * @return True if queued; false if the ID is invalid or the queue is full.
+ */
 export bool send(i32 ch, i32 *words) {
     if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
     i32 c = ch - 1;
@@ -58,8 +83,15 @@ export bool send(i32 ch, i32 *words) {
     return true;
 }
 
-// Whether a queued message has `w1` and `w2` in words 1 and 2: how a
-// sender coalesces (a timer tick already waiting need not be queued again).
+/**
+ * Checks whether a queued message matches two key words.
+ * Compares w1 and w2 with message words 1 and 2 respectively; callers use
+ * this to coalesce duplicate notifications such as an already-queued tick.
+ * @param ch 1-based channel ID.
+ * @param w1 Value expected in message word 1.
+ * @param w2 Value expected in message word 2.
+ * @return True if a matching message is queued; false for no match or invalid ID.
+ */
 export bool has(i32 ch, i32 w1, i32 w2) {
     if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
     i32 c = ch - 1;
@@ -73,7 +105,11 @@ export bool has(i32 ch, i32 w1, i32 w2) {
     return false;
 }
 
-// How many messages are waiting.
+/**
+ * Returns the number of messages currently queued on a channel.
+ * @param ch 1-based channel ID.
+ * @return Queued message count, or 0 if the channel ID is invalid.
+ */
 export i32 count(i32 ch) {
     if (ch <= 0 || ch > CHANNELS_MAX) { return 0; }
     i32 c = ch - 1;
@@ -82,13 +118,23 @@ export i32 count(i32 ch) {
     return n;
 }
 
+/**
+ * Tests whether a channel has at least one queued message.
+ * @param ch 1-based channel ID.
+ * @return True if a message is queued; false if empty or the ID is invalid.
+ */
 export bool pending(i32 ch) {
     if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
     i32 c = ch - 1;
     return g_head[c] != g_tail[c];
 }
 
-// Take the oldest message into `out` (MSG_WORDS). False when there is none.
+/**
+ * Removes the oldest queued message and copies it to the caller's buffer.
+ * @param ch 1-based channel ID.
+ * @param out Destination for at least MSG_WORDS message words.
+ * @return True if a message was copied; false if the ID is invalid or the queue is empty.
+ */
 export bool recv(i32 ch, i32 *out) {
     if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
     i32 c = ch - 1;
@@ -102,7 +148,11 @@ export bool recv(i32 ch, i32 *out) {
     return true;
 }
 
-// Sleep (a tick at a time) until a message arrives, then take it.
+/**
+ * Sleeps in one-tick intervals until a message arrives, then receives it.
+ * @param ch Valid 1-based channel ID to wait on.
+ * @param out Destination for at least MSG_WORDS message words.
+ */
 export void wait(i32 ch, i32 *out) {
     while (!recv(ch, out)) {
         scheduler.sleep(1);
