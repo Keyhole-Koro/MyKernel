@@ -5,7 +5,7 @@ import mmu from "../../src/mm/mmu.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
-import { MmuError } from "../../src/mm/mmu.mln";
+import { MmuError } from "../../../../contracts/process/loader.contract.mln";
 
 i32 PTE_VALID    = 0x01;
 i32 PTE_WRITABLE = 0x02;

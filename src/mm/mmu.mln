@@ -5,12 +5,7 @@ import mem from "mem.mln";
 import debug from "../debug/debug.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
-
-export enum MmuError {
-    AllocFailed,            // Out of memory for physical frame allocation
-    InvalidDirectory,       // Page directory base address is invalid (e.g. 0)
-    UnalignedAddress(i32),  // Virtual or physical address is not 4KB-aligned
-}
+import { MmuError } from "../../../../contracts/process/loader.contract.mln";
 
 // =========================================================================
 // MyComputer MMU & 2-Level Paging Architecture
@@ -112,7 +107,7 @@ export Option<i32> create_page_directory() {
  */
 void set_pde(i32 pde_addr, i32 pt_base, i32 flags) {
     i32 pde_flags = PTE_VALID | PTE_WRITABLE;
-    if ((flags & PTE_USER) != 0) {
+    if (flags & PTE_USER) {
         pde_flags = pde_flags | PTE_USER;
     }
     mem.write_word(pde_addr, (pt_base & FRAME_MASK) | pde_flags);
@@ -141,7 +136,7 @@ Result<i32, MmuError> get_or_create_page_table(i32 pd_addr, i32 pdi, i32 flags) 
     }
 
     // Page table already exists: if user mapping, ensure PDE also has User flag
-    if ((flags & PTE_USER) != 0) {
+    if (flags & PTE_USER) {
         mem.write_word(pde_addr, pde | PTE_USER);
     }
     return Ok(pde & FRAME_MASK);
@@ -159,10 +154,10 @@ export Result<_, MmuError> map_page(i32 pd_addr, i32 vaddr, i32 paddr, i32 flags
     if (pd_addr == 0) {
         return Err(MmuError::InvalidDirectory);
     }
-    if ((vaddr & 0xFFF) != 0) {
+    if (vaddr & 0xFFF) {
         return Err(UnalignedAddress(vaddr));
     }
-    if ((paddr & 0xFFF) != 0) {
+    if (paddr & 0xFFF) {
         return Err(UnalignedAddress(paddr));
     }
 
@@ -199,7 +194,7 @@ export Result<_, MmuError> map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 si
         i32 pa = pstart + offset;
         Result<_, MmuError> res = map_page(pd_addr, va, pa, flags);
         case res of {
-            Ok(_) -> 0;
+            Ok(_) -> _;
             Err(e) -> ({
                 return Err(e);
             });
@@ -228,7 +223,7 @@ Result<_, MmuError> build_identity_tables(i32 pd_addr) {
     // Read/Write/Execute, Kernel Mode only
     Result<_, MmuError> r1 = map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC);
     case r1 of {
-        Ok(_)  -> 0;
+        Ok(_)  -> _;
         Err(e) -> ({
             return Err(e);
         });
@@ -238,7 +233,7 @@ Result<_, MmuError> build_identity_tables(i32 pd_addr) {
     // Read/Write, Kernel Mode only
     Result<_, MmuError> r2 = map_range(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE);
     case r2 of {
-        Ok(_)  -> 0;
+        Ok(_)  -> _;
         Err(e) -> ({
             return Err(e);
         });
@@ -248,7 +243,7 @@ Result<_, MmuError> build_identity_tables(i32 pd_addr) {
     // Read/Write, Kernel Mode only
     Result<_, MmuError> r3 = map_range(pd_addr, MMIO_BASE, MMIO_BASE, MMIO_SIZE, PTE_VALID | PTE_WRITABLE);
     case r3 of {
-        Ok(_)  -> 0;
+        Ok(_)  -> _;
         Err(e) -> ({
             return Err(e);
         });
@@ -258,7 +253,7 @@ Result<_, MmuError> build_identity_tables(i32 pd_addr) {
     // Read/Write, Kernel Mode only
     Result<_, MmuError> r4 = map_range(pd_addr, VRAM_BASE, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE);
     case r4 of {
-        Ok(_)  -> 0;
+        Ok(_)  -> _;
         Err(e) -> ({
             return Err(e);
         });
@@ -271,7 +266,7 @@ export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
     if (g_shared_ready == 0) {
         Result<_, MmuError> built = build_identity_tables(pd_addr);
         case built of {
-            Ok(_)  -> 0;
+            Ok(_)  -> _;
             Err(e) -> ({ return Err(e); });
         };
         g_shared_pd = pd_addr;
@@ -283,7 +278,7 @@ export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
     i32 pdi = 0;
     while (pdi < 1024) {
         i32 pde = mem.read_word(g_shared_pd + pdi * 4);
-        if ((pde & PTE_VALID) != 0) {
+        if (pde & PTE_VALID) {
             if (pdi == 0) {
                 i32 copy = case alloc_page() of {
                     Some(p) -> p;

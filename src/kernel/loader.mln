@@ -9,34 +9,34 @@ import { ProcessState } from "process.mln";
 import scheduler from "scheduler.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import { Option } from "../../../../toolchain/MyStdLib/option.mln";
-import { MmuError } from "../mm/mmu.mln";
+import { MmuError, LoaderError } from "../../../../contracts/process/loader.contract.mln";
 import { ProcessError } from "process.mln";
 import { SchedulerError } from "scheduler.mln";
 
-export enum LoaderError {
-    ProcSlotFull,        // Process slot table exhausted
-    OutOfMemory,         // Memory allocation failed (page directory / frame / stack)
-    Mmu(MmuError),       // Wrapped MMU failure (invalid directory / unaligned address)
-    InvalidHeader(i32),  // Invalid MBIN header or unsupported version
-    InvalidBounds(i32),  // Section boundaries exceed binary buffer
-    SpawnTaskFailed,     // Task scheduler spawn failed
-}
-
+/** Fallback virtual base used for legacy flat user binaries. */
 i32 USER_CODE_BASE  = 0x40000000;
 // The user stack: USER_STACK_PAGES pages ending just below the top of the
 // address space. A GUI app's view() and handlers build markup and copy
 // text on the stack, which one page does not hold.
+/** Number of pages reserved for each process's user stack. */
 i32 USER_STACK_PAGES = 4;
+/** Lowest virtual address of the process user stack; the user heap must remain below it. */
 export i32 USER_STACK_BASE = 0x7FFFC000; // Heap must stay below this (see syscall.sys_sbrk)
+/** Initial user stack pointer, positioned below the top of the address space. */
 i32 USER_STACK_TOP  = 0x7FFFFFE0;
+/** Initial virtual address of the process heap. */
 i32 USER_HEAP_BASE  = 0x41000000;
 
 // MMU Page Table Entry flags:
 // Bit 0: Valid, Bit 1: Writable, Bit 2: Executable, Bit 3: User
+/** Valid, executable, user-accessible page mapping (read/execute text). */
 i32 PTE_USER_RX     = 0x0D; // VALID | EXEC | USER (0x01 | 0x04 | 0x08)
+/** Valid, writable, user-accessible page mapping (data, heap, and stack). */
 i32 PTE_USER_RW     = 0x0B; // VALID | WRITABLE | USER (0x01 | 0x02 | 0x08)
+/** Legacy flat-binary mapping that is valid, writable, executable, and user-accessible. */
 i32 PTE_USER_RWX    = 0x0F; // Legacy / flat fallback: VALID | WRITABLE | EXEC | USER
 
+/** Big-endian magic value identifying an MBIN executable header. */
 i32 MBIN_MAGIC      = 0x4D42494E; // 'MBIN'
 
 /**
@@ -115,7 +115,7 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
 
         Result<_, MmuError> map_res = mmu.map_page(pd, vaddr_base + offset, frame, pte_flags);
         case map_res of {
-            Ok(_) -> 0;
+            Ok(_) -> _;
             Err(AllocFailed) -> ({
                 debug.println("loader: out of memory for page table");
                 return Err(LoaderError::OutOfMemory);
@@ -137,7 +137,7 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
 void release_proc(i32 pid) {
     Result<_, ProcessError> release = process.free_proc(pid);
     case release of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared during cleanup"); });
     };
 }
@@ -179,7 +179,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     };
     Result<_, MmuError> id_res = mmu.setup_identity_kernel_mapping(pd);
     case id_res of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(AllocFailed) -> ({
             debug.println("loader: failed to setup identity kernel mapping");
             release_proc(pid);
@@ -193,7 +193,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     };
     Result<_, ProcessError> set_pdbr = process.set_pdbr(pid, pd);
     case set_pdbr of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting pdbr"); });
     };
 
@@ -255,7 +255,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         // in the data segment (the compiler's `.data`), so text is code only.
         Result<_, LoaderError> map_text = map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX);
         case map_text of {
-            Ok(_)  -> 0;
+            Ok(_)  -> _;
             Err(e) -> ({
                 release_proc(pid);
                 return Err(e);
@@ -267,7 +267,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         if (data_size > 0) {
             Result<_, LoaderError> map_data = map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW);
             case map_data of {
-                Ok(_)  -> 0;
+                Ok(_)  -> _;
                 Err(e) -> ({
                     release_proc(pid);
                     return Err(e);
@@ -280,7 +280,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             i32 bss_vaddr = data_vaddr + align_up_4k(data_size);
             Result<_, LoaderError> map_bss = map_segment(pd, bss_vaddr, 0, bss_size, PTE_USER_RW);
             case map_bss of {
-                Ok(_)  -> 0;
+                Ok(_)  -> _;
                 Err(e) -> ({
                     release_proc(pid);
                     return Err(e);
@@ -298,7 +298,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         debug.println("loader: legacy flat binary detected, mapping as RWX");
         Result<_, LoaderError> map_flat = map_segment(pd, USER_CODE_BASE, code_ptr, code_size, PTE_USER_RWX);
         case map_flat of {
-            Ok(_)  -> 0;
+            Ok(_)  -> _;
             Err(e) -> ({
                 release_proc(pid);
                 return Err(e);
@@ -309,7 +309,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     // 3. Allocate the user stack pages (RW, No Execute), zero-filled
     Result<_, LoaderError> map_stack = map_segment(pd, USER_STACK_BASE, 0, USER_STACK_PAGES * 4096, PTE_USER_RW);
     case map_stack of {
-        Ok(_)  -> 0;
+        Ok(_)  -> _;
         Err(e) -> ({
             debug.println("loader: cannot map the user stack");
             release_proc(pid);
@@ -332,24 +332,24 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     i32 kstack_top = kstack + KSTACK_BYTES;
     Result<_, ProcessError> set_kstack_top = process.set_kernel_stack_top(pid, kstack_top);
     case set_kstack_top of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting kernel stack"); });
     };
 
     // 5. Initialize process registers and state
     Result<_, ProcessError> set_user_sp = process.set_user_sp(pid, USER_STACK_TOP);
     case set_user_sp of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting user stack"); });
     };
     Result<_, ProcessError> set_user_entry = process.set_user_entry(pid, entry_point);
     case set_user_entry of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting entry point"); });
     };
     Result<_, ProcessError> set_heap_break = process.set_heap_break(pid, initial_brk);
     case set_heap_break of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting heap break"); });
     };
 
@@ -374,14 +374,14 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
 
     Result<_, ProcessError> set_kernel_sp = process.set_kernel_sp(pid, sp);
     case set_kernel_sp of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting kernel context"); });
     };
 
     // 7. Spawn task in scheduler
     Result<i32, SchedulerError> spawn_res = scheduler.spawn_proc_task(pid, sp);
     case spawn_res of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({
             debug.println("loader: failed to spawn task");
             release_proc(pid);
@@ -392,7 +392,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     ProcessState ready_state = Ready;
     Result<_, ProcessError> set_ready = process.set_state(pid, ready_state);
     case set_ready of {
-        Ok(_) -> 0;
+        Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while marking ready"); });
     };
     return Ok(pid);
