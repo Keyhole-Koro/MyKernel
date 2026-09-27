@@ -4,7 +4,8 @@ import { Option } from "../../../../toolchain/MyStdLib/option.mln";
 import bytes from "../../../../toolchain/MyStdLib/text/bytes.mln";
 import bitset from "../../../../toolchain/MyStdLib/collections/bitset.mln";
 import { RingBuffer } from "../../../../toolchain/MyStdLib/collections/ringbuf.mln";
-import strbuf from "../../../../toolchain/MyStdLib/text/strbuf.mln";
+import { InlineString } from "../../../../toolchain/MyStdLib/text/inline_string.mln";
+import { InlineCString } from "../../../../toolchain/MyStdLib/text/inline_c_string.mln";
 import { Result } from "../../../../toolchain/MyStdLib/result.mln";
 import assert from "../../../../toolchain/MyStdLib/assert.mln";
 import { assert_eq, assert_ne, assert_null, assert_not_null, assert_result_ok, assert_result_err } from "../../../../toolchain/MyStdLib/assert.mln";
@@ -280,55 +281,38 @@ void test_ringbuf() {
     assert_eq<i32>(g_q.count(), 0, "clear");
 }
 
-// --- strbuf ----------------------------------------------------------------
+// --- fixed strings ----------------------------------------------------------
 
-char g_line[16];
+InlineCString<16> g_line;
 
-void test_strbuf() {
-    debug.println("-- strbuf --");
+void test_inline_c_string() {
+    debug.println("-- InlineCString --");
 
-    i32 n = strbuf.reset(&g_line[0]);
-    assert_eq<i32>(n, 0, "strbuf.reset returns 0");
-    assert_eq<i32>(str.len(&g_line[0]), 0, "strbuf.reset empties");
+    g_line.clear();
+    assert_eq<i32>(g_line.len(), 0, "clear empties");
 
-    n = strbuf.append(&g_line[0], 16, n, "clicks: ");
-    assert_eq<i32>(n, 8, "strbuf.append length");
-    n = strbuf.append_i32(&g_line[0], 16, n, 42);
-    assert_eq<i32>(str.eq(&g_line[0], "clicks: 42"), 1, "strbuf.append_i32 content");
-    assert_eq<i32>(n, 10, "strbuf.append_i32 length");
+    assert_eq<bool>(g_line.append("clicks: "), true, "append text");
+    InlineString<12> number = 42.to_string();
+    assert_eq<bool>(g_line.append(number.as_str()), true, "append converted integer");
+    assert_eq<bool>(g_line.as_str() == "clicks: 42", true, "append content");
+    assert_eq<i32>(g_line.len(), 10, "append length");
+    assert_eq<i32>(g_line.remaining(), 5, "remaining capacity");
 
-    assert_eq<i32>(strbuf.space(16, n), 5, "strbuf.space");
+    assert_eq<bool>(g_line.push((u8)'!'), true, "push");
+    assert_eq<bool>(g_line.as_str() == "clicks: 42!", true, "push content");
 
-    n = strbuf.push(&g_line[0], 16, n, '!');
-    assert_eq<i32>(str.eq(&g_line[0], "clicks: 42!"), 1, "strbuf.push");
+    g_line.truncate(8);
+    assert_eq<bool>(g_line.as_str() == "clicks: ", true, "truncate");
+    g_line.truncate(-1);
+    assert_eq<i32>(g_line.len(), 0, "truncate clamps at zero");
 
-    n = strbuf.truncate(&g_line[0], n, 3);
-    assert_eq<i32>(str.eq(&g_line[0], "clicks: "), 1, "strbuf.truncate");
-    assert_eq<i32>(strbuf.truncate(&g_line[0], 2, 99), 0, "strbuf.truncate clamps at 0");
+    g_line.append("----");
+    assert_eq<bool>(g_line.as_str() == "----", true, "repeated push content");
 
-    n = strbuf.reset(&g_line[0]);
-    n = strbuf.append_hex(&g_line[0], 16, n, 0x1f);
-    assert_eq<i32>(str.eq(&g_line[0], "1f"), 1, "strbuf.append_hex");
-
-    n = strbuf.reset(&g_line[0]);
-    n = strbuf.append_repeat(&g_line[0], 16, n, '-', 4);
-    assert_eq<i32>(str.eq(&g_line[0], "----"), 1, "strbuf.append_repeat");
-    assert_eq<i32>(n, 4, "strbuf.append_repeat length");
-
-    n = strbuf.reset(&g_line[0]);
-    n = strbuf.append_n(&g_line[0], 16, n, "abcdef", 3);
-    assert_eq<i32>(str.eq(&g_line[0], "abc"), 1, "strbuf.append_n limit");
-
-    // Truncation must stop at cap-1 and still terminate, never run past the
-    // array. g_line holds 16 bytes, so 15 visible characters is the ceiling.
-    n = strbuf.reset(&g_line[0]);
-    n = strbuf.append(&g_line[0], 16, n, "0123456789abcdefghij");
-    assert_eq<i32>(n, 15, "strbuf.append truncates at cap-1");
-    assert_eq<i32>(str.len(&g_line[0]), 15, "strbuf truncated stays terminated");
-    assert_eq<i32>(str.eq(&g_line[0], "0123456789abcde"), 1, "strbuf truncated content");
-    assert_eq<i32>(strbuf.space(16, n), 0, "strbuf.space exhausted");
-    assert_eq<i32>(strbuf.push(&g_line[0], 16, n, 'z'), 15, "strbuf.push refused when full");
-    assert_eq<i32>(strbuf.append_i32(&g_line[0], 16, n, 7), 15, "strbuf.append_i32 refused when full");
+    g_line.clear();
+    assert_eq<bool>(g_line.append("0123456789abcdefghij"), false, "overflow refused");
+    assert_eq<i32>(g_line.len(), 0, "overflow is atomic");
+    assert_eq<i32>((i32)g_line.as_ptr()[0], 0, "C terminator retained");
 }
 
 // --- serial input queue ------------------------------------------------------
@@ -397,7 +381,7 @@ void standard_library() {
     test_bytes();
     test_bitset();
     test_ringbuf();
-    test_strbuf();
+    test_inline_c_string();
     test_serial_queue();
 
 }
