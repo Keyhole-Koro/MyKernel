@@ -2,6 +2,8 @@ package debug;
 
 import serial from "../io/serial.mln";
 import { halt_cpu } from "../arch/halt.masm";
+import str from "../../../../toolchain/MyStdLib/str.mln";
+import { InlineString } from "../../../../toolchain/MyStdLib/text/inline_string.mln";
 
 /**
  * Converts a 4-bit nibble into its lowercase hexadecimal ASCII character.
@@ -109,24 +111,11 @@ export void printf(char* fmt, rest args) {
             i32 value = args[arg_index];
             arg_index++;
 
-            // Handle negative numbers
-            if (value < 0) {
-                serial.putc('-');
-                value = -value;
-            }
-
-            // Convert integer to string in reverse order
-            char buffer[12]; // Enough for 32-bit int and sign
-            i32 pos = 0;
-            do {
-                buffer[pos] = (char)('0' + (value % 10));
-                value = value / 10;
-                pos++;
-            } while (value > 0);
-
-            // Print the number in correct order
-            for (i32 i = pos - 1; i >= 0; i--) {
-                serial.putc(buffer[i]);
+            InlineString<12> decimal = value.to_string();
+            i32 i = 0;
+            while (i < decimal.len()) {
+                serial.putc(decimal.data[i]);
+                i++;
             }
         } else if (*fmt == 'c') {
             if (arg_index >= args.len) {
