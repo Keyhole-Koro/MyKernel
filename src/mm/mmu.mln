@@ -3,8 +3,8 @@ package mmu;
 import heap from "heap.mln";
 import mem from "mem.mln";
 import debug from "../debug/debug.mln";
-import { Result } from "../../../../toolchain/MyStdLib/result.mln";
-import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { Result } from "@std/core/result.mln";
+import { Option } from "@std/core/option.mln";
 import { MmuError } from "../../../../contracts/process/loader.contract.mln";
 
 // =========================================================================

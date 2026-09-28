@@ -2,8 +2,8 @@ package debug;
 
 import serial from "../io/serial.mln";
 import { halt_cpu } from "../arch/halt.masm";
-import str from "../../../../toolchain/MyStdLib/str.mln";
-import { InlineString } from "../../../../toolchain/MyStdLib/text/inline_string.mln";
+import str from "@std/text/str.mln";
+import { InlineString } from "@std/text/inline_string.mln";
 
 /**
  * Converts a 4-bit nibble into its lowercase hexadecimal ASCII character.

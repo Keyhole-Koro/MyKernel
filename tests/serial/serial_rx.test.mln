@@ -4,7 +4,7 @@ import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
 import serial from "../../src/io/serial.mln";
 import irq from "../../src/arch/irq.mln";
-import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { Option } from "@std/core/option.mln";
 
 // The serial IRQ handler now drains hardware RX into serial's software input
 // queue (it no longer echoes or quits itself). This test plays the consumer:

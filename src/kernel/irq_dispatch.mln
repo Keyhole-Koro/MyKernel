@@ -12,8 +12,8 @@ import { SyscallError, DispatchOutcome } from "syscall.mln";
 import irq from "../arch/irq.mln";
 import mmu from "../mm/mmu.mln";
 import { irq_trampoline, irq_resume } from "../arch/irq_trampoline.masm";
-import { Result, result_take_ok, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
-import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { Result, result_take_ok, result_take_err } from "@std/core/result.mln";
+import { Option } from "@std/core/option.mln";
 import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
 
 /** Memory-mapped hardware register containing pending interrupt-cause bits. */

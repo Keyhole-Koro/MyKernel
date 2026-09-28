@@ -10,9 +10,9 @@ import process from "../../src/kernel/process.mln";
 import { ProcessState, ProcessError } from "../../src/kernel/process.mln";
 import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
 import loader from "../../src/kernel/loader.mln";
-import { Result, result_take_err } from "../../../../toolchain/MyStdLib/result.mln";
-import { Option, option_take } from "../../../../toolchain/MyStdLib/option.mln";
-import { assert_eq } from "../../../../toolchain/MyStdLib/assert.mln";
+import { Result, result_take_err } from "@std/core/result.mln";
+import { Option } from "@std/core/option.mln";
+import { assert_eq } from "@std/testing/assert.mln";
 import { LoaderError, MmuError } from "../../../../contracts/process/loader.contract.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
@@ -224,12 +224,12 @@ void process_lifecycle_and_protection() {
     // current process is Option::None, while an invalid PID is a Result error
     // with the offending value.  This prevents the old 0/-1/Unused sentinels
     // from being mistaken for valid process data by callers.
-    i32 current_pid;
     Option<i32> no_current = process.get_current_pid();
-    assert_eq<bool>(option_take<i32>(&no_current, &current_pid), false, "initial current process must be None");
-    ProcessState missing_state;
+    bool has_current = case no_current of { Some(_) -> true; None -> false; };
+    assert_eq<bool>(has_current, false, "initial current process must be None");
     Option<ProcessState> no_state = process.get_state(99);
-    assert_eq<bool>(option_take<ProcessState>(&no_state, &missing_state), false, "invalid pid state must be None");
+    bool has_state = case no_state of { Some(_) -> true; None -> false; };
+    assert_eq<bool>(has_state, false, "invalid pid state must be None");
     Result<Option<i32>, ProcessError> bad_pid = process.get_fd(99, 0);
     assert_invalid_pid(&bad_pid, 99);
     debug.println("kernel: initializing scheduler...");
@@ -344,16 +344,18 @@ void process_lifecycle_and_protection() {
     while (1) {
         ProcessState state;
         Option<ProcessState> state_result = process.get_state(pid1);
-        if (!option_take<ProcessState>(&state_result, &state)) {
-            fail("process 1 disappeared before it exited");
-        }
+        case state_result of {
+            Some(value) -> ({ state = value; });
+            None -> ({ fail("process 1 disappeared before it exited"); });
+        };
         bool exited1 = case state of { Zombie(_) -> true; _ -> false; };
         if (exited1) {
             ProcessExitStatus exit_status;
             Option<ProcessExitStatus> exit_status_result = process.get_exit_status(pid1);
-            if (!option_take<ProcessExitStatus>(&exit_status_result, &exit_status)) {
-                fail("process 1 disappeared before its exit status was read");
-            }
+            case exit_status_result of {
+                Some(value) -> ({ exit_status = value; });
+                None -> ({ fail("process 1 disappeared before its exit status was read"); });
+            };
             bool normal_exit = case exit_status of {
                 ProcessExitStatus::Code(code) -> code == 42;
                 _ -> false;
@@ -381,16 +383,18 @@ void process_lifecycle_and_protection() {
     while (1) {
         ProcessState state;
         Option<ProcessState> state_result = process.get_state(pid2);
-        if (!option_take<ProcessState>(&state_result, &state)) {
-            fail("process 2 disappeared before it exited");
-        }
+        case state_result of {
+            Some(value) -> ({ state = value; });
+            None -> ({ fail("process 2 disappeared before it exited"); });
+        };
         bool exited2 = case state of { Zombie(_) -> true; _ -> false; };
         if (exited2) {
             ProcessExitStatus exit_status;
             Option<ProcessExitStatus> exit_status_result = process.get_exit_status(pid2);
-            if (!option_take<ProcessExitStatus>(&exit_status_result, &exit_status)) {
-                fail("process 2 disappeared before its exit status was read");
-            }
+            case exit_status_result of {
+                Some(value) -> ({ exit_status = value; });
+                None -> ({ fail("process 2 disappeared before its exit status was read"); });
+            };
             bool page_fault = case exit_status of {
                 ProcessExitStatus::PageFault -> true;
                 _ -> false;

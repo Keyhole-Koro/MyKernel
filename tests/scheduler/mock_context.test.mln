@@ -1,8 +1,8 @@
 package test_scheduler_mock_context;
 
-import assert from "../../../../toolchain/MyStdLib/assert.mln";
+import assert from "@std/testing/assert.mln";
 import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
-import { Result } from "../../../../toolchain/MyStdLib/result.mln";
+import { Result } from "@std/core/result.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 import heap from "../../src/mm/heap.mln";
 import irq from "../../src/arch/irq.mln";

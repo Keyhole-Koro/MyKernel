@@ -10,8 +10,8 @@ import { ProcessState, ProcessError } from "process.mln";
 import mmu from "../mm/mmu.mln";
 import { wfi_cpu } from "../arch/wfi.masm";
 import { halt_cpu } from "../arch/halt.masm";
-import { Result } from "../../../../toolchain/MyStdLib/result.mln";
-import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { Result } from "@std/core/result.mln";
+import { Option } from "@std/core/option.mln";
 
 /** Failure cases returned by task-creation scheduler operations. */
 export enum SchedulerError {

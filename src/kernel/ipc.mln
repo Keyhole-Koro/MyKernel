@@ -22,7 +22,7 @@ package ipc;
 // requests to the UI server, replies back, and events to the apps.
 
 import scheduler from "scheduler.mln";
-import { Option } from "../../../../toolchain/MyStdLib/option.mln";
+import { Option } from "@std/core/option.mln";
 
 // 24 words leave 64 inline bytes after an Event's five scalar words. Keeping
 // event text in the ring slot avoids queuing a pointer to reused server memory.
