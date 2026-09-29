@@ -15,6 +15,8 @@ import debug from "../debug/debug.mln";
 
 import kernel_config from "../kernel/kernel_config.mln";
 import irq from "../arch/irq.mln";
+import { Result } from "@std/core/result.mln";
+import { AllocationError } from "@std/memory/allocator.mln";
 
 i32 HDR_SIZE = 8;
 i32 ALIGN = 4;
@@ -50,22 +52,38 @@ i32 align_up(i32 n) {
     return (n + (ALIGN - 1)) & ~(ALIGN - 1);
 }
 
-/** Reads the payload size in bytes from a block header. */
+/**
+ * Reads the payload size stored in a block header.
+ * @param h Address of the block header.
+ * @return Payload size in bytes, excluding the header.
+ */
 i32 block_size(i32 h) { return read_word(h + 0); }
-/** Reads the next free block address from a block header. */
+/**
+ * Reads the next free block address stored in a block header.
+ * @param h Address of the block header.
+ * @return Address of the next free block header, or 0 if there is none.
+ */
 i32 block_next(i32 h) { return read_word(h + 4); }
-/** Sets the payload size in bytes in a block header. */
+/**
+ * Writes the payload size into a block header.
+ * @param h Address of the block header.
+ * @param v Payload size in bytes, excluding the header.
+ */
 void set_size(i32 h, i32 v) { write_word(h + 0, v); }
-/** Sets the next free block pointer in a block header. */
+/**
+ * Writes the next-free-block pointer into a block header.
+ * @param h Address of the block header.
+ * @param v Address of the next free block header, or 0 if there is none.
+ */
 void set_next(i32 h, i32 v) { write_word(h + 4, v); }
 
-/**
- * Calculates the physical address just past the end of block h.
- * @param h Address of block header.
- * @return One byte past the block payload.
- */
 i32 g_heap_base = 0;
 
+/**
+ * Calculates the address immediately after a block's header and payload.
+ * @param h Address of the block header.
+ * @return End-exclusive address of the block.
+ */
 i32 block_end(i32 h) {
     return h + HDR_SIZE + block_size(h);
 }
@@ -73,7 +91,8 @@ i32 block_end(i32 h) {
 /**
  * Initializes the kernel heap manager starting after the loaded kernel image.
  *
- * Sets up a single free block spanning the whole 1 MiB heap region.
+ * Sets up a single free block spanning the configured heap region, beginning
+ * at the aligned end of the loaded kernel image.
  */
 export void init() {
     i32 base = heap_image_end();
@@ -89,13 +108,14 @@ export void init() {
 /**
  * Allocates a contiguous memory block of at least `size` bytes from the kernel heap.
  *
- * Uses first-fit allocation and splits remaining space when viable. Panics on OOM.
+ * Uses first-fit allocation and splits remaining space when viable.
+ * The caller must provide the required exclusion when heap locking is enabled.
  * @param size Requested allocation size in bytes.
- * @return Pointer to allocated payload memory.
+ * @return `Ok(pointer)` on success, or `Err(InvalidSize|OutOfMemory)`.
  */
-i32 alloc_unlocked(i32 size) {
-    if (size <= 0) {
-        return 0;
+Result<i32, AllocationError> alloc_unlocked(i32 size) {
+    if (size <= 0 || size > 0x7FFFFFFF - (ALIGN - 1)) {
+        return Err(AllocationError::InvalidSize);
     }
     size = align_up(size);
 
@@ -123,21 +143,21 @@ i32 alloc_unlocked(i32 size) {
             } else {
                 set_next(prev, cur_next);
             }
-            return cur + HDR_SIZE;
+            return Ok(cur + HDR_SIZE);
         }
 
         prev = cur;
         cur = cur_next;
     }
 
-    debug.panic("out of memory");
-    return 0; // unreachable
+    return Err(AllocationError::OutOfMemory);
 }
 
 /**
  * Returns a previously allocated block to the free list.
  *
  * Maintains address order in the free list and coalesces with adjacent free neighbours.
+ * The caller must provide the required exclusion when heap locking is enabled.
  * @param ptr Pointer to payload memory to free (no-op if 0).
  */
 void free_unlocked(i32 ptr) {
@@ -189,18 +209,42 @@ void free_unlocked(i32 ptr) {
 // they cannot switch interrupts on early.
 i32 g_locking = 0;
 
+/**
+ * Enables interrupt protection around public heap allocation and free operations.
+ *
+ * Call once the scheduler is live. This only enables heap protection; it does
+ * not itself enable hardware interrupts.
+ */
 export void enable_locking() { g_locking = 1; }
 
-export i32 alloc(i32 size) {
-    if (g_locking == 0) { return alloc_unlocked(size); }
+/**
+ * Allocates a block from the kernel heap.
+ *
+ * Uses first-fit allocation and splits a free block when the remainder can hold
+ * another header and payload. Once heap locking is enabled, interrupts are
+ * disabled for the allocator's free-list updates and restored to their prior
+ * state afterward.
+ * @param size Requested allocation size in bytes.
+ * @return `Ok(pointer)` on success, or `Err(InvalidSize|OutOfMemory)`.
+ */
+export Result<i32, AllocationError> alloc(i32 size) {
+    if (!g_locking) { return alloc_unlocked(size); }
     i32 was = irq.save_disable();
-    i32 p = alloc_unlocked(size);
+    Result<i32, AllocationError> result = alloc_unlocked(size);
     irq.restore(was);
-    return p;
+    return result;
 }
 
+/**
+ * Returns a previously allocated block to the kernel heap.
+ *
+ * Inserts the block into the address-ordered free list and merges adjacent free
+ * blocks. A null pointer is a no-op. Once heap locking is enabled, interrupts
+ * are disabled during the free-list update and restored to their prior state.
+ * @param ptr Pointer to the allocated payload, or 0.
+ */
 export void free(i32 ptr) {
-    if (g_locking == 0) { free_unlocked(ptr); return; }
+    if (!g_locking) { free_unlocked(ptr); return; }
     i32 was = irq.save_disable();
     free_unlocked(ptr);
     irq.restore(was);

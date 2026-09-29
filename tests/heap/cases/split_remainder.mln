@@ -1,11 +1,12 @@
 import heap from "../../../src/mm/heap.mln";
+import heap_alloc from "../alloc_support.mln";
 
 // Allocating a small block splits the big free block; the remainder is still
 // usable for a subsequent allocation.
 i32 main() {
     heap.init();
-    i32 a = heap.alloc(16);   // splits the initial block
-    i32 b = heap.alloc(32);   // must come from the remainder
+    i32 a = heap_alloc.alloc_or_zero(16);   // splits the initial block
+    i32 b = heap_alloc.alloc_or_zero(32);   // must come from the remainder
     if (a == 0) { return 91; }
     if (b == 0) { return 92; }
     if (a == b) { return 93; }

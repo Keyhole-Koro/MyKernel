@@ -23,6 +23,12 @@ package ipc;
 
 import scheduler from "scheduler.mln";
 import { Option } from "@std/core/option.mln";
+import { Result } from "@std/core/result.mln";
+
+/** Failure while querying a message channel. */
+export enum ChannelError {
+    InvalidId(i32),
+}
 
 // 24 words leave 64 inline bytes after an Event's five scalar words. Keeping
 // event text in the ring slot avoids queuing a pointer to reused server memory.
@@ -43,7 +49,7 @@ i32 g_ring[30720];  // CHANNELS_MAX * SLOTS * MSG_WORDS
 export Option<i32> create() {
     i32 c = 0;
     while (c < CHANNELS_MAX) {
-        if (g_used[c] == 0) {
+        if (!g_used[c]) {
             g_used[c] = 1;
             g_head[c] = 0;
             g_tail[c] = 0;
@@ -108,14 +114,14 @@ export bool has(i32 ch, i32 w1, i32 w2) {
 /**
  * Returns the number of messages currently queued on a channel.
  * @param ch 1-based channel ID.
- * @return Queued message count, or 0 if the channel ID is invalid.
+ * @return Ok(queued message count), or Err(InvalidId) when the channel ID is invalid.
  */
-export i32 count(i32 ch) {
-    if (ch <= 0 || ch > CHANNELS_MAX) { return 0; }
+export Result<i32, ChannelError> count(i32 ch) {
+    if (ch <= 0 || ch > CHANNELS_MAX) { return Err(ChannelError::InvalidId(ch)); }
     i32 c = ch - 1;
     i32 n = g_tail[c] - g_head[c];
     if (n < 0) { n = n + SLOTS; }
-    return n;
+    return Ok(n);
 }
 
 /**

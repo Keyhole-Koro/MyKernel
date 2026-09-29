@@ -14,7 +14,7 @@ i32 task1_count = 0;
 i32 verdict_reported = 0;
 
 void report_context_switch_success() {
-    if (verdict_reported == 0) {
+    if (!verdict_reported) {
         verdict_reported = 1;
         assert_eq<i32>(task0_count > 1000, 1, "task0 executed after scheduling started");
         assert_eq<i32>(task1_count > 1000, 1, "task1 executed after scheduling started");

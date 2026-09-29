@@ -76,7 +76,7 @@ export void init() {
  * @return Ok(pid) with allocated process ID (1-based), or Err(NoFreeSlot) if table is full.
  */
 export Result<i32, ProcessError> alloc_proc() {
-    if (g_procs_initialized == 0) {
+    if (!g_procs_initialized) {
         init();
     }
 

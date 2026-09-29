@@ -16,6 +16,13 @@ import { assert_eq } from "@std/testing/assert.mln";
 import { LoaderError, MmuError } from "../../../../contracts/process/loader.contract.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
+i32 alloc_or_zero(i32 size) {
+    return case heap.alloc(size) of {
+        Ok(pointer) -> pointer;
+        Err(_) -> 0;
+    };
+}
+
 void init_user_binary(i32 buf) {
     // 140-byte position-independent user program
     // offset 0
@@ -266,7 +273,7 @@ void process_lifecycle_and_protection() {
 
     // Test MBIN header validation errors using LoaderError
     debug.println("kernel: testing loader error reporting with LoaderError...");
-    i32 bad_buf = heap.alloc(256);
+    i32 bad_buf = alloc_or_zero(256);
     // 1. Invalid version test
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf + 4, 99); // bad version = 99
@@ -282,7 +289,7 @@ void process_lifecycle_and_protection() {
     debug.println("SUCCESS: InvalidBounds(172) reported correctly!");
 
     // Prepare MBIN v2 user program binary buffer
-    i32 user_code = heap.alloc(256);
+    i32 user_code = alloc_or_zero(256);
     debug.printf("user_code buffer: 0x%x\n", user_code);
     init_mbin_user_binary(user_code);
 
@@ -368,7 +375,7 @@ void process_lifecycle_and_protection() {
 
     // Now test W^X protection: spawn a process that tries to write to its RX text section
     debug.println("kernel: testing W^X protection (attempt write to text section)...");
-    i32 fault_buf = heap.alloc(128);
+    i32 fault_buf = alloc_or_zero(128);
     init_wx_fault_binary(fault_buf);
     Result<i32, LoaderError> spawn_res2 = loader.spawn_from_buffer(fault_buf, 48);
     i32 pid2 = case spawn_res2 of {

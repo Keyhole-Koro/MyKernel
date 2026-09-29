@@ -1,25 +1,20 @@
 import assert from "@std/testing/assert.mln";
-import mock from "../../../../toolchain/MyLangTestKit/runtime/facade.mln";
-import debug from "../../src/debug/debug.mln";
 import heap from "../../src/mm/heap.mln";
 import kernel_config from "../../src/kernel/kernel_config.mln";
+import { Result } from "@std/core/result.mln";
+import { AllocationError } from "@std/memory/allocator.mln";
 
-// The allocator's arena is kernel_config.HEAP_SIZE including its first block
-// header, so a request of the whole size cannot fit. Spy intercepts the terminal debug.panic call: the
-// test can assert the intended failure path without serial-output matching or
-// an emulator halt.
-void fake_panic(char* msg) {}
-
-/*@Test "heap exhaustion reports panic" { step: 1000000; }*/
-void heap_exhaustion_reports_panic() {
+// The allocator's arena includes a block header, so a request of the whole
+// configured size must fail with OutOfMemory instead of panicking.
+/*@Test "heap exhaustion returns an error" { step: 1000000; }*/
+void heap_exhaustion_returns_an_error() {
     heap.init();
 
-    mock.spy(debug.panic)
-        .when(mock.any())
-        .call(fake_panic);
-
-    i32 allocation = heap.alloc(kernel_config.HEAP_SIZE);
-
-    assert.assert_true(allocation == 0, "OOM returns zero after intercepted panic");
-    assert.assert_true(mock.calls(debug.panic) == 1, "OOM reports exactly one panic");
+    Result<i32, AllocationError> allocation = heap.alloc(kernel_config.HEAP_SIZE);
+    bool out_of_memory = case allocation of {
+        Ok(_) -> false;
+        Err(AllocationError::OutOfMemory) -> true;
+        Err(_) -> false;
+    };
+    assert.assert_true(out_of_memory, "OOM is returned as an allocation error");
 }

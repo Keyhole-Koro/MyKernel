@@ -1,0 +1,12 @@
+package heap_alloc_support;
+
+import heap from "../../src/mm/heap.mln";
+import { Result } from "@std/core/result.mln";
+
+/** Returns the allocated pointer, or zero to keep legacy success-only tests concise. */
+export i32 alloc_or_zero(i32 size) {
+    return case heap.alloc(size) of {
+        Ok(pointer) -> pointer;
+        Err(_) -> 0;
+    };
+}

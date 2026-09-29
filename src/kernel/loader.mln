@@ -323,12 +323,14 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     // dispatcher -- an overflow here silently corrupts whatever heap block
     // sits below it.
     i32 KSTACK_BYTES = 16384;
-    i32 kstack = heap.alloc(KSTACK_BYTES);
-    if (kstack == 0) {
-        debug.println("loader: out of memory for kernel stack");
-        release_proc(pid);
-        return Err(LoaderError::OutOfMemory);
-    }
+    i32 kstack = case heap.alloc(KSTACK_BYTES) of {
+        Ok(p) -> p;
+        Err(_) -> ({
+            debug.println("loader: out of memory for kernel stack");
+            release_proc(pid);
+            return Err(LoaderError::OutOfMemory);
+        });
+    };
     i32 kstack_top = kstack + KSTACK_BYTES;
     Result<_, ProcessError> set_kstack_top = process.set_kernel_stack_top(pid, kstack_top);
     case set_kstack_top of {

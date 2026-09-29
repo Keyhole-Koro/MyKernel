@@ -54,7 +54,7 @@ i32 in_ready = 0;
  * Initializes the input ring buffer on first use if not already initialized.
  */
 void ensure_queue() {
-    if (in_ready == 0) {
+    if (!in_ready) {
         in_q.init(&in_storage[0], 128);
         in_ready = 1;
     }

@@ -82,11 +82,13 @@ export Option<i32> alloc_page() {
  */
 export Option<i32> alloc_page_uninitialized() {
     // Allocate 8192 bytes so we can guarantee a 4096-byte aligned base
-    i32 raw = heap.alloc(PAGE_SIZE * 2);
-    if (raw == 0) {
-        debug.println("mmu: out of memory for page allocation");
-        return None;
-    }
+    i32 raw = case heap.alloc(PAGE_SIZE * 2) of {
+        Ok(p) -> p;
+        Err(_) -> ({
+            debug.println("mmu: out of memory for page allocation");
+            return None;
+        });
+    };
     i32 aligned = (raw + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
     return Some(aligned);
 }
@@ -124,7 +126,7 @@ Result<i32, MmuError> get_or_create_page_table(i32 pd_addr, i32 pdi, i32 flags) 
     i32 pde_addr = pd_addr + (pdi * 4);
     i32 pde = mem.read_word(pde_addr);
 
-    if ((pde & PTE_VALID) == 0) {
+    if (!(pde & PTE_VALID)) {
         i32 pt_base = case alloc_page() of {
             Some(pt) -> pt;
             None -> ({
@@ -263,7 +265,7 @@ Result<_, MmuError> build_identity_tables(i32 pd_addr) {
 }
 
 export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
-    if (g_shared_ready == 0) {
+    if (!g_shared_ready) {
         Result<_, MmuError> built = build_identity_tables(pd_addr);
         case built of {
             Ok(_)  -> _;

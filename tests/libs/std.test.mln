@@ -1,5 +1,6 @@
 import debug from "../../src/debug/debug.mln";
 import str from "@std/text/str.mln";
+import { ParseIntError } from "@std/text/str.mln";
 import { Option } from "@std/core/option.mln";
 import bytes from "@std/text/bytes.mln";
 import bitset from "@std/collections/bitset.mln";
@@ -20,6 +21,14 @@ import serial from "../../src/io/serial.mln";
 
 i32 g_assert_value = 42;
 i32* g_assert_null = (i32*)0;
+
+i32 atoi_value(char *input) {
+    Result<i32, ParseIntError> parsed = str.atoi(input);
+    return case parsed of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert.assert_true(false, "expected valid integer prefix"); 0; });
+    };
+}
 
 // --- assert ---------------------------------------------------------------
 
@@ -101,12 +110,13 @@ void test_str() {
     str.xtoa(0x1f, &g_buf[0]);
     assert_eq<i32>(str.eq(&g_buf[0], "1f"), 1, "str.xtoa strips leading zeros");
 
-    assert_eq<i32>(str.atoi("0"), 0, "str.atoi zero");
-    assert_eq<i32>(str.atoi("4210"), 4210, "str.atoi positive");
-    assert_eq<i32>(str.atoi("-42"), 0 - 42, "str.atoi negative");
-    assert_eq<i32>(str.atoi("+7"), 7, "str.atoi plus sign");
-    assert_eq<i32>(str.atoi("12abc"), 12, "str.atoi stops at non-digit");
-    assert_eq<i32>(str.atoi("abc"), 0, "str.atoi no digits");
+    assert_eq<i32>(atoi_value("0"), 0, "str.atoi zero");
+    assert_eq<i32>(atoi_value("4210"), 4210, "str.atoi positive");
+    assert_eq<i32>(atoi_value("-42"), 0 - 42, "str.atoi negative");
+    assert_eq<i32>(atoi_value("+7"), 7, "str.atoi plus sign");
+    assert_eq<i32>(atoi_value("12abc"), 12, "str.atoi stops at non-digit");
+    Result<i32, ParseIntError> no_digits = str.atoi("abc");
+    assert_result_err<i32, ParseIntError>(&no_digits, "str.atoi rejects input without digits");
 }
 
 // --- bytes -----------------------------------------------------------------

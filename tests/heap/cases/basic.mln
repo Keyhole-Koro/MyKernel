@@ -1,10 +1,11 @@
 import heap from "../../../src/mm/heap.mln";
+import heap_alloc from "../alloc_support.mln";
 
 // alloc returns distinct, non-zero, non-overlapping blocks.
 i32 main() {
     heap.init();
-    i32 a = heap.alloc(16);
-    i32 b = heap.alloc(16);
+    i32 a = heap_alloc.alloc_or_zero(16);
+    i32 b = heap_alloc.alloc_or_zero(16);
 
     if (a == 0) { return 91; }
     if (b == 0) { return 92; }

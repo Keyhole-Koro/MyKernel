@@ -1,11 +1,12 @@
 import assert from "@std/testing/assert.mln";
 import heap from "../../src/mm/heap.mln";
+import heap_alloc from "alloc_support.mln";
 
 /*@Test "heap allocates distinct blocks"*/
 void heap_allocates_distinct_blocks() {
     heap.init();
-    i32 a = heap.alloc(16);
-    i32 b = heap.alloc(16);
+    i32 a = heap_alloc.alloc_or_zero(16);
+    i32 b = heap_alloc.alloc_or_zero(16);
 
     assert.assert_true(a != 0, "first allocation succeeds");
     assert.assert_true(b != 0, "second allocation succeeds");
@@ -20,10 +21,10 @@ void heap_allocates_distinct_blocks() {
 /*@Test "heap reuses freed block"*/
 void heap_reuses_freed_block() {
     heap.init();
-    i32 a = heap.alloc(16);
-    i32 b = heap.alloc(16);
+    i32 a = heap_alloc.alloc_or_zero(16);
+    i32 b = heap_alloc.alloc_or_zero(16);
     heap.free(a);
-    i32 c = heap.alloc(16);
+    i32 c = heap_alloc.alloc_or_zero(16);
 
     assert.assert_true(a != 0 && b != 0, "initial allocations succeed");
     assert.assert_true(c == a, "free-list head is reused");
@@ -32,8 +33,8 @@ void heap_reuses_freed_block() {
 /*@Test "heap allocations are independently writable"*/
 void heap_allocations_are_independently_writable() {
     heap.init();
-    i32 a = heap.alloc(16);
-    i32 b = heap.alloc(16);
+    i32 a = heap_alloc.alloc_or_zero(16);
+    i32 b = heap_alloc.alloc_or_zero(16);
     i32 *pa = (i32 *)a;
     i32 *pb = (i32 *)b;
     *pa = 111;
@@ -47,8 +48,8 @@ void heap_allocations_are_independently_writable() {
 /*@Test "heap splits initial block"*/
 void heap_splits_initial_block() {
     heap.init();
-    i32 a = heap.alloc(16);
-    i32 b = heap.alloc(32);
+    i32 a = heap_alloc.alloc_or_zero(16);
+    i32 b = heap_alloc.alloc_or_zero(32);
 
     assert.assert_true(a != 0 && b != 0, "split allocations succeed");
     assert.assert_true(a != b, "remainder supplies another block");
@@ -57,9 +58,9 @@ void heap_splits_initial_block() {
 /*@Test "heap coalesces forward"*/
 void heap_coalesces_forward() {
     heap.init();
-    i32 a = heap.alloc(64);
-    i32 b = heap.alloc(64);
-    i32 c = heap.alloc(64);
+    i32 a = heap_alloc.alloc_or_zero(64);
+    i32 b = heap_alloc.alloc_or_zero(64);
+    i32 c = heap_alloc.alloc_or_zero(64);
     heap.free(a);
     heap.free(b);
 
@@ -72,9 +73,9 @@ void heap_coalesces_forward() {
 /*@Test "heap coalesces backward"*/
 void heap_coalesces_backward() {
     heap.init();
-    i32 a = heap.alloc(64);
-    i32 b = heap.alloc(64);
-    i32 c = heap.alloc(64);
+    i32 a = heap_alloc.alloc_or_zero(64);
+    i32 b = heap_alloc.alloc_or_zero(64);
+    i32 c = heap_alloc.alloc_or_zero(64);
     heap.free(b);
     heap.free(a);
 

@@ -1,13 +1,14 @@
 import heap from "../../../src/mm/heap.mln";
+import heap_alloc from "../alloc_support.mln";
 
 // Free in the opposite order (B then A): freeing A should merge with the
 // already-free following block B (backward case from A's perspective). The
 // merged region at A must span both blocks: 64 + 8 + 64 = 136.
 i32 main() {
     heap.init();
-    i32 a = heap.alloc(64);
-    i32 b = heap.alloc(64);
-    i32 c = heap.alloc(64);
+    i32 a = heap_alloc.alloc_or_zero(64);
+    i32 b = heap_alloc.alloc_or_zero(64);
+    i32 c = heap_alloc.alloc_or_zero(64);
     if (a == 0) { return 91; }
     if (b == 0) { return 92; }
     if (c == 0) { return 93; }

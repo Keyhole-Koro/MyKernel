@@ -160,7 +160,7 @@ export i32 tick(i32 sp) {
  * @return Stack pointer of the next task to resume.
  */
 export i32 reschedule(i32 sp) {
-    if (tasks_initialized == 0) {
+    if (!tasks_initialized) {
         return sp;
     }
 
@@ -258,7 +258,7 @@ export i32 yield_until_tick(i32 sp) {
  * @param mask Notification bit or bits to arm; zero is ignored.
  */
 export void arm_notification(i32 mask) {
-    if (current_task < 0 || mask == 0) { return; }
+    if (current_task < 0 || !mask) { return; }
     task_notification_armed[current_task] = task_notification_armed[current_task] | mask;
 }
 
@@ -267,7 +267,7 @@ export void arm_notification(i32 mask) {
  * @param mask Notification bit or bits to clear; zero is ignored.
  */
 export void disarm_notification(i32 mask) {
-    if (current_task < 0 || mask == 0) { return; }
+    if (current_task < 0 || !mask) { return; }
     task_notification_armed[current_task] = task_notification_armed[current_task] & (~mask);
     task_notification_pending[current_task] = task_notification_pending[current_task] & (~mask);
 }
@@ -282,7 +282,7 @@ export void disarm_notification(i32 mask) {
  * @return Stack pointer of the context that should run next.
  */
 export i32 wait_notification(i32 sp, i32 mask) {
-    if (current_task < 0 || mask == 0) { return sp; }
+    if (current_task < 0 || !mask) { return sp; }
     i32 me = current_task;
     task_notification_armed[me] = task_notification_armed[me] | mask;
     i32 ready = task_notification_pending[me] & mask;
@@ -308,7 +308,7 @@ void notify_task(i32 task_idx, i32 mask) {
     if (task_idx < 0 || task_idx >= g_task_count) { return; }
     if (task_state[task_idx] == TASK_EMPTY) { return; }
     i32 matched = task_notification_armed[task_idx] & mask;
-    if (matched == 0) { return; }
+    if (!matched) { return; }
     task_notification_pending[task_idx] = task_notification_pending[task_idx] | matched;
     if (task_state[task_idx] == TASK_BLOCKED &&
         (task_notification_wait[task_idx] & matched)) {
@@ -430,11 +430,13 @@ export Result<i32, SchedulerError> spawn_task_sized(i32 func_ptr, i32 stack_byte
     i32 i = 0;
     while (i < kernel_config.MAX_TASKS) {
         if (task_state[i] == TASK_EMPTY) {
-            i32 stack = heap.alloc(stack_bytes);
-            if (stack == 0) {
-                debug.println("Error: Out of memory for task stack!");
-                return Err(SchedulerError::OutOfMemory);
-            }
+            i32 stack = case heap.alloc(stack_bytes) of {
+                Ok(p) -> p;
+                Err(_) -> ({
+                    debug.println("Error: Out of memory for task stack!");
+                    return Err(SchedulerError::OutOfMemory);
+                });
+            };
             init_task(i, func_ptr, stack + stack_bytes);
             task_state[i] = TASK_RUNNABLE;
             task_pid[i] = 0; // Kernel task
@@ -515,11 +517,13 @@ export void init() {
     // Build the dedicated idle context. 512 bytes is plenty: the wfi loop
     // itself is a leaf, and an interrupt frame (PC/SR + 10 registers) is the
     // only thing ever pushed on top of it.
-    i32 idle_stack = heap.alloc(512);
-    if (idle_stack == 0) {
-        debug.println("scheduler: FATAL: no memory for the idle stack");
-        return;
-    }
+    i32 idle_stack = case heap.alloc(512) of {
+        Ok(p) -> p;
+        Err(_) -> ({
+            debug.println("scheduler: FATAL: no memory for the idle stack");
+            return;
+        });
+    };
     idle_sp = build_context(idle_main, idle_stack + 512);
 
     // Task 0 is the current context: the first timer interrupt saves our SP
