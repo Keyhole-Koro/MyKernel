@@ -161,12 +161,12 @@ export void pop_event() {
  * @param ry Rectangle top origin Y.
  * @param rw Rectangle width.
  * @param rh Rectangle height.
- * @return 1 if inside, 0 otherwise.
+ * @return True if inside, false otherwise.
  */
-export i32 in_rect(i32 px, i32 py, i32 rx, i32 ry, i32 rw, i32 rh) {
-    if (px < rx) { return 0; }
-    if (py < ry) { return 0; }
-    if (px >= rx + rw) { return 0; }
-    if (py >= ry + rh) { return 0; }
-    return 1;
+export bool in_rect(i32 px, i32 py, i32 rx, i32 ry, i32 rw, i32 rh) {
+    if (px < rx) { return false; }
+    if (py < ry) { return false; }
+    if (px >= rx + rw) { return false; }
+    if (py >= ry + rh) { return false; }
+    return true;
 }
