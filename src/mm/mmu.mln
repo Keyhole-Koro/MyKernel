@@ -26,21 +26,29 @@ import { MmuError } from "../../../../contracts/process/loader.contract.mln";
 //   [1]     : Writable (W)        - 1 = Read/Write, 0 = Read-only
 //   [0]     : Valid (V)           - 1 = Present, 0 = Page fault
 
-export i32 PTE_VALID    = 0x01; // 1 << 0
-export i32 PTE_WRITABLE = 0x02; // 1 << 1
-export i32 PTE_EXEC     = 0x04; // 1 << 2
-export i32 PTE_USER     = 0x08; // 1 << 3
-export i32 PTE_ACCESSED = 0x10; // 1 << 4
-export i32 PTE_DIRTY    = 0x20; // 1 << 5
+export const i32 PTE_VALID    = 0x01; // 1 << 0
+export const i32 PTE_WRITABLE = 0x02; // 1 << 1
+export const i32 PTE_EXEC     = 0x04; // 1 << 2
+export const i32 PTE_USER     = 0x08; // 1 << 3
+export const i32 PTE_ACCESSED = 0x10; // 1 << 4
+export const i32 PTE_DIRTY    = 0x20; // 1 << 5
 
-export i32 PAGE_SIZE           = 4096;
-export i32 ENTRIES_PER_TABLE   = 1024;
+export const i32 PAGE_SIZE           = 4096;
+export const i32 ENTRIES_PER_TABLE   = 1024;
 
-export i32 MMU_CTRL_ADDR        = 0x24000100;
-export i32 MMU_PDBR_ADDR        = 0x24000104;
-export i32 MMU_FAULT_ADDR       = 0x24000108;
-export i32 MMU_FAULT_STATUS_ADDR= 0x2400010C;
-export i32 KERNEL_SP_ADDR       = 0x24000110;
+export const i32 MMU_CTRL_ADDR        = 0x24000100;
+export const i32 MMU_PDBR_ADDR        = 0x24000104;
+export const i32 MMU_FAULT_ADDR       = 0x24000108;
+export const i32 MMU_FAULT_STATUS_ADDR= 0x2400010C;
+export const i32 KERNEL_SP_ADDR       = 0x24000110;
+
+/** Reason recorded by the MMU for the most recent page fault. */
+export enum MmuFaultStatus {
+    READ,
+    WRITE,
+    EXECUTE,
+    PRIVILEGE,
+}
 
 // Global constants for memory regions (> 21-bit immediate)
 i32 KERNEL_RAM_BASE   = 0x00000000;
@@ -325,9 +333,9 @@ export i32 get_fault_address() {
 }
 
 /**
- * Reads the fault status / reason code from the MMU hardware register.
- * @return Fault status flags.
+ * Reads the fault reason code from the MMU hardware register.
+ * @return Typed access reason for the most recent fault.
  */
-export i32 get_fault_status() {
+export MmuFaultStatus get_fault_status() {
     return mem.read_word(MMU_FAULT_STATUS_ADDR);
 }

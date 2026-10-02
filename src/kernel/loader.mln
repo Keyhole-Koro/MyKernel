@@ -21,7 +21,7 @@ i32 USER_CODE_BASE  = 0x40000000;
 /** Number of pages reserved for each process's user stack. */
 i32 USER_STACK_PAGES = 4;
 /** Lowest virtual address of the process user stack; the user heap must remain below it. */
-export i32 USER_STACK_BASE = 0x7FFFC000; // Heap must stay below this (see syscall.sys_sbrk)
+export const i32 USER_STACK_BASE = 0x7FFFC000; // Heap must stay below this (see syscall.sys_sbrk)
 /** Initial user stack pointer, positioned below the top of the address space. */
 i32 USER_STACK_TOP  = 0x7FFFFFE0;
 /** Initial virtual address of the process heap. */

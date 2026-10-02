@@ -16,6 +16,7 @@ import debug from "../debug/debug.mln";
 import kernel_config from "../kernel/kernel_config.mln";
 import irq from "../arch/irq.mln";
 import { Result } from "@std/core/result.mln";
+import int32 from "@std/core/int32.mln";
 import { AllocationError } from "@std/memory/allocator.mln";
 
 i32 HDR_SIZE = 8;
@@ -114,7 +115,7 @@ export void init() {
  * @return `Ok(pointer)` on success, or `Err(InvalidSize|OutOfMemory)`.
  */
 Result<i32, AllocationError> alloc_unlocked(i32 size) {
-    if (size <= 0 || size > 0x7FFFFFFF - (ALIGN - 1)) {
+    if (size <= 0 || size > int32.MAX - (ALIGN - 1)) {
         return Err(AllocationError::InvalidSize);
     }
     size = align_up(size);

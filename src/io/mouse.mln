@@ -19,10 +19,6 @@ i32 MOUSE_EVT_BTN_ADDR    = 0x24000058;
 i32 MOUSE_EVT_POP_ADDR    = 0x2400005C;
 i32 MOUSE_EVT_WHEEL_ADDR  = 0x240000B4; // signed wheel steps on the head event
 
-i32 MOUSE_BUTTON_LEFT = 0x1;
-i32 MOUSE_BUTTON_RIGHT = 0x2;
-i32 MOUSE_BUTTON_MIDDLE = 0x4;
-
 /**
  * Reads the current mouse cursor X coordinate from hardware register.
  * @return Current X coordinate in pixels.
@@ -38,39 +34,6 @@ export i32 x() {
 export i32 y() {
     return mem.read_word(MOUSE_Y_ADDR);
 }
-
-/**
- * Reads the current raw button bitmask from hardware register.
- *
- * Bit 0 = Left button, Bit 1 = Right button, Bit 2 = Middle button.
- * @return Button state bitmask.
- */
-export i32 buttons() {
-    return mem.read_word(MOUSE_BUTTONS_ADDR);
-}
-
-/**
- * Checks whether the left mouse button is currently held down.
- * @return Non-zero if held down, 0 otherwise.
- */
-export i32 left_down() {
-    return buttons() & MOUSE_BUTTON_LEFT;
-}
-
-/**
- * Checks whether the right mouse button is currently held down.
- * @return Non-zero if held down, 0 otherwise.
- */
-export i32 right_down() {
-    return buttons() & MOUSE_BUTTON_RIGHT;
-}
-
-/** Left mouse button bitmask (0x1). */
-export i32 BTN_LEFT() { return MOUSE_BUTTON_LEFT; }
-/** Right mouse button bitmask (0x2). */
-export i32 BTN_RIGHT() { return MOUSE_BUTTON_RIGHT; }
-/** Middle mouse button bitmask (0x4). */
-export i32 BTN_MIDDLE() { return MOUSE_BUTTON_MIDDLE; }
 
 // --- software event queue ---
 // The mouse IRQ handler drains the hardware FIFO into this ring buffer; the

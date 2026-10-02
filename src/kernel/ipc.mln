@@ -33,7 +33,7 @@ export enum ChannelError {
 // 24 words leave 64 inline bytes after an Event's five scalar words. Keeping
 // event text in the ring slot avoids queuing a pointer to reused server memory.
 /** Number of 32-bit words in each message slot. */
-export i32 MSG_WORDS = 24;
+export const i32 MSG_WORDS = 24;
 i32 CHANNELS_MAX = 40;   // the UI protocol takes two per process plus one
 i32 SLOTS = 32;
 
