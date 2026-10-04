@@ -88,10 +88,10 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 //   console_write(pid, buf, count) -> bytes written (buf is a user address)
 //   console_read(pid, buf, count)  -> bytes read, 0 when no input is pending
 //   spawn(path, Result<i32, SpawnError>* out) -> typed launch result
-i32 g_console_write = 0;
-i32 g_console_read = 0;
-i32 g_spawn_handler = 0;
-i32 g_os_handler = 0;
+fn(i32 pid, i32 buf, i32 count) -> i32 g_console_write = 0;
+fn(i32 pid, i32 buf, i32 count) -> i32 g_console_read = 0;
+fn(i32 path, i32 result_out) -> void g_spawn_handler = 0;
+fn(i32 pid, i32 service, i32 args) -> i32 g_os_handler = 0;
 
 /**
  * Registers the OS_CALL handler: every service the OS offers a process
@@ -102,7 +102,7 @@ i32 g_os_handler = 0;
  * process's page tables, which are active for the syscall's duration.
  * @param handler Function pointer taking (pid, service, args) and returning an i32.
  */
-export void set_os_handler(i32 handler) {
+export void set_os_handler(fn(i32 pid, i32 service, i32 args) -> i32 handler) {
     g_os_handler = handler;
 }
 
@@ -111,7 +111,8 @@ export void set_os_handler(i32 handler) {
  * @param write_handler Function pointer taking (pid, buf, count) and returning bytes written.
  * @param read_handler Function pointer taking (pid, buf, count) and returning bytes read.
  */
-export void set_console(i32 write_handler, i32 read_handler) {
+export void set_console(fn(i32 pid, i32 buf, i32 count) -> i32 write_handler,
+                        fn(i32 pid, i32 buf, i32 count) -> i32 read_handler) {
     g_console_write = write_handler;
     g_console_read = read_handler;
 }
@@ -120,7 +121,7 @@ export void set_console(i32 write_handler, i32 read_handler) {
  * Registers the OS-level process spawning hook for SYS_SPAWN.
  * @param handler Function pointer taking (path, Result<i32, SpawnError>* out).
  */
-export void set_spawn_handler(i32 handler) {
+export void set_spawn_handler(fn(i32 path, i32 result_out) -> void handler) {
     g_spawn_handler = handler;
 }
 
@@ -166,7 +167,7 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
         return Ok(0);
     }
     if (fd == 1 || fd == 2) {
-        i32 handler = g_console_write;
+        fn(i32 pid, i32 buf, i32 count) -> i32 handler = g_console_write;
         if (handler != 0) {
             i32 pid = case process.get_current_pid() of {
                 Some(value) -> value;
@@ -199,7 +200,7 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
         return Ok(0);
     }
     if (fd == 0) {
-        i32 handler = g_console_read;
+        fn(i32 pid, i32 buf, i32 count) -> i32 handler = g_console_read;
         if (handler != 0) {
             i32 pid = case process.get_current_pid() of {
                 Some(value) -> value;
@@ -238,7 +239,7 @@ export Result<i32, SyscallError> sys_spawn(i32 path) {
         Some(_) -> _;
         None -> ({ return Err(SyscallError::NoProcess); });
     };
-    i32 handler = g_spawn_handler;
+    fn(i32 path, i32 result_out) -> void handler = g_spawn_handler;
     if (handler == 0) {
         return Err(SyscallError::UnknownSyscall);
     }
@@ -396,7 +397,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         return resume_after_syscall(sp, &result);
     }
     if (sys_nr == Syscall::OS_CALL) {
-        i32 handler = g_os_handler;
+        fn(i32 pid, i32 service, i32 args) -> i32 handler = g_os_handler;
         if (handler == 0) { return Err(SyscallError::UnknownSyscall); }
         i32 pid = case process.get_current_pid() of {
             Some(value) -> value;

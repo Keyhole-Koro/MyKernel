@@ -231,9 +231,8 @@ export void enable_locking() { g_locking = 1; }
 export Result<i32, AllocationError> alloc(i32 size) {
     if (!g_locking) { return alloc_unlocked(size); }
     i32 was = irq.save_disable();
-    Result<i32, AllocationError> result = alloc_unlocked(size);
-    irq.restore(was);
-    return result;
+    defer irq.restore(was);
+    return alloc_unlocked(size);
 }
 
 /**
@@ -247,6 +246,6 @@ export Result<i32, AllocationError> alloc(i32 size) {
 export void free(i32 ptr) {
     if (!g_locking) { free_unlocked(ptr); return; }
     i32 was = irq.save_disable();
+    defer irq.restore(was);
     free_unlocked(ptr);
-    irq.restore(was);
 }

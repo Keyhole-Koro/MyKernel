@@ -25,6 +25,9 @@ import scheduler from "scheduler.mln";
 import { Option } from "@std/core/option.mln";
 import { Result } from "@std/core/result.mln";
 
+/** Opaque 1-based handle for a kernel message channel. Zero is invalid. */
+export newtype ChannelId = i32;
+
 /** Failure while querying a message channel. */
 export enum ChannelError {
     InvalidId(i32),
@@ -46,14 +49,14 @@ i32 g_ring[30720];  // CHANNELS_MAX * SLOTS * MSG_WORDS
  * Allocates the next unused message channel.
  * @return Some(channel_id) with a 1-based ID, or None when all channels are used.
  */
-export Option<i32> create() {
+export Option<ChannelId> create() {
     i32 c = 0;
     while (c < CHANNELS_MAX) {
         if (!g_used[c]) {
             g_used[c] = 1;
             g_head[c] = 0;
             g_tail[c] = 0;
-            return Some(c + 1);
+            return Some(ChannelId(c + 1));
         }
         c++;
     }
@@ -76,9 +79,10 @@ i32 slot_base(i32 c, i32 slot) {
  * @param words Pointer to at least MSG_WORDS message words.
  * @return True if queued; false if the ID is invalid or the queue is full.
  */
-export bool send(i32 ch, i32 *words) {
-    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
-    i32 c = ch - 1;
+export bool send(ChannelId ch, i32 *words) {
+    i32 raw = (i32)ch;
+    if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
+    i32 c = raw - 1;
     i32 next = g_tail[c] + 1;
     if (next >= SLOTS) { next = 0; }
     if (next == g_head[c]) { return false; }
@@ -98,9 +102,10 @@ export bool send(i32 ch, i32 *words) {
  * @param w2 Value expected in message word 2.
  * @return True if a matching message is queued; false for no match or invalid ID.
  */
-export bool has(i32 ch, i32 w1, i32 w2) {
-    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
-    i32 c = ch - 1;
+export bool has(ChannelId ch, i32 w1, i32 w2) {
+    i32 raw = (i32)ch;
+    if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
+    i32 c = raw - 1;
     i32 i = g_head[c];
     while (i != g_tail[c]) {
         i32 at = slot_base(c, i);
@@ -116,9 +121,10 @@ export bool has(i32 ch, i32 w1, i32 w2) {
  * @param ch 1-based channel ID.
  * @return Ok(queued message count), or Err(InvalidId) when the channel ID is invalid.
  */
-export Result<i32, ChannelError> count(i32 ch) {
-    if (ch <= 0 || ch > CHANNELS_MAX) { return Err(ChannelError::InvalidId(ch)); }
-    i32 c = ch - 1;
+export Result<i32, ChannelError> count(ChannelId ch) {
+    i32 raw = (i32)ch;
+    if (raw <= 0 || raw > CHANNELS_MAX) { return Err(ChannelError::InvalidId(raw)); }
+    i32 c = raw - 1;
     i32 n = g_tail[c] - g_head[c];
     if (n < 0) { n = n + SLOTS; }
     return Ok(n);
@@ -129,9 +135,10 @@ export Result<i32, ChannelError> count(i32 ch) {
  * @param ch 1-based channel ID.
  * @return True if a message is queued; false if empty or the ID is invalid.
  */
-export bool pending(i32 ch) {
-    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
-    i32 c = ch - 1;
+export bool pending(ChannelId ch) {
+    i32 raw = (i32)ch;
+    if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
+    i32 c = raw - 1;
     return g_head[c] != g_tail[c];
 }
 
@@ -141,9 +148,10 @@ export bool pending(i32 ch) {
  * @param out Destination for at least MSG_WORDS message words.
  * @return True if a message was copied; false if the ID is invalid or the queue is empty.
  */
-export bool recv(i32 ch, i32 *out) {
-    if (ch <= 0 || ch > CHANNELS_MAX) { return false; }
-    i32 c = ch - 1;
+export bool recv(ChannelId ch, i32 *out) {
+    i32 raw = (i32)ch;
+    if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
+    i32 c = raw - 1;
     if (g_head[c] == g_tail[c]) { return false; }
     i32 at = slot_base(c, g_head[c]);
     i32 i = 0;
@@ -159,7 +167,7 @@ export bool recv(i32 ch, i32 *out) {
  * @param ch Valid 1-based channel ID to wait on.
  * @param out Destination for at least MSG_WORDS message words.
  */
-export void wait(i32 ch, i32 *out) {
+export void wait(ChannelId ch, i32 *out) {
     while (!recv(ch, out)) {
         scheduler.sleep(1);
     }
