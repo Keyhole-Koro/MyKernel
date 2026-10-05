@@ -1,6 +1,6 @@
 package keyboard;
 
-import mem from "../mm/mem.mln";
+import mem from "@kernel/mm/mem.mln";
 // Memory-mapped keyboard registers (must match constants.rs in the emulator).
 // The host window's key presses, releases and translated characters arrive
 // in one hardware FIFO in the order they happened; every arrival raises the

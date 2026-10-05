@@ -1,4 +1,4 @@
-import heap from "../../../src/mm/heap.mln";
+import heap from "@kernel/mm/heap.mln";
 import heap_alloc from "../alloc_support.mln";
 
 // Free in the opposite order (B then A): freeing A should merge with the

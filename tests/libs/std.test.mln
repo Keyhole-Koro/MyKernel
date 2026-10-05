@@ -1,4 +1,4 @@
-import debug from "../../src/debug/debug.mln";
+import debug from "@kernel/debug/debug.mln";
 import str from "@std/text/str.mln";
 import { ParseIntError } from "@std/text/str.mln";
 import { Option } from "@std/core/option.mln";
@@ -10,7 +10,7 @@ import { InlineCString } from "@std/text/inline_c_string.mln";
 import { Result } from "@std/core/result.mln";
 import assert from "@std/testing/assert.mln";
 import { assert_eq, assert_ne, assert_null, assert_not_null, assert_result_ok, assert_result_err } from "@std/testing/assert.mln";
-import serial from "../../src/io/serial.mln";
+import serial from "@kernel/io/serial.mln";
 
 // Exercises the MLC-004 phase 0 standard library on real hardware behaviour:
 // every check runs in the emulator, so byte signedness, pointer arithmetic and

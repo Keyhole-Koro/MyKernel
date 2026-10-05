@@ -1,4 +1,4 @@
-import heap from "../../../src/mm/heap.mln";
+import heap from "@kernel/mm/heap.mln";
 import heap_alloc from "../alloc_support.mln";
 
 // Free two physically-adjacent blocks (A then B) and verify the freed region at

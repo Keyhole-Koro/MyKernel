@@ -1,20 +1,20 @@
 package irq_dispatch;
 
-import mem from "../mm/mem.mln";
+import mem from "@kernel/mm/mem.mln";
 import scheduler from "scheduler.mln";
-import serial from "../io/serial.mln";
-import mouse from "../io/mouse.mln";
-import keyboard from "../io/keyboard.mln";
-import debug from "../debug/debug.mln";
+import serial from "@kernel/io/serial.mln";
+import mouse from "@kernel/io/mouse.mln";
+import keyboard from "@kernel/io/keyboard.mln";
+import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
 import syscall from "syscall.mln";
 import { SyscallError, DispatchOutcome } from "syscall.mln";
-import irq from "../arch/irq.mln";
-import mmu from "../mm/mmu.mln";
-import { irq_trampoline, irq_resume } from "../arch/irq_trampoline.masm";
+import irq from "@kernel/arch/irq.mln";
+import mmu from "@kernel/mm/mmu.mln";
+import { irq_trampoline, irq_resume } from "@kernel/arch/irq_trampoline.masm";
 import { Result, result_take_ok, result_take_err } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
-import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
+import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
 
 /** Memory-mapped hardware register containing pending interrupt-cause bits. */
 i32 IRQ_CAUSE_ADDR = 0x24000084;

@@ -1,4 +1,4 @@
-import heap from "../../../src/mm/heap.mln";
+import heap from "@kernel/mm/heap.mln";
 import heap_alloc from "../alloc_support.mln";
 
 // Freeing a block and allocating the same size reuses it (LIFO free list head).

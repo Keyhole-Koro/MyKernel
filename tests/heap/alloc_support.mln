@@ -1,6 +1,6 @@
 package heap_alloc_support;
 
-import heap from "../../src/mm/heap.mln";
+import heap from "@kernel/mm/heap.mln";
 import { Result } from "@std/core/result.mln";
 
 /** Returns the allocated pointer, or zero to keep legacy success-only tests concise. */

@@ -2,7 +2,7 @@ package process;
 
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
-import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
+import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
 
 /** Failure cases returned by process-table operations. */
 export enum ProcessError {

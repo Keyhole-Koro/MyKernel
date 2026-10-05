@@ -1,8 +1,8 @@
 package test_scheduler;
 
-import heap from "../../src/mm/heap.mln";
-import irq from "../../src/arch/irq.mln";
-import scheduler from "../../src/kernel/scheduler.mln";
+import heap from "@kernel/mm/heap.mln";
+import irq from "@kernel/arch/irq.mln";
+import scheduler from "@kernel/kernel/scheduler.mln";
 import { assert_eq } from "@std/testing/assert.mln";
 import { Result } from "@std/core/result.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";

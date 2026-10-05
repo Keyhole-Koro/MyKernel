@@ -1,8 +1,8 @@
 import assert from "@std/testing/assert.mln";
-import keyboard from "../../src/io/keyboard.mln";
-import mouse from "../../src/io/mouse.mln";
-import { KeyEventType, KeyModifier, KeyCode } from "../../../../contracts/input/keyboard.contract.mln";
-import { PointerButton } from "../../../../contracts/input/pointer.contract.mln";
+import keyboard from "@kernel/io/keyboard.mln";
+import mouse from "@kernel/io/mouse.mln";
+import { KeyEventType, KeyModifier, KeyCode } from "@contracts/input/keyboard.contract.mln";
+import { PointerButton } from "@contracts/input/pointer.contract.mln";
 
 // The keyboard and mouse drivers each keep a software ring buffer that the
 // IRQ handler fills from the hardware FIFO and the compositor drains. These

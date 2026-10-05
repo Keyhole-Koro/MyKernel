@@ -1,19 +1,19 @@
 package test_process;
 
-import debug from "../../src/debug/debug.mln";
-import heap from "../../src/mm/heap.mln";
-import irq from "../../src/arch/irq.mln";
-import mem from "../../src/mm/mem.mln";
-import mmu from "../../src/mm/mmu.mln";
-import scheduler from "../../src/kernel/scheduler.mln";
-import process from "../../src/kernel/process.mln";
-import { ProcessState, ProcessError } from "../../src/kernel/process.mln";
-import { ProcessExitStatus } from "../../../../contracts/process/control.contract.mln";
-import loader from "../../src/kernel/loader.mln";
+import debug from "@kernel/debug/debug.mln";
+import heap from "@kernel/mm/heap.mln";
+import irq from "@kernel/arch/irq.mln";
+import mem from "@kernel/mm/mem.mln";
+import mmu from "@kernel/mm/mmu.mln";
+import scheduler from "@kernel/kernel/scheduler.mln";
+import process from "@kernel/kernel/process.mln";
+import { ProcessState, ProcessError } from "@kernel/kernel/process.mln";
+import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import loader from "@kernel/kernel/loader.mln";
 import { Result, result_take_err } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { assert_eq } from "@std/testing/assert.mln";
-import { LoaderError, MmuError } from "../../../../contracts/process/loader.contract.mln";
+import { LoaderError, MmuError } from "@contracts/process/loader.contract.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
 i32 alloc_or_zero(i32 size) {

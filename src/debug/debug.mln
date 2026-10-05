@@ -1,7 +1,7 @@
 package debug;
 
-import serial from "../io/serial.mln";
-import { halt_cpu } from "../arch/halt.masm";
+import serial from "@kernel/io/serial.mln";
+import { halt_cpu } from "@kernel/arch/halt.masm";
 import str from "@std/text/str.mln";
 import { InlineString } from "@std/text/inline_string.mln";
 

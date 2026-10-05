@@ -1,4 +1,4 @@
-import heap from "../../../src/mm/heap.mln";
+import heap from "@kernel/mm/heap.mln";
 import heap_alloc from "../alloc_support.mln";
 
 // alloc returns distinct, non-zero, non-overlapping blocks.

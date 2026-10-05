@@ -1,7 +1,7 @@
 package heap;
 
 import { heap_image_end } from "heap_sym.masm";
-import debug from "../debug/debug.mln";
+import debug from "@kernel/debug/debug.mln";
 
 // First-fit allocator over the region between the loaded image (`_end`, from
 // heap_image_end()) and _end + HEAP_SIZE, with an address-ordered free list and
@@ -13,8 +13,8 @@ import debug from "../debug/debug.mln";
 // The free list is kept sorted by address so free() can merge neighbours.
 // A block's physical end is  h + HDR_SIZE + size.
 
-import kernel_config from "../kernel/kernel_config.mln";
-import irq from "../arch/irq.mln";
+import kernel_config from "@kernel/kernel/kernel_config.mln";
+import irq from "@kernel/arch/irq.mln";
 import { Result } from "@std/core/result.mln";
 import int32 from "@std/core/int32.mln";
 import { AllocationError } from "@std/memory/allocator.mln";
