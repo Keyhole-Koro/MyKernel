@@ -297,7 +297,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         Result<_, MmuError> map_res = mmu.map_page(pd, cur_page, frame, PTE_USER_RW);
         case map_res of {
             Ok(_) -> _;
-            Err(AllocFailed) -> ({
+            Err(MmuError::AllocFailed) -> ({
                 return Err(SyscallError::OutOfMemory);
             });
             Err(e) -> ({

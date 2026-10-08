@@ -18,6 +18,7 @@ import irq from "@kernel/arch/irq.mln";
 import { Result } from "@std/core/result.mln";
 import int32 from "@std/core/int32.mln";
 import { AllocationError } from "@std/memory/allocator.mln";
+import { Drop } from "@std/core/drop.mln";
 
 i32 HDR_SIZE = 8;
 i32 ALIGN = 4;
@@ -248,4 +249,31 @@ export void free(i32 ptr) {
     i32 was = irq.save_disable();
     defer irq.restore(was);
     free_unlocked(ptr);
+}
+
+/**
+ * A kernel heap allocation owned by one binding: it is freed when the owner
+ * goes out of scope, on every return path including `?`, unless keep() hands
+ * it on first.
+ * @property addr Payload address, or 0 for no allocation.
+ */
+export struct HeapBlock {
+    i32 addr;
+};
+
+export impl Drop for HeapBlock {
+    void (Self *self) drop() {
+        free(self->addr);
+        self->addr = 0;
+    }
+}
+
+/**
+ * Gives up ownership, so the allocation outlives this owner.
+ * @return The payload address, now the caller's to free.
+ */
+export i32 (HeapBlock *self) keep() {
+    i32 addr = self->addr;
+    self->addr = 0;
+    return addr;
 }

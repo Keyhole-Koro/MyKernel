@@ -174,13 +174,7 @@ export Result<_, MmuError> map_page(i32 pd_addr, i32 vaddr, i32 paddr, i32 flags
     i32 pdi = (vaddr >> 22) & 0x3FF;
     i32 pti = (vaddr >> 12) & 0x3FF;
 
-    Result<i32, MmuError> pt_res = get_or_create_page_table(pd_addr, pdi, flags);
-    i32 pt_base = case pt_res of {
-        Ok(pt) -> pt;
-        Err(e) -> ({
-            return Err(e);
-        });
-    };
+    i32 pt_base = get_or_create_page_table(pd_addr, pdi, flags)?;
 
     i32 pte_addr = pt_base + (pti * 4);
     i32 pte = (paddr & FRAME_MASK) | flags | PTE_VALID;
@@ -202,13 +196,7 @@ export Result<_, MmuError> map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 si
     while (offset < size) {
         i32 va = vstart + offset;
         i32 pa = pstart + offset;
-        Result<_, MmuError> res = map_page(pd_addr, va, pa, flags);
-        case res of {
-            Ok(_) -> _;
-            Err(e) -> ({
-                return Err(e);
-            });
-        };
+        map_page(pd_addr, va, pa, flags)?;
         offset = offset + PAGE_SIZE;
     }
     return Ok(_);
@@ -226,62 +214,41 @@ export Result<_, MmuError> map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 si
 // -- the first 4 MB, where its text and data are mapped over the identity
 // range -- is copied for it, so the shared one stays the kernel's.
 i32 g_shared_ready = 0;
-i32 g_shared_pd = 0;      // the directory the shared tables were built in
+i32 g_shared_pd = 0;      // kernel-only directory holding the shared tables
 
 Result<_, MmuError> build_identity_tables(i32 pd_addr) {
     // 1. Map lower 16 MB of physical RAM (Kernel image, heaps)
     // Read/Write/Execute, Kernel Mode only
-    Result<_, MmuError> r1 = map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC);
-    case r1 of {
-        Ok(_)  -> _;
-        Err(e) -> ({
-            return Err(e);
-        });
-    };
+    map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC)?;
 
     // 2. Map high RAM stack region (0x1F000000 .. 0x20000000)
     // Read/Write, Kernel Mode only
-    Result<_, MmuError> r2 = map_range(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE);
-    case r2 of {
-        Ok(_)  -> _;
-        Err(e) -> ({
-            return Err(e);
-        });
-    };
+    map_range(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE)?;
 
     // 3. Map MMIO peripheral space (0x24000000 .. 0x24002000)
     // Read/Write, Kernel Mode only
-    Result<_, MmuError> r3 = map_range(pd_addr, MMIO_BASE, MMIO_BASE, MMIO_SIZE, PTE_VALID | PTE_WRITABLE);
-    case r3 of {
-        Ok(_)  -> _;
-        Err(e) -> ({
-            return Err(e);
-        });
-    };
+    map_range(pd_addr, MMIO_BASE, MMIO_BASE, MMIO_SIZE, PTE_VALID | PTE_WRITABLE)?;
 
     // 4. Map VRAM framebuffer space (0x30000000 .. 0x30300000)
     // Read/Write, Kernel Mode only
-    Result<_, MmuError> r4 = map_range(pd_addr, VRAM_BASE, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE);
-    case r4 of {
-        Ok(_)  -> _;
-        Err(e) -> ({
-            return Err(e);
-        });
-    };
+    map_range(pd_addr, VRAM_BASE, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE)?;
 
     return Ok(_);
 }
 
 export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
     if (!g_shared_ready) {
-        Result<_, MmuError> built = build_identity_tables(pd_addr);
-        case built of {
-            Ok(_)  -> _;
-            Err(e) -> ({ return Err(e); });
+        // The shared tables live in a directory of their own. Building them
+        // in the first process's directory shared that process's later user
+        // mappings too: every process got its stack page table, so loading
+        // one process remapped every other process's stack.
+        i32 template = case create_page_directory() of {
+            Some(d) -> d;
+            None -> ({ return Err(MmuError::AllocFailed); });
         };
-        g_shared_pd = pd_addr;
+        build_identity_tables(template)?;
+        g_shared_pd = template;
         g_shared_ready = 1;
-        return Ok(_);
     }
     // Share every kernel table; give this directory its own copy of the
     // first one, the only one a process overwrites entries in.

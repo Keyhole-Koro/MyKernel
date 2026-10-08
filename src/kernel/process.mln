@@ -209,8 +209,7 @@ export Option<ProcessState> get_state(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<ProcessState> ret = Some(p.state);
-            return ret;
+            return Some(p.state);
         });
         None -> ({ return None; });
     };
@@ -245,8 +244,7 @@ export Option<i32> get_pdbr(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<i32> ret = Some(p.pdbr);
-            return ret;
+            return Some(p.pdbr);
         });
         None -> ({ return None; });
     };
@@ -281,8 +279,7 @@ export Option<i32> get_kernel_stack_top(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<i32> ret = Some(p.kernel_stack_top);
-            return ret;
+            return Some(p.kernel_stack_top);
         });
         None -> ({ return None; });
     };
@@ -317,8 +314,7 @@ export Option<i32> get_kernel_sp(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<i32> ret = Some(p.kernel_sp);
-            return ret;
+            return Some(p.kernel_sp);
         });
         None -> ({ return None; });
     };
@@ -353,8 +349,7 @@ export Option<i32> get_user_sp(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<i32> ret = Some(p.user_sp);
-            return ret;
+            return Some(p.user_sp);
         });
         None -> ({ return None; });
     };
@@ -389,8 +384,7 @@ export Option<i32> get_user_entry(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<i32> ret = Some(p.user_entry);
-            return ret;
+            return Some(p.user_entry);
         });
         None -> ({ return None; });
     };
@@ -425,8 +419,7 @@ export Option<i32> get_heap_break(i32 pid) {
     };
     case g_procs[idx] of {
         Some(p) -> ({
-            Option<i32> ret = Some(p.heap_break);
-            return ret;
+            return Some(p.heap_break);
         });
         None -> ({ return None; });
     };
@@ -463,8 +456,7 @@ export Option<ProcessExitStatus> get_exit_status(i32 pid) {
         Some(p) -> ({
             case p.state of {
                 Zombie(status) -> ({
-                    Option<ProcessExitStatus> ret = Some(status);
-                    return ret;
+                    return Some(status);
                 });
                 _ -> ({
                     return None;

@@ -3,6 +3,7 @@ package loader;
 import mem from "@kernel/mm/mem.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import heap from "@kernel/mm/heap.mln";
+import { HeapBlock } from "@kernel/mm/heap.mln";
 import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
 import { ProcessState } from "process.mln";
@@ -12,6 +13,7 @@ import { Option } from "@std/core/option.mln";
 import { MmuError, LoaderError } from "@contracts/process/loader.contract.mln";
 import { ProcessError } from "process.mln";
 import { SchedulerError } from "scheduler.mln";
+import { Drop } from "@std/core/drop.mln";
 
 /** Fallback virtual base used for legacy flat user binaries. */
 i32 USER_CODE_BASE  = 0x40000000;
@@ -113,33 +115,43 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
             }
         }
 
-        Result<_, MmuError> map_res = mmu.map_page(pd, vaddr_base + offset, frame, pte_flags);
-        case map_res of {
-            Ok(_) -> _;
-            Err(AllocFailed) -> ({
-                debug.println("loader: out of memory for page table");
-                return Err(LoaderError::OutOfMemory);
-            });
-            Err(e) -> ({
-                debug.println("loader: mmu error mapping segment");
-                return Err(LoaderError::Mmu(e));
-            });
-        };
+        // An MMU failure becomes a LoaderError through the contract's From.
+        mmu.map_page(pd, vaddr_base + offset, frame, pte_flags)?;
         offset = offset + 4096;
     }
     return Ok(_);
 }
 
 /**
- * Releases an allocated process during error cleanup.
- * @param pid Process ID to release.
+ * A process slot claimed while a process is being loaded. Every failed load
+ * returns its slot: the slot is released when the owner goes out of scope,
+ * unless keep() hands the loaded process over first.
+ * @property pid Process ID of the claimed slot, or 0 once kept.
  */
-void release_proc(i32 pid) {
-    Result<_, ProcessError> release = process.free_proc(pid);
-    case release of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared during cleanup"); });
-    };
+struct ProcessSlot {
+    i32 pid;
+};
+
+impl Drop for ProcessSlot {
+    void (Self *self) drop() {
+        if (self->pid == 0) { return; }
+        Result<_, ProcessError> release = process.free_proc(self->pid);
+        case release of {
+            Ok(_) -> _;
+            Err(_) -> ({ debug.panic("loader: allocated process disappeared during cleanup"); });
+        };
+        self->pid = 0;
+    }
+}
+
+/**
+ * Hands the loaded process over; the slot is no longer released.
+ * @return The process ID.
+ */
+i32 (ProcessSlot *self) keep() {
+    i32 pid = self->pid;
+    self->pid = 0;
+    return pid;
 }
 
 /**
@@ -167,30 +179,17 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             debug.panic("loader: alloc_proc returned an invalid file descriptor error");
         });
     };
+    ProcessSlot slot = ProcessSlot { pid: pid };
 
     // 1. Create Page Directory and map kernel regions identity
     i32 pd = case mmu.create_page_directory() of {
         Some(d) -> d;
         None -> ({
             debug.println("loader: failed to allocate page directory");
-            release_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
     };
-    Result<_, MmuError> id_res = mmu.setup_identity_kernel_mapping(pd);
-    case id_res of {
-        Ok(_) -> _;
-        Err(AllocFailed) -> ({
-            debug.println("loader: failed to setup identity kernel mapping");
-            release_proc(pid);
-            return Err(LoaderError::OutOfMemory);
-        });
-        Err(e) -> ({
-            debug.printf("loader: mmu error setting up identity mapping, pd=0x%x\n", pd);
-            release_proc(pid);
-            return Err(LoaderError::Mmu(e));
-        });
-    };
+    mmu.setup_identity_kernel_mapping(pd)?;
     Result<_, ProcessError> set_pdbr = process.set_pdbr(pid, pd);
     case set_pdbr of {
         Ok(_) -> _;
@@ -230,21 +229,15 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         // the segments are laid out the same, so both load alike.
         if (version != 1 && version != 2) {
             debug.println("loader: unsupported MBIN version");
-            release_proc(pid);
-            LoaderError cause = InvalidHeader(version);
-            return Err(cause);
+            return Err(LoaderError::InvalidHeader(version));
         }
         if (text_offset + text_size > code_size) {
             debug.println("loader: invalid text section bounds");
-            release_proc(pid);
-            LoaderError cause = InvalidBounds(code_size);
-            return Err(cause);
+            return Err(LoaderError::InvalidBounds(code_size));
         }
         if (data_offset + data_size > code_size) {
             debug.println("loader: invalid data section bounds");
-            release_proc(pid);
-            LoaderError cause = InvalidBounds(code_size);
-            return Err(cause);
+            return Err(LoaderError::InvalidBounds(code_size));
         }
 
         debug.printf("loader: loading MBIN v%d (entry=0x%x, text_sz=%d, data_sz=%d, bss_sz=%d)\n",
@@ -253,39 +246,18 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
 
         // Map Text segment as RX (Read + Execute, No Write). Globals live
         // in the data segment (the compiler's `.data`), so text is code only.
-        Result<_, LoaderError> map_text = map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX);
-        case map_text of {
-            Ok(_)  -> _;
-            Err(e) -> ({
-                release_proc(pid);
-                return Err(e);
-            });
-        };
+        map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX)?;
 
         // Map Data segment as RW (Read + Write, No Execute)
         i32 data_vaddr = code_base + align_up_4k(text_size);
         if (data_size > 0) {
-            Result<_, LoaderError> map_data = map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW);
-            case map_data of {
-                Ok(_)  -> _;
-                Err(e) -> ({
-                    release_proc(pid);
-                    return Err(e);
-                });
-            };
+            map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW)?;
         }
 
         // Map BSS segment as RW (Read + Write, No Execute)
         if (bss_size > 0) {
             i32 bss_vaddr = data_vaddr + align_up_4k(data_size);
-            Result<_, LoaderError> map_bss = map_segment(pd, bss_vaddr, 0, bss_size, PTE_USER_RW);
-            case map_bss of {
-                Ok(_)  -> _;
-                Err(e) -> ({
-                    release_proc(pid);
-                    return Err(e);
-                });
-            };
+            map_segment(pd, bss_vaddr, 0, bss_size, PTE_USER_RW)?;
         }
 
         // Calculate heap break after loaded segments
@@ -296,26 +268,11 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     } else {
         // Legacy flat binary fallback: map entire buffer as RWX
         debug.println("loader: legacy flat binary detected, mapping as RWX");
-        Result<_, LoaderError> map_flat = map_segment(pd, USER_CODE_BASE, code_ptr, code_size, PTE_USER_RWX);
-        case map_flat of {
-            Ok(_)  -> _;
-            Err(e) -> ({
-                release_proc(pid);
-                return Err(e);
-            });
-        };
+        map_segment(pd, USER_CODE_BASE, code_ptr, code_size, PTE_USER_RWX)?;
     }
 
     // 3. Allocate the user stack pages (RW, No Execute), zero-filled
-    Result<_, LoaderError> map_stack = map_segment(pd, USER_STACK_BASE, 0, USER_STACK_PAGES * 4096, PTE_USER_RW);
-    case map_stack of {
-        Ok(_)  -> _;
-        Err(e) -> ({
-            debug.println("loader: cannot map the user stack");
-            release_proc(pid);
-            return Err(e);
-        });
-    };
+    map_segment(pd, USER_STACK_BASE, 0, USER_STACK_PAGES * 4096, PTE_USER_RW)?;
 
     // 4. Allocate kernel stack. Syscalls run on it: the OS_CALL handler
     // reaches the filesystem (SSD I/O) and the UI channels from there, so
@@ -327,10 +284,11 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Ok(p) -> p;
         Err(_) -> ({
             debug.println("loader: out of memory for kernel stack");
-            release_proc(pid);
             return Err(LoaderError::OutOfMemory);
         });
     };
+    // Freed if a later step fails; the process keeps it once it is ready.
+    HeapBlock kstack_block = HeapBlock { addr: kstack };
     i32 kstack_top = kstack + KSTACK_BYTES;
     Result<_, ProcessError> set_kstack_top = process.set_kernel_stack_top(pid, kstack_top);
     case set_kstack_top of {
@@ -386,7 +344,6 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Ok(_) -> _;
         Err(_) -> ({
             debug.println("loader: failed to spawn task");
-            release_proc(pid);
             return Err(LoaderError::SpawnTaskFailed);
         });
     };
@@ -397,5 +354,6 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
         Ok(_) -> _;
         Err(_) -> ({ debug.panic("loader: allocated process disappeared while marking ready"); });
     };
-    return Ok(pid);
+    kstack_block.keep();
+    return Ok(slot.keep());
 }

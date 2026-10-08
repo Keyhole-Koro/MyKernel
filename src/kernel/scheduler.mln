@@ -514,17 +514,19 @@ export void init() {
         i++;
     }
 
-    // Build the dedicated idle context. 512 bytes is plenty: the wfi loop
-    // itself is a leaf, and an interrupt frame (PC/SR + 10 registers) is the
-    // only thing ever pushed on top of it.
-    i32 idle_stack = case heap.alloc(512) of {
+    // Build the dedicated idle context. The wfi loop itself is a leaf, but
+    // an interrupt taken while idle runs the whole dispatcher on this stack
+    // (irq_trampoline does not switch stacks): the scheduler, input drains,
+    // and timers. 512 bytes overflowed into the neighbouring heap block.
+    i32 IDLE_STACK_BYTES = 8192;
+    i32 idle_stack = case heap.alloc(IDLE_STACK_BYTES) of {
         Ok(p) -> p;
         Err(_) -> ({
             debug.println("scheduler: FATAL: no memory for the idle stack");
             return;
         });
     };
-    idle_sp = build_context(idle_main, idle_stack + 512);
+    idle_sp = build_context(idle_main, idle_stack + IDLE_STACK_BYTES);
 
     // Task 0 is the current context: the first timer interrupt saves our SP
     // into task_sps[0], so tasks_initialized must be set before we enter the loop.

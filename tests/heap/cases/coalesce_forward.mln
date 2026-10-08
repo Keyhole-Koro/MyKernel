@@ -1,5 +1,5 @@
 import heap from "@kernel/mm/heap.mln";
-import heap_alloc from "../alloc_support.mln";
+import heap_alloc_support from "../alloc_support.mln";
 
 // Free two physically-adjacent blocks (A then B) and verify the freed region at
 // A grows to span both blocks (forward merge with the following free block).
@@ -9,9 +9,9 @@ import heap_alloc from "../alloc_support.mln";
 // 64 + 8 (B's header) + 64 = 136.
 i32 main() {
     heap.init();
-    i32 a = heap_alloc.alloc_or_zero(64);
-    i32 b = heap_alloc.alloc_or_zero(64);
-    i32 c = heap_alloc.alloc_or_zero(64); // guard so B is not the heap tail
+    i32 a = heap_alloc_support.alloc_or_zero(64);
+    i32 b = heap_alloc_support.alloc_or_zero(64);
+    i32 c = heap_alloc_support.alloc_or_zero(64); // guard so B is not the heap tail
     if (a == 0) { return 91; }
     if (b == 0) { return 92; }
     if (c == 0) { return 93; }
