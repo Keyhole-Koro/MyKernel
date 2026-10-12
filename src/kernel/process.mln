@@ -203,10 +203,7 @@ export void clear_current_pid() {
  * @return Some(state) if found, or None if PID is invalid/unallocated.
  */
 export Option<ProcessState> get_state(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.state);
@@ -238,10 +235,7 @@ export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
  * @return Some(pdbr) if found, or None if invalid.
  */
 export Option<i32> get_pdbr(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.pdbr);
@@ -273,10 +267,7 @@ export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
  * @return Some(top) address if found, or None if invalid.
  */
 export Option<i32> get_kernel_stack_top(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.kernel_stack_top);
@@ -308,10 +299,7 @@ export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
  * @return Some(sp) if found, or None if invalid.
  */
 export Option<i32> get_kernel_sp(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.kernel_sp);
@@ -343,10 +331,7 @@ export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
  * @return Some(usp) if found, or None if invalid.
  */
 export Option<i32> get_user_sp(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.user_sp);
@@ -378,10 +363,7 @@ export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
  * @return Some(entry) if found, or None if invalid.
  */
 export Option<i32> get_user_entry(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.user_entry);
@@ -413,10 +395,7 @@ export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
  * @return Some(heap_break) if found, or None if invalid.
  */
 export Option<i32> get_heap_break(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             return Some(p.heap_break);
@@ -448,10 +427,7 @@ export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
  * @return Some(status) if process is in Zombie state, or None otherwise.
  */
 export Option<ProcessExitStatus> get_exit_status(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({
             case p.state of {
@@ -493,10 +469,7 @@ export Result<_, ProcessError> set_exit_status(i32 pid, ProcessExitStatus status
  * @return Some(task_id) if linked, or None if unlinked/invalid.
  */
 export Option<i32> get_task_id(i32 pid) {
-    i32 idx = case index_for_pid(pid) of {
-        Ok(index) -> index;
-        Err(_) -> ({ return None; });
-    };
+    i32 idx = index_for_pid(pid).ok()?;
     case g_procs[idx] of {
         Some(p) -> ({ return p.task_id; });
         None -> ({ return None; });
