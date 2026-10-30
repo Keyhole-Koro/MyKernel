@@ -7,6 +7,7 @@ import mem from "@kernel/mm/mem.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import scheduler from "@kernel/kernel/scheduler.mln";
 import process from "@kernel/kernel/process.mln";
+import thread from "@kernel/kernel/thread.mln";
 import { ProcessState, ProcessError } from "@kernel/kernel/process.mln";
 import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import loader from "@kernel/kernel/loader.mln";
@@ -231,7 +232,7 @@ void process_lifecycle_and_protection() {
     // current process is Option::None, while an invalid PID is a Result error
     // with the offending value.  This prevents the old 0/-1/Unused sentinels
     // from being mistaken for valid process data by callers.
-    Option<i32> no_current = process.get_current_pid();
+    Option<i32> no_current = thread.current_pid();
     bool has_current = case no_current of { Some(_) -> true; None -> false; };
     assert_eq<bool>(has_current, false, "initial current process must be None");
     Option<ProcessState> no_state = process.get_state(99);

@@ -12,16 +12,21 @@ sys_exit:
 sys_read:
   movi r1, 2
   syscall
+  load r3, sp
+  store r3, r2
   mov pc, lr
 
 sys_write:
   movi r1, 3
   syscall
+  load r3, sp
+  store r3, r2
   mov pc, lr
 
 sys_sbrk:
   movi r1, 7
   syscall
+  store r6, r2
   mov pc, lr
 
 sys_yield:

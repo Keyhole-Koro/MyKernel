@@ -3,149 +3,62 @@ package scheduler;
 import debug from "@kernel/debug/debug.mln";
 import mem from "@kernel/mm/mem.mln";
 import heap from "@kernel/mm/heap.mln";
-import serial from "@kernel/io/serial.mln";
-import mouse from "@kernel/io/mouse.mln";
 import process from "process.mln";
-import { ProcessState, ProcessError } from "process.mln";
+import thread from "thread.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import { wfi_cpu } from "@kernel/arch/wfi.masm";
-import { halt_cpu } from "@kernel/arch/halt.masm";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 
-/** Failure cases returned by task-creation scheduler operations. */
+/** Failure cases returned by kernel-thread creation. */
 export enum SchedulerError {
-    OutOfMemory,   // Memory allocation failed for task stack
-    TaskSlotFull,  // Task slots exhausted (MAX_TASKS reached)
+    OutOfMemory,
+    TaskSlotFull,
 }
 
-// Bumped by the timer interrupt handler.
 i32 g_irq_count = 0;
-
-import kernel_config from "kernel_config.mln";
-
-i32 task_sps[256];
-i32 task_pid[256]; // 0 = kernel task, >0 = user process PID
-i32 current_task = 0;
-i32 tasks_initialized = 0;
-
-i32 MMU_PDBR_ADDR  = 0x24000104;
+i32 g_initialized = 0;
+i32 idle_sp = 0;
+i32 deferred_cleanup_slot = -1;
+i32 MMU_PDBR_ADDR = 0x24000104;
 i32 KERNEL_SP_ADDR = 0x24000110;
 
-// Task state constants
-enum TaskState {
-    TASK_RUNNABLE,
-    TASK_SLEEPING,
-    TASK_EMPTY,
-    TASK_BLOCKED
-}
-
-// Task state management
-i32 task_state[256];
-i32 task_wake_tick[256];  // Tick when the task should wake up
-i32 task_notification_pending[256]; // sticky bits already delivered
-i32 task_notification_armed[256];   // bits whose readiness was observed empty/full
-i32 task_notification_wait[256];    // bits the blocked task is sleeping on
-
-// Dedicated idle context. When no task is runnable the scheduler switches to
-// this context (a wfi loop) instead of resuming a sleeping task's stack, so
-// "some task is always current" is no longer an implicit assumption.
-// current_task == IDLE_TASK while it runs.
-i32 IDLE_TASK = -1;
-i32 idle_sp = 0;
-
-/**
- * Asserts that a process state update succeeded, panicking if invalid.
- * @param update Result of the process table update.
- */
-void require_process_update(Result<_, ProcessError> update) {
-    case update of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("scheduler: task references an invalid process"); });
-    };
-}
-
-/**
- * Unwraps an optional process table value, panicking if None.
- * @param value Optional process attribute value.
- * @return Unwrapped integer value.
- */
-i32 require_process_value(Option<i32> value) {
-    return case value of {
-        Some(result) -> result;
-        None -> ({
-            debug.panic("scheduler: task references an invalid process");
-            0;
-        });
-    };
-}
-
-/**
- * Main function for the idle kernel task; waits for interrupts indefinitely.
- */
+/** Runs the non-returning WFI fallback context while no TCB is runnable. */
 void idle_main() {
-    while (1) {
-        wfi_cpu();
-    }
+    while (1) { wfi_cpu(); }
 }
 
-// Interrupt handler invoked (via irq_trampoline.masm) on each timer interrupt.
-// It receives the current stack pointer as an argument, saves it for the
-// current task, and returns the stack pointer of the next task to resume.
-//
-// Exported so the trampoline can resolve the label; MyLang mangles it to
-// `scheduler_irq_handler`, which irq_trampoline.masm imports.
+/** @return Scheduler timer-tick count used by sleep and futex deadlines. */
+export i32 ticks() { return g_irq_count; }
+
 /**
- * Returns the current elapsed timer tick count.
- * @return Number of timer interrupts since boot.
+ * Exposes a stable nonzero execution-context index to the mocking runtime.
+ * @return Current TCB slot plus one; zero represents the idle context.
  */
-export i32 ticks() {
-    return g_irq_count;
-}
+export i32 current_context() { return thread.current_slot() + 1; }
 
 /**
- * Returns a stable identifier for the current execution context.
- *
- * Used primarily by tests to distinguish between contexts.
- * @return Context index (0 for idle, >0 for normal tasks).
- */
-export i32 current_context() {
-    return current_task + 1;
-}
-
-// Number of task slots actually in use (highest spawned index + 1). The tick
-// handler runs at every timer interrupt (1 kHz real time), so it must not scan
-// all MAX_TASKS slots: with MyLang's verbose codegen a 256-slot double scan
-// costs tens of thousands of instructions, and once the handler exceeds one
-// timer period the CPU does nothing but service interrupts (total starvation).
-// Scanning only the live slots keeps the handler a few hundred instructions.
-i32 g_task_count = 0;
-
-/**
- * Finds the index of the next runnable task in the scheduler table.
- * @param start Starting index to search from.
- * @param count Number of task slots to scan.
- * @return Some(task_idx) if a runnable task is found, or None if all are sleeping/blocked/empty.
+ * Finds the next Runnable TCB by round-robin slot order.
+ * @param start First slot to inspect.
+ * @param count Number of slots within the current high-water range.
+ * @return Some(runnable slot), or None when every candidate is unavailable.
  */
 Option<i32> find_next_runnable(i32 start, i32 count) {
-    i32 next_task = start;
+    if (count <= 0) { return None; }
+    i32 slot = start;
     i32 checked = 0;
     while (checked < count) {
-        if (task_state[next_task] == TASK_RUNNABLE) {
-            return Some(next_task);
-        }
-        next_task = (next_task + 1) % count;
+        if (thread.runnable(slot)) { return Some(slot); }
+        slot = (slot + 1) % count;
         checked++;
     }
     return None;
 }
 
 /**
- * Timer interrupt handler that performs preemptive round-robin scheduling.
- *
- * Updates tick count, wakes sleeping tasks, saves current task context, switches MMU page directories if necessary, and returns the next task's stack pointer.
- * @param sp Stack pointer of the interrupted context frame.
- * @return Stack pointer of the next task to resume.
+ * Advances scheduler time and chooses the context to resume after a timer IRQ.
+ * @param sp Saved interrupt-frame SP of the interrupted context.
+ * @return Saved kernel SP of the next TCB, or the idle frame when none is runnable.
  */
 export i32 tick(i32 sp) {
     g_irq_count++;
@@ -153,388 +66,210 @@ export i32 tick(i32 sp) {
 }
 
 /**
- * Picks the next task without counting a tick: what a syscall that gives
- * the CPU away (YIELD, EXIT) calls, so the clock only advances on real
- * timer interrupts.
- * @param sp Stack pointer of the interrupted context frame.
- * @return Stack pointer of the next task to resume.
+ * Saves the current TCB, performs safe deferred cleanup, and selects a next TCB.
+ * Switch-in also installs the owner Process PDBR and per-thread user SP.
+ * @param sp Saved interrupt-frame SP of the context being switched out.
+ * @return Saved kernel SP that irq_resume must restore.
  */
 export i32 reschedule(i32 sp) {
-    if (!tasks_initialized) {
-        return sp;
+    if (!g_initialized) { return sp; }
+
+    // This invocation runs on a different stack from the TCB retired by the
+    // preceding switch, so its stack can finally be released safely.
+    if (deferred_cleanup_slot >= 0) {
+        i32 retired = deferred_cleanup_slot;
+        deferred_cleanup_slot = -1;
+        thread.finish_deferred_cleanup(retired);
     }
 
-    // Check if any sleeping tasks should be woken up
-    i32 count = g_task_count;
+    i32 count = thread.high_water();
     i32 i = 0;
     while (i < count) {
-        if (task_state[i] == TASK_SLEEPING) {
-            if (g_irq_count >= task_wake_tick[i]) {
-                task_state[i] = TASK_RUNNABLE; // Wake up!
-            }
-        }
+        if (thread.sleeping_until(i, g_irq_count)) { thread.make_runnable(i); }
+        thread.wake_futex_timeout(i, g_irq_count);
         i++;
     }
 
-    // Save the interrupted context: a real task's slot, or the idle context.
-    if (current_task >= 0) {
-        task_sps[current_task] = sp;
-        i32 cur_pid = task_pid[current_task];
-        if (cur_pid > 0) {
-            Result<_, ProcessError> save_user_sp = process.set_user_sp(cur_pid, mem.read_word(KERNEL_SP_ADDR));
-            require_process_update(save_user_sp);
-            Option<ProcessState> current_state = process.get_state(cur_pid);
-            case current_state of {
-                Some(state) -> ({
-                    case state of {
-                        Running -> ({
-                            ProcessState ready_state = Ready;
-                            Result<_, ProcessError> make_ready = process.set_state(cur_pid, ready_state);
-                            require_process_update(make_ready);
-                        });
-                        _ -> _;
-                    };
-                });
-                None -> ({ debug.panic("scheduler: current task references an invalid process"); });
-            };
-        }
+    i32 current = thread.current_slot();
+    if (current >= 0) {
+        thread.switch_out(current, sp, mem.read_word(KERNEL_SP_ADDR));
+        if (thread.exiting(current)) { deferred_cleanup_slot = current; }
     } else {
         idle_sp = sp;
     }
 
-    // Round-robin scan starting after the current task (from 0 when idle).
     i32 start = 0;
-    if (current_task >= 0) { start = (current_task + 1) % count; }
-    Option<i32> next_opt = find_next_runnable(start, count);
-    case next_opt of {
-        Some(next_task) -> ({
-            current_task = next_task; // Switch to next task
-            i32 next_pid = task_pid[next_task];
-            if (next_pid > 0) {
-                mem.write_word(KERNEL_SP_ADDR, require_process_value(process.get_user_sp(next_pid)));
-                mem.write_word(MMU_PDBR_ADDR, require_process_value(process.get_pdbr(next_pid)));
-                Result<_, ProcessError> select_process = process.set_current_pid(next_pid);
-                require_process_update(select_process);
-                ProcessState running_state = Running;
-                Result<_, ProcessError> make_running = process.set_state(next_pid, running_state);
-                require_process_update(make_running);
-            } else {
-                process.clear_current_pid();
-            }
-            return task_sps[next_task];
+    if (current >= 0 && count > 0) { start = (current + 1) % count; }
+    Option<i32> next = find_next_runnable(start, count);
+    return case next of {
+        Some(slot) -> ({
+            thread.set_current_slot(slot);
+            case thread.owner_pid_at(slot) of {
+                Some(pid) -> ({
+                    Option<i32> pdbr = process.get_pdbr(pid);
+                    case pdbr of {
+                        Some(value) -> ({ mem.write_word(MMU_PDBR_ADDR, value); });
+                        None -> ({ debug.panic("scheduler: thread owner process is missing"); });
+                    };
+                    mem.write_word(KERNEL_SP_ADDR, thread.saved_user_sp(slot));
+                });
+                None -> ({
+                    i32 kernel_pdbr = mmu.kernel_page_directory();
+                    if (kernel_pdbr != 0) { mem.write_word(MMU_PDBR_ADDR, kernel_pdbr); }
+                    mem.write_word(KERNEL_SP_ADDR, 0);
+                });
+            };
+            thread.make_running(slot);
+            thread.saved_kernel_sp(slot);
         });
-        None -> _;
+        None -> ({
+            thread.set_current_slot(-1);
+            idle_sp;
+        });
     };
-
-    // Nothing is runnable: run the dedicated idle context until a wake-up.
-    current_task = IDLE_TASK;
-    process.clear_current_pid();
-    return idle_sp;
 }
 
 /**
- * A YIELD syscall: the calling process sleeps until the next tick rather
- * than running again as soon as the round-robin comes back to it -- a
- * polling loop (an app waiting for a reply or an event) would otherwise
- * burn every slice the CPU has. Called from the syscall path with the
- * interrupted frame; returns the frame to resume, like tick().
- * @param sp Stack pointer of the interrupted context frame.
- * @return Stack pointer of the next task to resume.
+ * Blocks the current TCB until the next tick and schedules another context.
+ * @param sp Saved interrupt-frame SP of the yielding TCB.
+ * @return Saved kernel SP of the next context to resume.
  */
 export i32 yield_until_tick(i32 sp) {
-    if (current_task >= 0) {
-        task_wake_tick[current_task] = g_irq_count + 1;
-        task_state[current_task] = TASK_SLEEPING;
-    }
+    i32 current = thread.current_slot();
+    if (current >= 0) { thread.sleep_until(current, g_irq_count + 1); }
     return reschedule(sp);
 }
 
-/**
- * Arms a sticky notification for the current task.
- *
- * Queue endpoints call this while handling the failed readiness check. Since
- * syscalls run with interrupts disabled, the check and arm are atomic with
- * respect to producers on this single-core kernel.
- * @param mask Notification bit or bits to arm; zero is ignored.
- */
+/** @param mask Nonzero notification bits to arm on the current TCB. */
 export void arm_notification(i32 mask) {
-    if (current_task < 0 || !mask) { return; }
-    task_notification_armed[current_task] = task_notification_armed[current_task] | mask;
+    thread.arm_notification(thread.current_slot(), mask);
 }
 
-/**
- * Clears armed and pending readiness bits after the current task completes an operation.
- * @param mask Notification bit or bits to clear; zero is ignored.
- */
+/** @param mask Notification bits to clear from armed and pending state. */
 export void disarm_notification(i32 mask) {
-    if (current_task < 0 || !mask) { return; }
-    task_notification_armed[current_task] = task_notification_armed[current_task] & (~mask);
-    task_notification_pending[current_task] = task_notification_pending[current_task] & (~mask);
+    thread.disarm_notification(thread.current_slot(), mask);
 }
 
 /**
- * Blocks the current task until one of `mask`'s armed notification bits is
- * delivered. A bit delivered after the endpoint check but before this syscall
- * remains pending and is consumed without sleeping.
- *
- * @param sp Saved interrupt frame of the calling task.
- * @param mask Notification bits to wait for.
- * @return Stack pointer of the context that should run next.
+ * Returns immediately for pending bits or blocks the current TCB for a notification.
+ * @param sp Saved syscall interrupt-frame SP.
+ * @param mask Notification bits accepted by the caller.
+ * @param notification_out Kernel pointer receiving immediately consumed bits.
+ * @return sp for an immediate result, or the next scheduled context's SP after blocking.
  */
-export i32 wait_notification(i32 sp, i32 mask) {
-    if (current_task < 0 || !mask) { return sp; }
-    i32 me = current_task;
-    task_notification_armed[me] = task_notification_armed[me] | mask;
-    i32 ready = task_notification_pending[me] & mask;
+export i32 wait_notification(i32 sp, i32 mask, i32 *notification_out) {
+    *notification_out = 0;
+    i32 current = thread.current_slot();
+    if (current < 0 || mask == 0) { return sp; }
+    i32 ready = thread.take_notification(current, mask);
     if (ready) {
-        task_notification_pending[me] = task_notification_pending[me] & (~ready);
-        task_notification_armed[me] = task_notification_armed[me] & (~mask);
+        *notification_out = ready;
         return sp;
     }
-    task_notification_wait[me] = mask;
-    task_state[me] = TASK_BLOCKED;
+    thread.block_notification(current, mask);
     return reschedule(sp);
 }
 
-// Delivers bits to one task. Only armed bits are retained: if data was queued
-// before a consumer observed the queue empty, the consumer will find the data
-// directly and does not need a notification.
 /**
- * Delivers matching armed notification bits to one task and wakes it if it is waiting.
- * @param task_idx Scheduler task-table index.
- * @param mask Notification bit or bits being delivered.
- */
-void notify_task(i32 task_idx, i32 mask) {
-    if (task_idx < 0 || task_idx >= g_task_count) { return; }
-    if (task_state[task_idx] == TASK_EMPTY) { return; }
-    i32 matched = task_notification_armed[task_idx] & mask;
-    if (!matched) { return; }
-    task_notification_pending[task_idx] = task_notification_pending[task_idx] | matched;
-    if (task_state[task_idx] == TASK_BLOCKED &&
-        (task_notification_wait[task_idx] & matched)) {
-        i32 waited = task_notification_wait[task_idx];
-        i32 reason = task_notification_pending[task_idx] & waited;
-        task_notification_pending[task_idx] = task_notification_pending[task_idx] & (~reason);
-        task_notification_armed[task_idx] = task_notification_armed[task_idx] & (~waited);
-        task_notification_wait[task_idx] = 0;
-        task_state[task_idx] = TASK_RUNNABLE;
-    }
-}
-
-/**
- * Delivers a transport notification to armed tasks belonging to a process.
- * @param pid Process ID whose tasks should receive the notification.
- * @param mask Notification bit or bits being delivered.
+ * Delivers notification bits to every TCB owned by a process.
+ * @param pid Destination process.
+ * @param mask Notification bits produced by the event source.
  */
 export void notify_pid(i32 pid, i32 mask) {
     i32 i = 0;
-    while (i < g_task_count) {
-        if (task_pid[i] == pid) { notify_task(i, mask); }
+    while (i < thread.high_water()) {
+        case thread.owner_pid_at(i) of {
+            Some(owner) -> ({ if (owner == pid) { thread.notify(i, mask); } });
+            None -> _;
+        };
         i++;
     }
 }
 
-/**
- * Delivers a global notification to all tasks that armed matching bits.
- * Used when a shared request ring gains space.
- * @param mask Notification bit or bits being delivered.
- */
+/** @param mask Notification bits broadcast to every TCB that armed them. */
 export void notify_armed(i32 mask) {
     i32 i = 0;
-    while (i < g_task_count) {
-        notify_task(i, mask);
+    while (i < thread.high_water()) {
+        thread.notify(i, mask);
         i++;
     }
 }
 
+/** Kernel-side sleep used outside the syscall frame path. */
 /**
- * Suspends execution of the current task for a specified duration in timer ticks.
- * @param ticks Number of timer ticks to sleep.
+ * Sleeps the current kernel context for at least the requested tick count.
+ * Timer IRQ scheduling switches away while this function waits in WFI.
+ * @param ticks_to_sleep Relative nonnegative scheduler tick count.
  */
-export void sleep(i32 ticks) {
-    // Capture our own slot: current_task changes under us once the scheduler
-    // switches away, and only our own state says when we may run on.
-    i32 me = current_task;
-    i32 target = g_irq_count + ticks;
-    task_wake_tick[me] = target;
-    task_state[me] = TASK_SLEEPING; // Set state to SLEEPING
-
-    // The next timer interrupt switches away (to another runnable task or the
-    // idle context); a SLEEPING task is never resumed, so we return from the
-    // wfi only after the scheduler marked us RUNNABLE again. The loop guards
-    // the race where the tick fires between the store above and the wfi.
-    while (task_state[me] == TASK_SLEEPING) {
-        wfi_cpu(); // Idle until next interrupt instead of busy-spinning
-    }
+export void sleep(i32 ticks_to_sleep) {
+    i32 current = thread.current_slot();
+    if (current < 0) { return; }
+    thread.sleep_until(current, g_irq_count + ticks_to_sleep);
+    while (thread.blocked(current)) { wfi_cpu(); }
 }
 
-// (Demo tasks have been removed. You can use spawn_task() to launch apps here!)
-
+/** Constructs the interrupt-style frame consumed by irq_trampoline. */
 /**
- * Constructs an initial interrupt-style register frame at the top of a stack.
- * @param func_ptr Function entry point address.
- * @param stack_bottom Top address of the allocated stack area (stack grows downward).
- * @return Initial stack pointer pointing to the prepared frame.
+ * Builds the interrupt-style initial frame for a kernel thread.
+ * @param entry Initial kernel PC.
+ * @param stack_top Exclusive top of the allocated kernel stack.
+ * @return Saved SP pointing at the completed register frame.
  */
-i32 build_context(fn() -> void func_ptr, i32 stack_bottom) {
-    i32 sp = stack_bottom;
-
-    sp = sp - 4; mem.write_word(sp, (i32)func_ptr); // PC
-    sp = sp - 4; mem.write_word(sp, 1);        // SR (IE=1)
-    sp = sp - 4; mem.write_word(sp, 0);        // IRQ entry PC slot
-    sp = sp - 4; mem.write_word(sp, 0);        // IRQ entry SR slot
-    sp = sp - 4; mem.write_word(sp, 0);        // IRQ entry lr slot
-    sp = sp - 4; mem.write_word(sp, 0);        // IRQ entry bp slot
-    sp = sp - 4; mem.write_word(sp, 0);        // lr
-    sp = sp - 4; mem.write_word(sp, stack_bottom); // bp
-    sp = sp - 4; mem.write_word(sp, 0);        // r0
-    sp = sp - 4; mem.write_word(sp, 0);        // r1
-    sp = sp - 4; mem.write_word(sp, 0);        // r2
-    sp = sp - 4; mem.write_word(sp, 0);        // r3
-    sp = sp - 4; mem.write_word(sp, 0);        // r4
-    sp = sp - 4; mem.write_word(sp, 0);        // r5
-    sp = sp - 4; mem.write_word(sp, 0);        // r6
-    sp = sp - 4; mem.write_word(sp, 0);        // r7
-
+i32 build_context(fn() -> void entry, i32 stack_top) {
+    i32 sp = stack_top;
+    sp = sp - 4; mem.write_word(sp, (i32)entry);
+    sp = sp - 4; mem.write_word(sp, 1);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, stack_top);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
+    sp = sp - 4; mem.write_word(sp, 0);
     return sp;
 }
 
 /**
- * Initializes a task's saved context on its initial stack.
- * @param task_idx Index in the task table.
- * @param func_ptr Entry point function pointer.
- * @param stack_bottom Top address of the allocated stack memory.
+ * Allocates a stack, builds an initial frame, and publishes a kernel TCB.
+ * @param entry Non-returning kernel-thread entry function.
+ * @param stack_bytes Requested kernel-stack allocation size.
+ * @return Ok(global TCB slot), Err(OutOfMemory), or Err(TaskSlotFull).
  */
-void init_task(i32 task_idx, fn() -> void func_ptr, i32 stack_bottom) {
-    task_sps[task_idx] = build_context(func_ptr, stack_bottom);
-}
-
-/**
- * Spawns a new kernel task running the given function with a 1 KiB heap-allocated stack.
- * @param func_ptr Function entry point address.
- * @return Ok(task_id) on success, or Err(SchedulerError) on OOM or slot exhaustion.
- */
-export Result<i32, SchedulerError> spawn_task(fn() -> void func_ptr) {
-    return spawn_task_sized(func_ptr, 1024);
-}
-
-/**
- * Spawns a new kernel task with a stack of the given size (bytes, heap-allocated).
- * A task that runs application code -- deep call chains, buffers on the
- * stack -- needs more than the 1 KiB a polling loop gets by.
- * @param func_ptr Function entry point address.
- * @param stack_bytes Stack size in bytes.
- * @return Ok(task_id) on success, or Err(SchedulerError) on OOM or slot exhaustion.
- */
-export Result<i32, SchedulerError> spawn_task_sized(fn() -> void func_ptr, i32 stack_bytes) {
-    i32 i = 0;
-    while (i < kernel_config.MAX_TASKS) {
-        if (task_state[i] == TASK_EMPTY) {
-            i32 stack = case heap.alloc(stack_bytes) of {
-                Ok(p) -> p;
-                Err(_) -> ({
-                    debug.println("Error: Out of memory for task stack!");
-                    return Err(SchedulerError::OutOfMemory);
-                });
-            };
-            init_task(i, func_ptr, stack + stack_bytes);
-            task_state[i] = TASK_RUNNABLE;
-            task_pid[i] = 0; // Kernel task
-            task_notification_pending[i] = 0;
-            task_notification_armed[i] = 0;
-            task_notification_wait[i] = 0;
-            if (i >= g_task_count) {
-                g_task_count = i + 1; // grow the live-slot range the tick scans
-            }
-            return Ok(i);
-        }
-        i++;
-    }
-    
-    debug.println("Error: Task slots exhausted! (MAX_TASKS reached)");
-    return Err(SchedulerError::TaskSlotFull);
-}
-
-/**
- * Registers a user process task in the scheduler with a pre-configured stack pointer.
- * @param pid Associated process ID.
- * @param initial_sp Prepared initial kernel stack pointer.
- * @return Ok(task_id) on success, or Err(SchedulerError) on slot exhaustion.
- */
-export Result<i32, SchedulerError> spawn_proc_task(i32 pid, i32 initial_sp) {
-    i32 i = 0;
-    while (i < kernel_config.MAX_TASKS) {
-        if (task_state[i] == TASK_EMPTY) {
-            task_sps[i] = initial_sp;
-            task_state[i] = TASK_RUNNABLE;
-            task_pid[i] = pid;
-            task_notification_pending[i] = 0;
-            task_notification_armed[i] = 0;
-            task_notification_wait[i] = 0;
-            Result<_, ProcessError> set_task = process.set_task_id(pid, i);
-            require_process_update(set_task);
-            if (i >= g_task_count) {
-                g_task_count = i + 1;
-            }
-            return Ok(i);
-        }
-        i++;
-    }
-    debug.println("scheduler: out of task slots for process");
-    return Err(SchedulerError::TaskSlotFull);
-}
-
-/**
- * Terminates a task slot and marks it as empty.
- * @param task_idx Task index to terminate.
- */
-export void terminate_task(i32 task_idx) {
-    if (task_idx >= 0 && task_idx < kernel_config.MAX_TASKS) {
-        task_state[task_idx] = TASK_EMPTY;
-        task_pid[task_idx] = 0;
-        task_notification_pending[task_idx] = 0;
-        task_notification_armed[task_idx] = 0;
-        task_notification_wait[task_idx] = 0;
-    }
-}
-
-/**
- * Initializes scheduler slots, creates the dedicated idle context, and registers
- * the boot context as the first runnable task.
- */
-export void init() {
-    // Initialize task states to EMPTY
-    i32 i = 0;
-    while (i < kernel_config.MAX_TASKS) {
-        task_state[i] = TASK_EMPTY;
-        task_pid[i] = 0;
-        task_notification_pending[i] = 0;
-        task_notification_armed[i] = 0;
-        task_notification_wait[i] = 0;
-        i++;
-    }
-
-    // Build the dedicated idle context. The wfi loop itself is a leaf, but
-    // an interrupt taken while idle runs the whole dispatcher on this stack
-    // (irq_trampoline does not switch stacks): the scheduler, input drains,
-    // and timers. 512 bytes overflowed into the neighbouring heap block.
-    i32 IDLE_STACK_BYTES = 8192;
-    i32 idle_stack = case heap.alloc(IDLE_STACK_BYTES) of {
-        Ok(p) -> p;
-        Err(_) -> ({
-            debug.println("scheduler: FATAL: no memory for the idle stack");
-            return;
-        });
+export Result<i32, SchedulerError> spawn_kernel_thread(fn() -> void entry, i32 stack_bytes) {
+    i32 slot = case thread.find_free_slot() of {
+        Some(value) -> value;
+        None -> ({ return Err(SchedulerError::TaskSlotFull); });
     };
-    idle_sp = build_context(idle_main, idle_stack + IDLE_STACK_BYTES);
+    i32 stack = case heap.alloc(stack_bytes) of {
+        Ok(value) -> value;
+        Err(_) -> ({ return Err(SchedulerError::OutOfMemory); });
+    };
+    i32 sp = build_context(entry, stack + stack_bytes);
+    thread.publish_kernel(slot, sp, stack, stack_bytes);
+    return Ok(slot);
+}
 
-    // Task 0 is the current context: the first timer interrupt saves our SP
-    // into task_sps[0], so tasks_initialized must be set before we enter the loop.
-    task_state[0] = TASK_RUNNABLE;
-    task_pid[0] = 0;
-    current_task = 0;
-    g_task_count = 1; // task 0 (this context) is live; spawn_task grows this
-    tasks_initialized = 1;
+/** Initializes the TCB table and creates the scheduler's boot and idle contexts. */
+export void init() {
+    thread.init();
+    g_irq_count = 0;
+    deferred_cleanup_slot = -1;
 
-    // Interrupts can now safely context-switch!
+    i32 idle_bytes = 8192;
+    i32 idle_stack = case heap.alloc(idle_bytes) of {
+        Ok(value) -> value;
+        Err(_) -> ({ debug.panic("scheduler: no memory for idle stack"); 0; });
+    };
+    idle_sp = build_context(idle_main, idle_stack + idle_bytes);
+
+    thread.publish_boot(0);
+    thread.set_current_slot(0);
+    g_initialized = 1;
 }

@@ -40,7 +40,7 @@ void scheduler_context_switches() {
     heap.init();
     scheduler.init();
 
-    i32 spawned = case scheduler.spawn_task(task1) of {
+    i32 spawned = case scheduler.spawn_kernel_thread(task1, 1024) of {
         Ok(_) -> 1;
         Err(e) -> 0;
     };

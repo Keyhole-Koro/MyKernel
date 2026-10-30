@@ -3,119 +3,133 @@ package process;
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import kernel_config from "kernel_config.mln";
 
 /** Failure cases returned by process-table operations. */
 export enum ProcessError {
-    NoFreeSlot,         // Process slot table exhausted
-    InvalidPid(i32),    // PID is out of range or not found
-    InvalidFd(i32),     // File-descriptor index is outside this process table
+    NoFreeSlot,
+    InvalidPid(i32),
+    InvalidFd(i32),
 }
 
-/** Lifecycle state tracked for each allocated process. */
+/**
+ * Process lifecycle; CPU scheduling states intentionally belong to ThreadState.
+ * @property Loading Reserved slot whose address space and main TCB are not yet public.
+ * @property Alive Committed process accepting normal syscalls and thread creation.
+ * @property Exiting Final status fixed while TCB and resource cleanup is in progress.
+ * @property Zombie Resource-free exit record waiting to be reaped.
+ */
 export enum ProcessState {
-    Ready,
-    Running,
-    Blocked,
+    Loading,
+    Alive,
+    Exiting(ProcessExitStatus),
     Zombie(ProcessExitStatus),
 }
 
-import kernel_config from "kernel_config.mln";
-
 /**
- * Kernel metadata for one allocated user process.
- * @property pid 1-based process identifier corresponding to its process-table slot.
- * @property state Current lifecycle state; Zombie carries a ProcessExitStatus.
- * @property pdbr Physical address of the process page directory; zero until initialized.
- * @property kernel_stack_top Top address of the dedicated kernel stack.
- * @property kernel_sp Saved kernel stack pointer used to resume the process.
- * @property user_sp Saved user stack pointer for the process context.
- * @property user_entry Virtual address at which the process begins execution.
- * @property heap_break Current end of the user heap in virtual memory.
- * @property task_id Scheduler task slot associated with the process, if it has one.
+ * Process-owned address-space and shared-resource accounting.
+ * @property pid Positive process identifier associated with this table entry.
+ * @property state Loading, Alive, Exiting, or Zombie lifecycle state.
+ * @property pdbr Physical page-directory base; zero after resource cleanup.
+ * @property heap_break Process-wide end of the user heap.
+ * @property user_stack_slots Bit n is set while a TCB owns stack slot n.
+ * @property live_threads Count of Runnable, Running, and Blocked owned TCBs.
+ * @property retained_threads Live plus unreaped Zombie TCB count.
  */
 export struct Process {
-    i32 pid;              // Process ID (1..16)
-    ProcessState state;   // Zombie carries ProcessExitStatus
-    i32 pdbr;             // Physical address of Page Directory
-    i32 kernel_stack_top; // Physical top of dedicated kernel stack
-    i32 kernel_sp;        // Saved kernel stack pointer
-    i32 user_sp;          // Saved user stack pointer
-    i32 user_entry;       // Virtual entry point (0x40000000)
-    i32 heap_break;       // Current user heap break (starts at 0x41000000)
-    Option<i32> task_id;  // Associated scheduler task index, if spawned
+    i32 pid;
+    ProcessState state;
+    i32 pdbr;
+    i32 heap_break;
+    i32 user_stack_slots;
+    i32 live_threads;
+    i32 retained_threads;
 };
 
 Option<Process> g_procs[16];
-Option<i32> g_proc_fds[128]; // 16 procs * 8 fds
-i32 g_current_pid = 0;
+Option<i32> g_proc_fds[128];
 i32 g_procs_initialized = 0;
 
 /**
- * Initializes the process table and file descriptor arrays to clean default state.
+ * Clears every descriptor owned by one process-table slot.
+ * @param idx Zero-based validated process-table index.
  */
-export void init() {
+void clear_fds(i32 idx) {
     Option<i32> no_fd = None;
+    i32 fd = 0;
+    while (fd < kernel_config.MAX_FDS) {
+        g_proc_fds[idx * kernel_config.MAX_FDS + fd] = no_fd;
+        fd++;
+    }
+}
+
+/**
+ * Initializes stdin, stdout, and stderr for a newly reserved process slot.
+ * @param idx Zero-based validated process-table index.
+ */
+void initialize_fds(i32 idx) {
+    clear_fds(idx);
+    Option<i32> stdin_fd = Some(0);
+    Option<i32> stdout_fd = Some(1);
+    Option<i32> stderr_fd = Some(2);
+    g_proc_fds[idx * kernel_config.MAX_FDS + 0] = stdin_fd;
+    g_proc_fds[idx * kernel_config.MAX_FDS + 1] = stdout_fd;
+    g_proc_fds[idx * kernel_config.MAX_FDS + 2] = stderr_fd;
+}
+
+/** Clears all process and descriptor slots. */
+export void init() {
     i32 i = 0;
     while (i < kernel_config.MAX_PROCS) {
         Option<Process> empty = None;
         g_procs[i] = empty;
-
-        i32 f = 0;
-        while (f < kernel_config.MAX_FDS) {
-            g_proc_fds[i * kernel_config.MAX_FDS + f] = no_fd;
-            f++;
-        }
+        clear_fds(i);
         i++;
     }
-    g_current_pid = 0;
     g_procs_initialized = 1;
 }
 
 /**
- * Allocates a new process slot and initializes standard file descriptors (stdin, stdout, stderr).
- * @return Ok(pid) with allocated process ID (1-based), or Err(NoFreeSlot) if table is full.
+ * Validates a PID and resolves it to an occupied process-table index.
+ * @param pid Positive process identifier to resolve.
+ * @return Ok(zero-based index), or Err(InvalidPid(pid)).
  */
-export Result<i32, ProcessError> alloc_proc() {
-    if (!g_procs_initialized) {
-        init();
+Result<i32, ProcessError> index_for_pid(i32 pid) {
+    if (pid <= 0 || pid > kernel_config.MAX_PROCS) {
+        return Err(ProcessError::InvalidPid(pid));
     }
+    i32 idx = pid - 1;
+    bool matches = case g_procs[idx] of {
+        Some(p) -> p.pid == pid;
+        None -> false;
+    };
+    if (!matches) { return Err(ProcessError::InvalidPid(pid)); }
+    return Ok(idx);
+}
 
+/**
+ * Reserves a process table entry in Loading state and initializes its fd table.
+ * @return Ok(new PID), or Err(NoFreeSlot) when all process slots are occupied.
+ */
+export Result<i32, ProcessError> reserve_process() {
+    if (!g_procs_initialized) { init(); }
     i32 i = 0;
     while (i < kernel_config.MAX_PROCS) {
-        i32 is_empty = case g_procs[i] of {
-            None -> 1;
-            _ -> 0;
-        };
-        if (is_empty) {
+        bool free = case g_procs[i] of { None -> true; Some(_) -> false; };
+        if (free) {
             i32 pid = i + 1;
-            ProcessState ready_state = Ready;
-            Process proc = Process {
+            Process value = Process {
                 pid: pid,
-                state: ready_state,
+                state: ProcessState::Loading,
                 pdbr: 0,
-                kernel_stack_top: 0,
-                kernel_sp: 0,
-                user_sp: 0,
-                user_entry: 0,
                 heap_break: 0,
-                task_id: None,
+                user_stack_slots: 0,
+                live_threads: 0,
+                retained_threads: 0,
             };
-            Option<Process> entry = Some(proc);
+            Option<Process> entry = Some(value);
             g_procs[i] = entry;
-
-            // Default standard streams
-            Option<i32> stdin_fd = Some(0);
-            Option<i32> stdout_fd = Some(1);
-            Option<i32> stderr_fd = Some(2);
-            Option<i32> no_fd = None;
-            g_proc_fds[i * kernel_config.MAX_FDS + 0] = stdin_fd;
-            g_proc_fds[i * kernel_config.MAX_FDS + 1] = stdout_fd;
-            g_proc_fds[i * kernel_config.MAX_FDS + 2] = stderr_fd;
-            i32 f = 3;
-            while (f < kernel_config.MAX_FDS) {
-                g_proc_fds[i * kernel_config.MAX_FDS + f] = no_fd;
-                f++;
-            }
+            initialize_fds(i);
             return Ok(pid);
         }
         i++;
@@ -124,381 +138,275 @@ export Result<i32, ProcessError> alloc_proc() {
 }
 
 /**
- * Converts a 1-based PID into a live process table index.
- * @param pid Process ID to look up.
- * @return Ok(index) if PID is valid and currently allocated, or Err(InvalidPid) otherwise.
+ * Commits a completely built address space and makes a Loading process Alive.
+ * @param pid Reserved Loading process.
+ * @param pdbr Fully initialized physical page-directory base.
+ * @param heap_break Initial user heap break following loaded segments.
+ * @return Ok(_) on commit, or Err(InvalidPid) for a missing/non-Loading process.
  */
-Result<i32, ProcessError> index_for_pid(i32 pid) {
-    if (pid <= 0 || pid > kernel_config.MAX_PROCS) {
-        return Err(ProcessError::InvalidPid(pid));
-    }
-    i32 idx = pid - 1;
-    bool matches = case g_procs[idx] of {
+export Result<_, ProcessError> commit_process(i32 pid, i32 pdbr, i32 heap_break) {
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
         Some(p) -> ({
-            p.pid == pid;
+            bool loading = case p.state of { Loading -> true; _ -> false; };
+            if (!loading) { return Err(ProcessError::InvalidPid(pid)); }
+            p.pdbr = pdbr;
+            p.heap_break = heap_break;
+            p.state = ProcessState::Alive;
         });
-        None -> false;
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
     };
-    if (!matches) {
-        return Err(ProcessError::InvalidPid(pid));
-    }
-    return Ok(idx);
+    return Ok(_);
 }
 
 /**
- * Frees an allocated process slot and resets its file descriptors.
- * @param pid Process ID to free.
- * @return Ok(_) on success, or Err(InvalidPid) if process does not exist.
+ * Releases a process-table slot and all of its descriptor entries.
+ * Callers use this after Loading rollback or Zombie reap, after owned resources are gone.
+ * @param pid Process slot to release.
+ * @return Ok(_) on release, or Err(InvalidPid) when no such slot exists.
  */
 export Result<_, ProcessError> free_proc(i32 pid) {
     i32 idx = index_for_pid(pid)?;
     Option<Process> empty = None;
     g_procs[idx] = empty;
-
-    Option<i32> no_fd = None;
-    i32 f = 0;
-    while (f < kernel_config.MAX_FDS) {
-        g_proc_fds[idx * kernel_config.MAX_FDS + f] = no_fd;
-        f++;
-    }
-
-    if (g_current_pid == pid) {
-        g_current_pid = 0;
-    }
+    clear_fds(idx);
     return Ok(_);
 }
 
 /**
- * Returns the PID of the currently executing user process.
- * @return Some(pid) if a user process is active, or None if executing kernel task.
- */
-export Option<i32> get_current_pid() {
-    if (g_current_pid == 0) {
-        return None;
-    }
-    return Some(g_current_pid);
-}
-
-/**
- * Sets the PID of the currently executing process.
- * @param pid Process ID to mark as current.
- * @return Ok(_) on success, or Err(InvalidPid) if PID is invalid.
- */
-export Result<_, ProcessError> set_current_pid(i32 pid) {
-    i32 ignored = index_for_pid(pid)?;
-    g_current_pid = pid;
-    return Ok(_);
-}
-
-/**
- * Clears the active process ID, indicating kernel/idle context.
- */
-export void clear_current_pid() {
-    g_current_pid = 0;
-}
-
-/**
- * Retrieves the lifecycle state of a process.
- * @param pid Process ID.
- * @return Some(state) if found, or None if PID is invalid/unallocated.
+ * @param pid Process identifier to inspect.
+ * @return Some(lifecycle state) for an allocated process; otherwise None.
  */
 export Option<ProcessState> get_state(i32 pid) {
     i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.state);
-        });
-        None -> ({ return None; });
-    };
+    return case g_procs[idx] of { Some(p) -> Some(p.state); None -> None; };
 }
 
 /**
- * Updates the lifecycle state of a process.
- * @param pid Process ID.
- * @param state New process state.
- * @return Ok(_) on success, or Err(InvalidPid) if process not found.
+ * @param pid Process identifier to inspect.
+ * @return true only when the process exists in Alive state.
  */
-export Result<_, ProcessError> set_state(i32 pid, ProcessState state) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            p.state = state;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+export bool accepts_threads(i32 pid) {
+    return case get_state(pid) of {
+        Some(state) -> case state of { Alive -> true; _ -> false; };
+        None -> false;
     };
 }
 
 /**
- * Retrieves the page directory base register (physical address) of a process.
- * @param pid Process ID.
- * @return Some(pdbr) if found, or None if invalid.
+ * @param pid Process identifier to inspect.
+ * @return Some(physical PDBR) for an allocated process; otherwise None.
  */
 export Option<i32> get_pdbr(i32 pid) {
     i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.pdbr);
-        });
-        None -> ({ return None; });
-    };
+    return case g_procs[idx] of { Some(p) -> Some(p.pdbr); None -> None; };
 }
 
 /**
- * Sets the page directory base register (physical address) of a process.
- * @param pid Process ID.
- * @param pdbr Physical address of page directory.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
- */
-export Result<_, ProcessError> set_pdbr(i32 pid, i32 pdbr) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            p.pdbr = pdbr;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
-    };
-}
-
-/**
- * Retrieves the top of the dedicated kernel stack for a process.
- * @param pid Process ID.
- * @return Some(top) address if found, or None if invalid.
- */
-export Option<i32> get_kernel_stack_top(i32 pid) {
-    i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.kernel_stack_top);
-        });
-        None -> ({ return None; });
-    };
-}
-
-/**
- * Sets the top of the dedicated kernel stack for a process.
- * @param pid Process ID.
- * @param top Address of top of kernel stack.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
- */
-export Result<_, ProcessError> set_kernel_stack_top(i32 pid, i32 top) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            p.kernel_stack_top = top;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
-    };
-}
-
-/**
- * Retrieves the saved kernel stack pointer for a process.
- * @param pid Process ID.
- * @return Some(sp) if found, or None if invalid.
- */
-export Option<i32> get_kernel_sp(i32 pid) {
-    i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.kernel_sp);
-        });
-        None -> ({ return None; });
-    };
-}
-
-/**
- * Sets the saved kernel stack pointer for a process.
- * @param pid Process ID.
- * @param sp Kernel stack pointer to store.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
- */
-export Result<_, ProcessError> set_kernel_sp(i32 pid, i32 sp) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            p.kernel_sp = sp;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
-    };
-}
-
-/**
- * Retrieves the saved user stack pointer for a process.
- * @param pid Process ID.
- * @return Some(usp) if found, or None if invalid.
- */
-export Option<i32> get_user_sp(i32 pid) {
-    i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.user_sp);
-        });
-        None -> ({ return None; });
-    };
-}
-
-/**
- * Sets the saved user stack pointer for a process.
- * @param pid Process ID.
- * @param usp User stack pointer to store.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
- */
-export Result<_, ProcessError> set_user_sp(i32 pid, i32 usp) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            p.user_sp = usp;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
-    };
-}
-
-/**
- * Retrieves the virtual entry point of a user process.
- * @param pid Process ID.
- * @return Some(entry) if found, or None if invalid.
- */
-export Option<i32> get_user_entry(i32 pid) {
-    i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.user_entry);
-        });
-        None -> ({ return None; });
-    };
-}
-
-/**
- * Sets the virtual entry point of a user process.
- * @param pid Process ID.
- * @param entry Virtual address of entry point.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
- */
-export Result<_, ProcessError> set_user_entry(i32 pid, i32 entry) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            p.user_entry = entry;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
-    };
-}
-
-/**
- * Retrieves the current heap break virtual address of a process.
- * @param pid Process ID.
- * @return Some(heap_break) if found, or None if invalid.
+ * @param pid Process identifier to inspect.
+ * @return Some(current user heap break) for an allocated process; otherwise None.
  */
 export Option<i32> get_heap_break(i32 pid) {
     i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            return Some(p.heap_break);
-        });
-        None -> ({ return None; });
-    };
+    return case g_procs[idx] of { Some(p) -> Some(p.heap_break); None -> None; };
 }
 
 /**
- * Updates the current heap break virtual address of a process.
- * @param pid Process ID.
- * @param brk New heap break virtual address.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ * Replaces the process-wide heap break after a successful mapping update.
+ * @param pid Process whose address space was extended.
+ * @param heap_break New end-exclusive user heap address.
+ * @return Ok(_) on update, or Err(InvalidPid) when the process is absent.
  */
-export Result<_, ProcessError> set_heap_break(i32 pid, i32 brk) {
+export Result<_, ProcessError> set_heap_break(i32 pid, i32 heap_break) {
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
+        Some(p) -> ({ p.heap_break = heap_break; });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
+ * Reserves one of the process's fixed user-stack virtual-address slots.
+ * @param pid Process whose stack bitmap is updated.
+ * @return Ok(Some(slot)) on success, Ok(None) when all per-process slots are used,
+ *         or Err(InvalidPid) when the process is absent.
+ */
+export Result<Option<i32>, ProcessError> reserve_user_stack_slot(i32 pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({
-            p.heap_break = brk;
-            return Ok(_);
+            i32 slot = 0;
+            while (slot < kernel_config.MAX_THREADS_PER_PROC) {
+                i32 bit = 1 << slot;
+                if ((p.user_stack_slots & bit) == 0) {
+                    p.user_stack_slots = p.user_stack_slots | bit;
+                    return Ok(Some(slot));
+                }
+                slot++;
+            }
+            Option<i32> none = None;
+            return Ok(none);
         });
         None -> ({ return Err(ProcessError::InvalidPid(pid)); });
     };
 }
 
 /**
- * Retrieves the typed exit status of a Zombie process.
- * @param pid Process ID.
- * @return Some(status) if process is in Zombie state, or None otherwise.
+ * Releases a process-local user-stack slot after its mapping is removed.
+ * @param pid Process whose stack bitmap is updated.
+ * @param slot Slot index in 0..MAX_THREADS_PER_PROC.
+ * @return Ok(_) on release, or Err when PID/slot is invalid.
  */
-export Option<ProcessExitStatus> get_exit_status(i32 pid) {
+export Result<_, ProcessError> release_user_stack_slot(i32 pid, i32 slot) {
+    i32 idx = index_for_pid(pid)?;
+    if (slot < 0 || slot >= kernel_config.MAX_THREADS_PER_PROC) {
+        return Err(ProcessError::InvalidPid(pid));
+    }
+    case g_procs[idx] of {
+        Some(p) -> ({ p.user_stack_slots = p.user_stack_slots & (~(1 << slot)); });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
+ * Accounts for a newly published TCB as both live and retained.
+ * @param pid Owner process.
+ * @return Ok(_) on increment, or Err(InvalidPid) when the owner disappeared.
+ */
+export Result<_, ProcessError> retain_thread(i32 pid) {
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
+        Some(p) -> ({ p.live_threads++; p.retained_threads++; });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
+ * Removes one TCB from the live count while retaining its join record.
+ * @param pid Owner process.
+ * @return Ok(_) on update, or Err(InvalidPid) when the owner is absent.
+ */
+export Result<_, ProcessError> mark_thread_exited(i32 pid) {
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
+        Some(p) -> ({ if (p.live_threads > 0) { p.live_threads--; } });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
+ * Removes one retained TCB after join or process-wide cleanup.
+ * @param pid Owner process.
+ * @return Ok(_) on update, or Err(InvalidPid) when the owner is absent.
+ */
+export Result<_, ProcessError> release_thread(i32 pid) {
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
+        Some(p) -> ({ if (p.retained_threads > 0) { p.retained_threads--; } });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
+ * @param pid Process identifier to inspect.
+ * @return Some(number of Runnable, Running, or Blocked TCBs), or None if absent.
+ */
+export Option<i32> live_thread_count(i32 pid) {
     i32 idx = index_for_pid(pid).ok()?;
+    return case g_procs[idx] of { Some(p) -> Some(p.live_threads); None -> None; };
+}
+
+/**
+ * @param pid Process identifier to inspect.
+ * @return Some(live plus unreaped Zombie TCB count), or None if absent.
+ */
+export Option<i32> retained_thread_count(i32 pid) {
+    i32 idx = index_for_pid(pid).ok()?;
+    return case g_procs[idx] of { Some(p) -> Some(p.retained_threads); None -> None; };
+}
+
+/**
+ * Moves a process to Exiting while preserving its final status.
+ * @param pid Process beginning irreversible cleanup.
+ * @param status Exit code or fatal-fault reason retained for the parent.
+ * @return Ok(_) on transition, or Err(InvalidPid) when absent.
+ */
+export Result<_, ProcessError> begin_exit(i32 pid, ProcessExitStatus status) {
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
+        Some(p) -> ({ p.state = ProcessState::Exiting(status); });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
+ * Converts an Exiting process into a resource-free Zombie.
+ * @param pid Process whose TCBs and owned resources have all been released.
+ * @return Ok(_) on transition, or Err(InvalidPid) unless the process is Exiting.
+ */
+export Result<_, ProcessError> finish_exit(i32 pid) {
+    i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({
             case p.state of {
-                Zombie(status) -> ({
-                    return Some(status);
-                });
-                _ -> ({
-                    return None;
-                });
+                Exiting(status) -> ({ p.state = ProcessState::Zombie(status); });
+                _ -> ({ return Err(ProcessError::InvalidPid(pid)); });
             };
         });
-        None -> ({
-            return None;
-        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
     };
+    return Ok(_);
 }
 
 /**
- * Marks a process as Zombie with the given typed exit status.
- * @param pid Process ID.
- * @param status Process exit status.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
+ * Clears resource handles and counters after lifecycle code physically frees them.
+ * The ProcessState and final exit status are intentionally preserved.
+ * @param pid Exiting process whose owned resources are gone.
+ * @return Ok(_) on reset, or Err(InvalidPid) when absent.
  */
-export Result<_, ProcessError> set_exit_status(i32 pid, ProcessExitStatus status) {
+export Result<_, ProcessError> clear_owned_resources(i32 pid) {
     i32 idx = index_for_pid(pid)?;
-    ProcessState zombie_state = Zombie(status);
     case g_procs[idx] of {
         Some(p) -> ({
-            p.state = zombie_state;
-            return Ok(_);
+            p.pdbr = 0;
+            p.heap_break = 0;
+            p.user_stack_slots = 0;
+            p.live_threads = 0;
+            p.retained_threads = 0;
         });
         None -> ({ return Err(ProcessError::InvalidPid(pid)); });
     };
+    clear_fds(idx);
+    return Ok(_);
 }
 
 /**
- * Retrieves the associated scheduler task ID for a process.
- * @param pid Process ID.
- * @return Some(task_id) if linked, or None if unlinked/invalid.
+ * @param pid Process identifier to inspect.
+ * @return Some(final status) for Exiting/Zombie, otherwise None.
  */
-export Option<i32> get_task_id(i32 pid) {
+export Option<ProcessExitStatus> get_exit_status(i32 pid) {
     i32 idx = index_for_pid(pid).ok()?;
-    case g_procs[idx] of {
-        Some(p) -> ({ return p.task_id; });
-        None -> ({ return None; });
+    return case g_procs[idx] of {
+        Some(p) -> case p.state of {
+            Exiting(status) -> Some(status);
+            Zombie(status) -> Some(status);
+            _ -> None;
+        };
+        None -> None;
     };
 }
 
 /**
- * Links a scheduler task ID to a process.
- * @param pid Process ID.
- * @param tid Scheduler task ID.
- * @return Ok(_) on success, or Err(InvalidPid) if invalid.
- */
-export Result<_, ProcessError> set_task_id(i32 pid, i32 tid) {
-    i32 idx = index_for_pid(pid)?;
-    case g_procs[idx] of {
-        Some(p) -> ({
-            Option<i32> otid = Some(tid);
-            p.task_id = otid;
-            return Ok(_);
-        });
-        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
-    };
-}
-
-/**
- * Returns the underlying descriptor for an open process file descriptor slot.
- * @param pid Process ID.
- * @param fd Process file descriptor index (0..7).
- * @return Ok(Some(target_fd)) if open, Ok(None) if slot is closed, or Err on invalid pid/fd.
+ * Looks up one descriptor from a process-owned descriptor table.
+ * @param pid Owner process.
+ * @param fd Descriptor-table index.
+ * @return Ok(Some(value)) when open, Ok(None) when closed, or an invalid PID/fd error.
  */
 export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
     i32 idx = index_for_pid(pid)?;
@@ -509,17 +417,17 @@ export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
 }
 
 /**
- * Updates or closes a file descriptor slot in a process table.
- * @param pid Process ID.
- * @param fd Process file descriptor index (0..7).
- * @param val Some(target_fd) to set target descriptor, or None to close slot.
- * @return Ok(_) on success, or Err on invalid pid/fd.
+ * Installs or clears one descriptor in a process-owned descriptor table.
+ * @param pid Owner process.
+ * @param fd Descriptor-table index.
+ * @param value Some(raw descriptor) to install, or None to close the slot.
+ * @return Ok(_) on update, or an invalid PID/fd error.
  */
-export Result<_, ProcessError> set_fd(i32 pid, i32 fd, Option<i32> val) {
+export Result<_, ProcessError> set_fd(i32 pid, i32 fd, Option<i32> value) {
     i32 idx = index_for_pid(pid)?;
     if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
     }
-    g_proc_fds[idx * kernel_config.MAX_FDS + fd] = val;
+    g_proc_fds[idx * kernel_config.MAX_FDS + fd] = value;
     return Ok(_);
 }

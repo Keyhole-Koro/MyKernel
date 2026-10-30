@@ -70,7 +70,7 @@ void mock_contexts_survive_scheduler_switching() {
     mock.spy(work1).when(1).call(fake_work1);
     mock.of(sequence).when(mock.any()).ret(10).then_ret(20);
 
-    i32 spawned = case scheduler.spawn_task(task1) of {
+    i32 spawned = case scheduler.spawn_kernel_thread(task1, 1024) of {
         Ok(_) -> 1;
         Err(_) -> 0;
     };

@@ -4,13 +4,16 @@ package kernel_config;
 // MyKernel System Configuration & Limits
 // ============================================================================
 
-// --- Process & Task Limits ---
+// --- Process & Thread Limits ---
 /** Maximum number of simultaneously allocated process slots; PIDs are 1-based. */
 export const i32 MAX_PROCS = 16;
 /** Number of descriptor slots maintained per process. */
 export const i32 MAX_FDS   = 8;
-/** Maximum number of scheduler task slots, including kernel tasks. */
-export const i32 MAX_TASKS = 256;
+/** Maximum number of schedulable kernel and user TCBs. */
+export const i32 MAX_THREADS = 256;
+export const i32 MAX_THREADS_PER_PROC = 8;
+export const i32 DEFAULT_USER_STACK_BYTES = 16384;
+export const i32 DEFAULT_KERNEL_STACK_BYTES = 16384;
 
 // --- Memory Layout & Limits ---
 /** Hardware and allocator page size in bytes; addresses are page-aligned to this value. */

@@ -6,14 +6,18 @@ import serial from "@kernel/io/serial.mln";
 import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
 import { ProcessState, ProcessError } from "process.mln";
+import thread from "thread.mln";
+import { JoinOutcome } from "thread.mln";
 import scheduler from "scheduler.mln";
 import loader from "loader.mln";
 import { Result, result_take_ok, result_take_err } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { MmuError } from "@contracts/process/loader.contract.mln";
 import { SpawnError } from "@contracts/process/spawn.contract.mln";
-import { Syscall } from "@contracts/myos/syscall.contract.mln";
+import { Syscall, SyscallStatus } from "@contracts/myos/syscall.contract.mln";
+import { OsServiceError } from "@contracts/myos/services.contract.mln";
 import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
 
 /**
  * Failure reasons returned by recoverable, multi-step syscall operations.
@@ -37,11 +41,13 @@ export enum SyscallError {
  * frame to resume. SYS_EXIT, SYS_YIELD, and SYS_WAIT_NOTIFICATION may choose
  * another frame through the scheduler.
  * @property next_sp Stack pointer of the context IRQ dispatch should resume.
- * @property return_value Value written to the user's syscall return register.
+ * @property status SyscallStatus written to the user's r1 register.
+ * @property value Success value or error payload written to the user's r2 register.
  */
 export struct DispatchOutcome {
     i32 next_sp;
-    i32 return_value;
+    SyscallStatus status;
+    i32 value;
 };
 
 /**
@@ -54,28 +60,109 @@ export i32 outcome_next_sp(DispatchOutcome *outcome) {
 }
 
 /**
- * Extracts the user-visible return value from a syscall dispatch outcome.
+ * Extracts the user-visible transport status from a syscall dispatch outcome.
  * @param outcome Pointer to dispatch outcome structure.
- * @return Syscall return value (e.g. byte count, PID, or 0).
+ * @return SyscallStatus written to r1.
  */
-export i32 outcome_return_value(DispatchOutcome *outcome) {
-    return outcome->return_value;
+export SyscallStatus outcome_status(DispatchOutcome *outcome) {
+    return outcome->status;
 }
 
 /**
- * Converts a typed SyscallError into its raw user-space negative error code.
- * @param error Syscall error variant.
- * @return Raw syscall error code (e.g. -1 for NoProcess, -2 for OOM, -6 for spawn failure).
+ * Extracts the success value or failure detail from a dispatch outcome.
+ * @param outcome Pointer to dispatch outcome structure.
+ * @return Value written to r2.
  */
-export i32 error_code(SyscallError error) {
+export i32 outcome_value(DispatchOutcome *outcome) {
+    return outcome->value;
+}
+
+/**
+ * Converts a typed kernel syscall error into its stable positive status.
+ * @param error Kernel syscall error variant.
+ * @return Common SyscallStatus written to r1.
+ */
+export SyscallStatus error_status(SyscallError error) {
     return case error of {
-        NoProcess -> -1;
-        OutOfMemory -> -2;
-        HeapOverflow -> -3;
-        BadFd -> -4;
-        UnknownSyscall -> -5;
-        SpawnFailed -> -6;
+        NoProcess -> SyscallStatus::NoProcess;
+        OutOfMemory -> SyscallStatus::OutOfMemory;
+        HeapOverflow -> SyscallStatus::HeapOverflow;
+        BadFd -> SyscallStatus::BadFileDescriptor;
+        UnknownSyscall -> SyscallStatus::UnknownSyscall;
+        SpawnFailed -> SyscallStatus::SpawnFailed;
     };
+}
+
+/**
+ * Converts one owned ThreadError into the complete register return envelope.
+ * Matching once preserves move-only payloads while assigning both registers.
+ * @param sp Saved interrupt-frame SP to resume after an immediate failure.
+ * @param error Thread or futex domain error to expose to user space.
+ * @return Dispatch outcome with positive status in r1 and detail in r2.
+ */
+DispatchOutcome thread_error_outcome(i32 sp, ThreadError error) {
+    DispatchOutcome outcome;
+    outcome.next_sp = sp;
+    case error of {
+        ThreadError::NoFreeSlot -> ({ outcome.status = SyscallStatus::NoFreeThreadSlot; outcome.value = 0; });
+        ThreadError::OutOfMemory -> ({ outcome.status = SyscallStatus::OutOfMemory; outcome.value = 0; });
+        ThreadError::InvalidTid(value) -> ({ outcome.status = SyscallStatus::InvalidThreadId; outcome.value = value; });
+        ThreadError::JoinSelf -> ({ outcome.status = SyscallStatus::JoinSelf; outcome.value = 0; });
+        ThreadError::AlreadyJoined(value) -> ({ outcome.status = SyscallStatus::AlreadyJoined; outcome.value = value; });
+        ThreadError::WouldBlock -> ({ outcome.status = SyscallStatus::WouldBlock; outcome.value = 0; });
+        ThreadError::TimedOut -> ({ outcome.status = SyscallStatus::TimedOut; outcome.value = 0; });
+        ThreadError::BadAddress(value) -> ({ outcome.status = SyscallStatus::BadAddress; outcome.value = value; });
+        ThreadError::ProcessExiting -> ({ outcome.status = SyscallStatus::ProcessExiting; outcome.value = 0; });
+        ThreadError::InvalidEntry(value) -> ({ outcome.status = SyscallStatus::InvalidEntry; outcome.value = value; });
+        ThreadError::InvalidStackSize(value) -> ({ outcome.status = SyscallStatus::InvalidStackSize; outcome.value = value; });
+        ThreadError::UnexpectedStatus(value) -> ({ outcome.status = SyscallStatus::UnknownSyscall; outcome.value = value; });
+    };
+    return outcome;
+}
+
+/**
+ * Converts a typed thread result into the two-register syscall envelope.
+ * @param sp Saved syscall interrupt-frame SP.
+ * @param result Successful integer result or typed ThreadError.
+ * @return DispatchOutcome that resumes sp with status in r1 and value/detail in r2.
+ */
+DispatchOutcome thread_result(i32 sp, Result<i32, ThreadError> result) {
+    DispatchOutcome outcome;
+    outcome.next_sp = sp;
+    case result of {
+        Ok(value) -> ({
+            outcome.status = SyscallStatus::Ok;
+            outcome.value = value;
+        });
+        Err(error) -> ({ return thread_error_outcome(sp, error); });
+    };
+    return outcome;
+}
+
+/**
+ * Copies ThreadSpawnArgs from user memory and delegates validated creation.
+ * The kernel stores only the copied value, never the caller's raw pointer.
+ * @param args_addr Aligned user virtual address of a complete ThreadSpawnArgs.
+ * @return Ok(new TID), or BadAddress, ProcessExiting, or a spawn validation error.
+ */
+Result<i32, ThreadError> sys_thread_spawn(i32 args_addr) {
+    i32 pid = case thread.current_pid() of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    i32 pdbr = case process.get_pdbr(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    if ((args_addr & 3) || !mmu.user_range_has_flags(pdbr, args_addr, 16, mmu.PTE_USER)) {
+        return Err(ThreadError::BadAddress(args_addr));
+    }
+    ThreadSpawnArgs args;
+    args.entry = case mmu.read_user_word(pdbr, args_addr) of { Some(v) -> v; None -> 0; };
+    args.arg0 = case mmu.read_user_word(pdbr, args_addr + 4) of { Some(v) -> v; None -> 0; };
+    args.arg1 = case mmu.read_user_word(pdbr, args_addr + 8) of { Some(v) -> v; None -> 0; };
+    args.stack_bytes = case mmu.read_user_word(pdbr, args_addr + 12) of { Some(v) -> v; None -> 0; };
+    return thread.spawn_user_thread(pid, args);
 }
 
 i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
@@ -91,18 +178,18 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 fn(i32 pid, i32 buf, i32 count) -> i32 g_console_write = 0;
 fn(i32 pid, i32 buf, i32 count) -> i32 g_console_read = 0;
 fn(i32 path, i32 result_out) -> void g_spawn_handler = 0;
-fn(i32 pid, i32 service, i32 args) -> i32 g_os_handler = 0;
+fn(i32 pid, i32 service, i32 args, i32 result_out) -> void g_os_handler = 0;
 
 /**
  * Registers the OS_CALL handler: every service the OS offers a process
  * beyond the kernel's own syscalls -- the UI protocol, the filesystem,
  * process control -- goes through one syscall, OS_CALL(service, args), and
- * this handler (pid, service, args) -> i32 decides what a service means.
+ * this handler writes Result<i32, OsServiceError> to result_out.
  * `args` is a user address; the handler reads and writes it through the
  * process's page tables, which are active for the syscall's duration.
- * @param handler Function pointer taking (pid, service, args) and returning an i32.
+ * @param handler Function pointer taking (pid, service, args, result_out).
  */
-export void set_os_handler(fn(i32 pid, i32 service, i32 args) -> i32 handler) {
+export void set_os_handler(fn(i32 pid, i32 service, i32 args, i32 result_out) -> void handler) {
     g_os_handler = handler;
 }
 
@@ -139,20 +226,11 @@ export void sys_exit(i32 code) {
  * @param status Process exit status to preserve in the Zombie state.
  */
 export void sys_exit_status(ProcessExitStatus status) {
-    i32 pid = case process.get_current_pid() of {
+    i32 pid = case thread.current_pid() of {
         Some(value) -> value;
         None -> ({ return; });
     };
-    Result<_, ProcessError> mark_zombie = process.set_exit_status(pid, status);
-    case mark_zombie of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("sys_exit: current process disappeared"); });
-    };
-    Option<i32> task_id = process.get_task_id(pid);
-    case task_id of {
-        Some(tid) -> scheduler.terminate_task(tid);
-        None -> ({ debug.panic("sys_exit: current process has no scheduler task"); });
-    };
+    thread.exit_process_threads(pid, status);
 }
 
 /**
@@ -169,7 +247,7 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
     if (fd == 1 || fd == 2) {
         fn(i32 pid, i32 buf, i32 count) -> i32 handler = g_console_write;
         if (handler != 0) {
-            i32 pid = case process.get_current_pid() of {
+            i32 pid = case thread.current_pid() of {
                 Some(value) -> value;
                 None -> ({ return Err(SyscallError::NoProcess); });
             };
@@ -202,7 +280,7 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
     if (fd == 0) {
         fn(i32 pid, i32 buf, i32 count) -> i32 handler = g_console_read;
         if (handler != 0) {
-            i32 pid = case process.get_current_pid() of {
+            i32 pid = case thread.current_pid() of {
                 Some(value) -> value;
                 None -> ({ return Err(SyscallError::NoProcess); });
             };
@@ -234,7 +312,7 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
  * @return Ok(pid) on success, or Err(NoProcess), Err(UnknownSyscall), or Err(SpawnFailed).
  */
 export Result<i32, SyscallError> sys_spawn(i32 path) {
-    Option<i32> current = process.get_current_pid();
+    Option<i32> current = thread.current_pid();
     case current of {
         Some(_) -> _;
         None -> ({ return Err(SyscallError::NoProcess); });
@@ -258,7 +336,7 @@ export Result<i32, SyscallError> sys_spawn(i32 path) {
  * @return Ok(prev_brk) with previous heap break on success, or Err(SyscallError) on error.
  */
 export Result<i32, SyscallError> sys_sbrk(i32 increment) {
-    i32 pid = case process.get_current_pid() of {
+    i32 pid = case thread.current_pid() of {
         Some(current) -> current;
         None -> ({ return Err(SyscallError::NoProcess); });
     };
@@ -275,7 +353,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
     }
 
     i32 new_brk = cur_brk + increment;
-    if (new_brk >= loader.USER_STACK_BASE) {
+    if (new_brk >= thread.USER_STACK_REGION_BASE) {
         return Err(SyscallError::HeapOverflow);
     }
 
@@ -287,6 +365,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         None -> ({ return Err(SyscallError::NoProcess); });
     };
 
+    i32 first_new_page = cur_page;
     while (cur_page < target_page) {
         i32 frame = case mmu.alloc_page() of {
             Some(f) -> f;
@@ -298,9 +377,23 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         case map_res of {
             Ok(_) -> _;
             Err(MmuError::AllocFailed) -> ({
+                mmu.free_frame(frame);
+                i32 rollback = first_new_page;
+                while (rollback < cur_page) {
+                    i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
+                    if (old_frame != 0) { mmu.free_frame(old_frame); }
+                    rollback = rollback + 4096;
+                }
                 return Err(SyscallError::OutOfMemory);
             });
             Err(e) -> ({
+                mmu.free_frame(frame);
+                i32 rollback = first_new_page;
+                while (rollback < cur_page) {
+                    i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
+                    if (old_frame != 0) { mmu.free_frame(old_frame); }
+                    rollback = rollback + 4096;
+                }
                 // InvalidDirectory/UnalignedAddress here mean a kernel
                 // invariant broke: `pd` comes from a live process's pdbr
                 // (always set from a real create_page_directory() success),
@@ -333,13 +426,18 @@ Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, S
     if (result_take_ok<i32, SyscallError>(result, &ret)) {
         DispatchOutcome outcome;
         outcome.next_sp = sp;
-        outcome.return_value = ret;
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = ret;
         return Ok(outcome);
     }
 
     SyscallError error;
     result_take_err<i32, SyscallError>(result, &error);
-    return Err(error);
+    DispatchOutcome failure;
+    failure.next_sp = sp;
+    failure.status = error_status(error);
+    failure.value = 0;
+    return Ok(failure);
 }
 
 /**
@@ -371,7 +469,8 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         sys_exit(arg1);
         DispatchOutcome outcome;
         outcome.next_sp = scheduler.reschedule(sp);
-        outcome.return_value = 0;
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = 0;
         return Ok(outcome);
     }
     if (sys_nr == Syscall::READ) {
@@ -389,7 +488,8 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::YIELD) {
         DispatchOutcome outcome;
         outcome.next_sp = scheduler.yield_until_tick(sp);
-        outcome.return_value = 0;
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = 0;
         return Ok(outcome);
     }
     if (sys_nr == Syscall::SPAWN) {
@@ -397,23 +497,87 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         return resume_after_syscall(sp, &result);
     }
     if (sys_nr == Syscall::OS_CALL) {
-        fn(i32 pid, i32 service, i32 args) -> i32 handler = g_os_handler;
+        fn(i32 pid, i32 service, i32 args, i32 result_out) -> void handler = g_os_handler;
         if (handler == 0) { return Err(SyscallError::UnknownSyscall); }
-        i32 pid = case process.get_current_pid() of {
+        i32 pid = case thread.current_pid() of {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };
-        i32 value = handler(pid, arg1, arg2);
+        Result<i32, OsServiceError> result;
+        handler(pid, arg1, arg2, (i32)(&result));
         DispatchOutcome outcome;
         outcome.next_sp = sp;
-        outcome.return_value = value;
+        case result of {
+            Ok(value) -> ({
+                outcome.status = SyscallStatus::Ok;
+                outcome.value = value;
+            });
+            Err(OsServiceError::UnknownService(service)) -> ({
+                outcome.status = SyscallStatus::UnknownService;
+                outcome.value = service;
+            });
+        };
         return Ok(outcome);
     }
     if (sys_nr == Syscall::WAIT_NOTIFICATION) {
         DispatchOutcome outcome;
-        outcome.next_sp = scheduler.wait_notification(sp, arg1);
-        outcome.return_value = 0;
+        i32 notification = 0;
+        outcome.next_sp = scheduler.wait_notification(sp, arg1, &notification);
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = notification;
         return Ok(outcome);
+    }
+    if (sys_nr == Syscall::THREAD_SPAWN) {
+        Result<i32, ThreadError> result = sys_thread_spawn(arg1);
+        return Ok(thread_result(sp, result));
+    }
+    if (sys_nr == Syscall::THREAD_EXIT) {
+        thread.exit_current_thread(arg1);
+        DispatchOutcome outcome;
+        outcome.next_sp = scheduler.reschedule(sp);
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = 0;
+        return Ok(outcome);
+    }
+    if (sys_nr == Syscall::THREAD_JOIN) {
+        Result<JoinOutcome, ThreadError> joined = thread.join_thread(arg1);
+        DispatchOutcome outcome;
+        outcome.next_sp = sp;
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = 0;
+        case joined of {
+            Ok(join_outcome) -> ({
+                case join_outcome of {
+                    JoinOutcome::Completed(code) -> ({ outcome.value = code; });
+                    JoinOutcome::Waiting -> ({ outcome.next_sp = scheduler.reschedule(sp); });
+                };
+            });
+            Err(error) -> ({ return Ok(thread_error_outcome(sp, error)); });
+        };
+        return Ok(outcome);
+    }
+    if (sys_nr == Syscall::THREAD_SELF) {
+        Result<i32, ThreadError> result = case thread.current_tid() of {
+            Some(tid) -> Ok(tid);
+            None -> Err(ThreadError::InvalidTid(0));
+        };
+        return Ok(thread_result(sp, result));
+    }
+    if (sys_nr == Syscall::FUTEX_WAIT) {
+        Result<bool, ThreadError> waited = thread.futex_wait(arg1, arg2, arg3, scheduler.ticks());
+        DispatchOutcome outcome;
+        outcome.next_sp = sp;
+        outcome.status = SyscallStatus::Ok;
+        outcome.value = 0;
+        case waited of {
+            Ok(immediate) -> ({ if (!immediate) { outcome.next_sp = scheduler.reschedule(sp); } });
+            Err(error) -> ({ return Ok(thread_error_outcome(sp, error)); });
+        };
+        return Ok(outcome);
+    }
+    if (sys_nr == Syscall::FUTEX_WAKE) {
+        Result<i32, ThreadError> result = thread.futex_wake(arg1, arg2);
+        return Ok(thread_result(sp, result));
     }
 
     return Err(SyscallError::UnknownSyscall);

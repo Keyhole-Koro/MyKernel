@@ -7,6 +7,7 @@ import mouse from "@kernel/io/mouse.mln";
 import keyboard from "@kernel/io/keyboard.mln";
 import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
+import thread from "thread.mln";
 import syscall from "syscall.mln";
 import { SyscallError, DispatchOutcome } from "syscall.mln";
 import irq from "@kernel/arch/irq.mln";
@@ -34,6 +35,8 @@ i32 IRQ_CAUSE_PAGE_FAULT = 32;
 i32 IRQ_CAUSE_PRIVILEGE_VIOLATION = 64;
 /** Bit mask for keyboard interrupts in IRQ_CAUSE_ADDR. */
 i32 IRQ_CAUSE_KEYBOARD = 128;
+/** Bit mask for illegal-instruction traps raised from user mode. */
+i32 IRQ_CAUSE_ILLEGAL_INSTRUCTION = 256;
 
 // irq_entry's fixed prologue leaves the interrupted bp/lr and the CPU's
 // saved SR/PC directly above the synthetic frame allocated by
@@ -100,7 +103,7 @@ export void dispatch(i32 sp) {
     if (cause & IRQ_CAUSE_PRIVILEGE_VIOLATION) {
         debug.println("irq: privilege violation in user process");
         debug.printf("irq: fault addr: 0x%x status: %i\n", mmu.get_fault_address(), mmu.get_fault_status());
-        Option<i32> current = process.get_current_pid();
+        Option<i32> current = thread.current_pid();
         case current of {
             Some(_) -> ({
                 ProcessExitStatus status = ProcessExitStatus::PrivilegeViolation;
@@ -116,7 +119,7 @@ export void dispatch(i32 sp) {
 
     if (cause & IRQ_CAUSE_PAGE_FAULT) {
         debug.println("irq: unhandled page fault in user process");
-        Option<i32> current = process.get_current_pid();
+        Option<i32> current = thread.current_pid();
         case current of {
             Some(_) -> ({
                 ProcessExitStatus status = ProcessExitStatus::PageFault;
@@ -130,18 +133,37 @@ export void dispatch(i32 sp) {
         };
     }
 
+    if (cause & IRQ_CAUSE_ILLEGAL_INSTRUCTION) {
+        debug.println("irq: illegal instruction in user process");
+        Option<i32> current = thread.current_pid();
+        case current of {
+            Some(_) -> ({
+                ProcessExitStatus status = ProcessExitStatus::IllegalInstruction;
+                syscall.sys_exit_status(status);
+                sp = scheduler.reschedule(sp);
+                irq.leave_handler(was_enabled);
+                irq_resume(sp);
+                return;
+            });
+            None -> _;
+        };
+    }
+
     if (cause & IRQ_CAUSE_SYSCALL) {
         Result<DispatchOutcome, SyscallError> result = syscall.dispatch(sp);
         DispatchOutcome outcome;
         if (result_take_ok<DispatchOutcome, SyscallError>(&result, &outcome)) {
-            i32 return_value = syscall.outcome_return_value(&outcome);
+            i32 status = (i32)syscall.outcome_status(&outcome);
+            i32 value = syscall.outcome_value(&outcome);
             i32 next_sp = syscall.outcome_next_sp(&outcome);
-            mem.write_word(sp + 24, return_value);
+            mem.write_word(sp + 24, status);
+            mem.write_word(sp + 20, value);
             sp = next_sp;
         } else {
             SyscallError error;
             result_take_err<DispatchOutcome, SyscallError>(&result, &error);
-            mem.write_word(sp + 24, syscall.error_code(error));
+            mem.write_word(sp + 24, (i32)syscall.error_status(error));
+            mem.write_word(sp + 20, 0);
         }
     }
 

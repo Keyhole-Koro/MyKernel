@@ -1,0 +1,152 @@
+package test_thread;
+
+import heap from "@kernel/mm/heap.mln";
+import mem from "@kernel/mm/mem.mln";
+import mmu from "@kernel/mm/mmu.mln";
+import process from "@kernel/kernel/process.mln";
+import { ProcessState } from "@kernel/kernel/process.mln";
+import scheduler from "@kernel/kernel/scheduler.mln";
+import thread from "@kernel/kernel/thread.mln";
+import { ThreadState, JoinOutcome } from "@kernel/kernel/thread.mln";
+import loader from "@kernel/kernel/loader.mln";
+import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
+import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { SyscallStatus, SyscallFailure } from "@contracts/myos/syscall.contract.mln";
+import { Result } from "@std/core/result.mln";
+import { assert_eq } from "@std/testing/assert.mln";
+import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
+
+/**
+ * Exercises TCB publication, join wake/reap, futex wake, and process-wide
+ * cleanup without executing the synthetic user instructions.
+ */
+/*@Test "user thread lifecycle" {
+    step: 50000000;
+}*/
+void user_thread_lifecycle() {
+    SyscallFailure invalid_tid_failure = SyscallFailure {
+        status: SyscallStatus::InvalidThreadId,
+        payload: 77,
+    };
+    ThreadError converted = ThreadError::from(invalid_tid_failure);
+    i32 converted_tid = case converted of { ThreadError::InvalidTid(value) -> value; _ -> -1; };
+    assert_eq<i32>(converted_tid, 77, "From<SyscallFailure> preserves payload");
+
+    heap.init();
+    process.init();
+
+    i32 kernel_pd = case mmu.create_page_directory() of {
+        Some(value) -> value;
+        None -> ({ assert_eq<i32>(1, 0, "kernel page directory"); 0; });
+    };
+    case mmu.setup_identity_kernel_mapping(kernel_pd) of {
+        Ok(_) -> _;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "kernel identity mapping"); });
+    };
+    scheduler.init();
+
+    // A legacy flat image only needs one executable word for this lifecycle
+    // test; the test never dispatches it.
+    i32 image = case heap.alloc(4) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "test image allocation"); 0; });
+    };
+    mem.write_word(image, 0xFC000000); // halt
+    i32 pid = case loader.spawn_from_buffer(image, 4) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "main process creation"); 0; });
+    };
+    assert_eq<i32>(process.live_thread_count(pid).unwrap_or(0), 1, "main TCB accounted");
+
+    i32 main_slot = 1;
+    i32 main_tid = thread.tid_at(main_slot).unwrap_or(0);
+    thread.set_current_slot(main_slot);
+    thread.make_running(main_slot);
+
+    ThreadSpawnArgs args = ThreadSpawnArgs {
+        entry: 0x40000000,
+        arg0: 11,
+        arg1: 22,
+        stack_bytes: 8192,
+    };
+    i32 worker_tid = case thread.spawn_user_thread(pid, args) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "worker creation"); 0; });
+    };
+    assert_eq<bool>(worker_tid != main_tid, true, "TID differs from main");
+    assert_eq<i32>(process.live_thread_count(pid).unwrap_or(0), 2, "worker live count");
+    i32 worker_slot = thread.slot_for_tid(worker_tid).unwrap_or(-1);
+
+    i32 scratch_address = loader.USER_STACK_BASE;
+    bool joined_now = case thread.join_thread(worker_tid) of {
+        Ok(outcome) -> case outcome of { JoinOutcome::Completed(_) -> true; JoinOutcome::Waiting -> false; };
+        Err(_) -> ({ assert_eq<i32>(1, 0, "join registration"); true; });
+    };
+    assert_eq<bool>(joined_now, false, "live target blocks joiner");
+    bool main_blocked = case thread.state_at(main_slot) of {
+        Some(state) -> case state of { ThreadState::Blocked(_) -> true; _ -> false; };
+        None -> false;
+    };
+    assert_eq<bool>(main_blocked, true, "joiner is blocked");
+
+    thread.set_current_slot(worker_slot);
+    thread.make_running(worker_slot);
+    thread.exit_current_thread(37);
+    thread.finish_deferred_cleanup(worker_slot);
+    i32 pdbr = process.get_pdbr(pid).unwrap_or(0);
+    assert_eq<i32>(mem.read_word(thread.saved_kernel_sp(main_slot) + 24), (i32)SyscallStatus::Ok, "join status returned in r1");
+    assert_eq<i32>(mem.read_word(thread.saved_kernel_sp(main_slot) + 20), 37, "join exit code returned in r2");
+    assert_eq<i32>(process.retained_thread_count(pid).unwrap_or(0), 1, "joined TCB reaped");
+    bool main_runnable = case thread.state_at(main_slot) of {
+        Some(state) -> case state of { ThreadState::Runnable -> true; _ -> false; };
+        None -> false;
+    };
+    assert_eq<bool>(main_runnable, true, "joiner was woken");
+
+    thread.set_current_slot(main_slot);
+    thread.make_running(main_slot);
+    i32 futex_addr = scratch_address + 4;
+    mmu.write_user_word(pdbr, futex_addr, 2);
+    case thread.futex_wait(futex_addr, 2, 0, 0) of {
+        Ok(_) -> _;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "futex wait registration"); });
+    };
+    ThreadSpawnArgs second_args = ThreadSpawnArgs {
+        entry: 0x40000000,
+        arg0: 33,
+        arg1: 44,
+        stack_bytes: 8192,
+    };
+    i32 second_tid = case thread.spawn_user_thread(pid, second_args) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "futex waker creation"); 0; });
+    };
+    i32 second_slot = thread.slot_for_tid(second_tid).unwrap_or(-1);
+    thread.set_current_slot(second_slot);
+    thread.make_running(second_slot);
+    i32 woken = case thread.futex_wake(futex_addr, 1) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "futex wake"); 0; });
+    };
+    assert_eq<i32>(woken, 1, "one futex waiter woke");
+    assert_eq<i32>(mem.read_word(thread.saved_kernel_sp(main_slot) + 24), (i32)SyscallStatus::Ok, "futex wake status returned in r1");
+    assert_eq<i32>(mem.read_word(thread.saved_kernel_sp(main_slot) + 20), 0, "futex wake value returned in r2");
+    main_runnable = case thread.state_at(main_slot) of {
+        Some(state) -> case state of { ThreadState::Runnable -> true; _ -> false; };
+        None -> false;
+    };
+    assert_eq<bool>(main_runnable, true, "futex waiter runnable");
+
+    ProcessExitStatus status = ProcessExitStatus::Code(9);
+    thread.exit_process_threads(pid, status);
+    thread.finish_deferred_cleanup(second_slot);
+    bool zombie = case process.get_state(pid) of {
+        Some(state) -> case state of { ProcessState::Zombie(_) -> true; _ -> false; };
+        None -> false;
+    };
+    assert_eq<bool>(zombie, true, "process reaches Zombie after resource cleanup");
+    assert_eq<i32>(process.retained_thread_count(pid).unwrap_or(-1), 0, "all TCBs released");
+
+    heap.free(image);
+    testkit.pass("user thread lifecycle");
+}

@@ -6,13 +6,12 @@ import heap from "@kernel/mm/heap.mln";
 import { HeapBlock } from "@kernel/mm/heap.mln";
 import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
-import { ProcessState } from "process.mln";
-import scheduler from "scheduler.mln";
+import thread from "thread.mln";
+import { KernelStack, UserStack } from "thread.mln";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { MmuError, LoaderError } from "@contracts/process/loader.contract.mln";
 import { ProcessError } from "process.mln";
-import { SchedulerError } from "scheduler.mln";
 import { Drop } from "@std/core/drop.mln";
 
 /** Fallback virtual base used for legacy flat user binaries. */
@@ -115,8 +114,17 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
             }
         }
 
-        // An MMU failure becomes a LoaderError through the contract's From.
-        mmu.map_page(pd, vaddr_base + offset, frame, pte_flags)?;
+        // The address-space guard owns already-mapped pages.  A frame that
+        // failed before publication must be returned explicitly.
+        Result<_, MmuError> mapped = mmu.map_page(pd, vaddr_base + offset, frame, pte_flags);
+        case mapped of {
+            Ok(_) -> _;
+            Err(error) -> ({
+                Result<_, MmuError> freed = mmu.free_frame(frame);
+                case freed of { Ok(_) -> _; Err(_) -> ({ debug.panic("loader: allocated frame could not be freed"); }); };
+                return Err(LoaderError::from(error));
+            });
+        };
         offset = offset + 4096;
     }
     return Ok(_);
@@ -133,6 +141,7 @@ struct ProcessSlot {
 };
 
 impl Drop for ProcessSlot {
+    /** Rolls back the pid reservation unless keep() already committed ownership. */
     void (Self *self) drop() {
         if (self->pid == 0) { return; }
         Result<_, ProcessError> release = process.free_proc(self->pid);
@@ -142,6 +151,37 @@ impl Drop for ProcessSlot {
         };
         self->pid = 0;
     }
+}
+
+/**
+ * Owns an unpublished address space during transactional process loading.
+ * @property pdbr Physical page-directory base, or zero after keep()/cleanup.
+ */
+struct AddressSpace {
+    i32 pdbr;
+};
+
+impl Drop for AddressSpace {
+    /** Destroys the unpublished address space unless keep() committed ownership. */
+    void (Self *self) drop() {
+        if (self->pdbr == 0) { return; }
+        Result<_, MmuError> destroyed = mmu.destroy_user_address_space(self->pdbr);
+        case destroyed of {
+            Ok(_) -> _;
+            Err(_) -> ({ debug.panic("loader: failed to roll back address space"); });
+        };
+        self->pdbr = 0;
+    }
+}
+
+/**
+ * Transfers the page directory out of its rollback guard.
+ * @return Physical page-directory base now owned by the committed Process.
+ */
+i32 (AddressSpace *self) keep() {
+    i32 pdbr = self->pdbr;
+    self->pdbr = 0;
+    return pdbr;
 }
 
 /**
@@ -164,7 +204,7 @@ i32 (ProcessSlot *self) keep() {
  * @return Ok(pid) with allocated process ID on success, or Err(LoaderError) on failure.
  */
 export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
-    Result<i32, ProcessError> proc_res = process.alloc_proc();
+    Result<i32, ProcessError> proc_res = process.reserve_process();
     i32 pid = case proc_res of {
         Ok(p) -> p;
         Err(NoFreeSlot) -> ({
@@ -176,7 +216,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             return Err(LoaderError::ProcSlotFull);
         });
         Err(InvalidFd(fd)) -> ({
-            debug.panic("loader: alloc_proc returned an invalid file descriptor error");
+            debug.panic("loader: reserve_process returned an invalid file descriptor error");
         });
     };
     ProcessSlot slot = ProcessSlot { pid: pid };
@@ -189,12 +229,8 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             return Err(LoaderError::OutOfMemory);
         });
     };
+    AddressSpace address_space = AddressSpace { pdbr: pd };
     mmu.setup_identity_kernel_mapping(pd)?;
-    Result<_, ProcessError> set_pdbr = process.set_pdbr(pid, pd);
-    case set_pdbr of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting pdbr"); });
-    };
 
     // 2. Check for an MBIN executable header
     i32 entry_point = USER_CODE_BASE;
@@ -290,30 +326,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     // Freed if a later step fails; the process keeps it once it is ready.
     HeapBlock kstack_block = HeapBlock { addr: kstack };
     i32 kstack_top = kstack + KSTACK_BYTES;
-    Result<_, ProcessError> set_kstack_top = process.set_kernel_stack_top(pid, kstack_top);
-    case set_kstack_top of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting kernel stack"); });
-    };
-
-    // 5. Initialize process registers and state
-    Result<_, ProcessError> set_user_sp = process.set_user_sp(pid, USER_STACK_TOP);
-    case set_user_sp of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting user stack"); });
-    };
-    Result<_, ProcessError> set_user_entry = process.set_user_entry(pid, entry_point);
-    case set_user_entry of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting entry point"); });
-    };
-    Result<_, ProcessError> set_heap_break = process.set_heap_break(pid, initial_brk);
-    case set_heap_break of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting heap break"); });
-    };
-
-    // 6. Build initial interrupt stack frame for iret to resume
+    // 5. Build the main thread's initial interrupt frame for iret.
     i32 sp = kstack_top;
     sp = sp - 4; mem.write_word(sp, entry_point);     // PC
     sp = sp - 4; mem.write_word(sp, 0x21);            // SR (SR_USER=0x20 | SR_IE=0x01)
@@ -332,28 +345,42 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     sp = sp - 4; mem.write_word(sp, 0);               // r6
     sp = sp - 4; mem.write_word(sp, 0);               // r7
 
-    Result<_, ProcessError> set_kernel_sp = process.set_kernel_sp(pid, sp);
-    case set_kernel_sp of {
-        Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while setting kernel context"); });
-    };
-
-    // 7. Spawn task in scheduler
-    Result<i32, SchedulerError> spawn_res = scheduler.spawn_proc_task(pid, sp);
-    case spawn_res of {
-        Ok(_) -> _;
-        Err(_) -> ({
-            debug.println("loader: failed to spawn task");
+    // 6. Publish the fully constructed TCB, then atomically make its Process
+    // Alive. Before publication all resources above are rollback guards.
+    i32 thread_slot = case thread.find_free_slot() of {
+        Some(value) -> value;
+        None -> ({
+            debug.println("loader: thread table is full");
             return Err(LoaderError::SpawnTaskFailed);
         });
     };
+    KernelStack kernel_stack = KernelStack { base: kstack, bytes: KSTACK_BYTES, owned: true };
+    UserStack user_stack = UserStack {
+        slot: 0,
+        mapped_base: USER_STACK_BASE,
+        mapped_bytes: USER_STACK_PAGES * 4096,
+    };
+    thread.publish_user(thread_slot, pid, sp, USER_STACK_TOP, kernel_stack, user_stack);
 
-    ProcessState ready_state = Ready;
-    Result<_, ProcessError> set_ready = process.set_state(pid, ready_state);
-    case set_ready of {
+    Result<_, ProcessError> retained = process.retain_thread(pid);
+    case retained of {
         Ok(_) -> _;
-        Err(_) -> ({ debug.panic("loader: allocated process disappeared while marking ready"); });
+        Err(_) -> ({ debug.panic("loader: process disappeared while publishing main thread"); });
+    };
+    Result<Option<i32>, ProcessError> reserved_stack = process.reserve_user_stack_slot(pid);
+    case reserved_stack of {
+        Ok(Some(stack_slot)) -> ({
+            if (stack_slot != 0) { debug.panic("loader: main thread did not receive stack slot zero"); }
+        });
+        Ok(None) -> ({ debug.panic("loader: new process has no user stack slot"); });
+        Err(_) -> ({ debug.panic("loader: process disappeared while reserving main stack"); });
+    };
+    Result<_, ProcessError> committed = process.commit_process(pid, pd, initial_brk);
+    case committed of {
+        Ok(_) -> _;
+        Err(_) -> ({ debug.panic("loader: allocated process disappeared while committing"); });
     };
     kstack_block.keep();
+    address_space.keep();
     return Ok(slot.keep());
 }

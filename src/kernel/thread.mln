@@ -1,0 +1,1164 @@
+package thread;
+
+import { Option } from "@std/core/option.mln";
+import { Result } from "@std/core/result.mln";
+import kernel_config from "kernel_config.mln";
+import process from "process.mln";
+import { ProcessState, ProcessError } from "process.mln";
+import heap from "@kernel/mm/heap.mln";
+import mmu from "@kernel/mm/mmu.mln";
+import mem from "@kernel/mm/mem.mln";
+import debug from "@kernel/debug/debug.mln";
+import { MmuError } from "@contracts/process/loader.contract.mln";
+import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
+import { SyscallStatus } from "@contracts/myos/syscall.contract.mln";
+
+/**
+ * Resource owner of a schedulable execution context.
+ * @property Kernel Context owned by the kernel and not associated with a PID.
+ * @property User Context sharing the address space and resources of the carried PID.
+ */
+export enum ThreadOwner {
+    Kernel,
+    User(i32),
+}
+
+/**
+ * Kernel stack backing one TCB's interrupt and syscall execution.
+ * @property base Allocation base, or zero for the borrowed boot stack.
+ * @property bytes Size of the allocation in bytes.
+ * @property owned Whether deferred cleanup must return base to the kernel heap.
+ */
+export struct KernelStack {
+    i32 base;
+    i32 bytes;
+    bool owned;
+};
+
+/**
+ * User-stack mapping owned by one user TCB.
+ * @property slot Process-local fixed virtual-address slot index.
+ * @property mapped_base Lowest mapped user virtual address in the slot.
+ * @property mapped_bytes Number of mapped bytes, excluding the guard page.
+ */
+export struct UserStack {
+    i32 slot;
+    i32 mapped_base;
+    i32 mapped_bytes;
+};
+
+/**
+ * Timer wait registration stored in a Blocked TCB.
+ * @property deadline_tick First scheduler tick at which the TCB may run again.
+ */
+export struct SleepWait {
+    i32 deadline_tick;
+};
+
+/**
+ * Notification wait registration stored in a Blocked TCB.
+ * @property mask Bit set accepted by the waiter.
+ */
+export struct NotificationWait {
+    i32 mask;
+};
+
+/**
+ * Join registration stored in the waiting TCB.
+ * @property target_tid Stable TID whose exit is being awaited.
+ */
+export struct JoinWait {
+    i32 target_tid;
+};
+
+/** Result of attempting to join a thread before the scheduler is invoked. */
+export enum JoinOutcome {
+    Completed(i32),
+    Waiting,
+}
+
+/**
+ * Futex registration stored in the waiting TCB.
+ * @property addr Aligned user virtual address; the owner PID completes the futex key.
+ * @property deadline_tick Absolute timeout tick, or zero for no timeout.
+ * @property sequence Monotonic registration order used to provide FIFO wakeup.
+ */
+export struct FutexWait {
+    i32 addr;
+    i32 deadline_tick;
+    i32 sequence;
+};
+
+/** Exactly one reason is attached to a blocked thread. */
+export enum WaitReason {
+    Sleep(SleepWait),
+    Notification(NotificationWait),
+    Join(JoinWait),
+    Futex(FutexWait),
+}
+
+/** Lifecycle of one schedulable execution context. */
+export enum ThreadState {
+    Runnable,
+    Running,
+    Blocked(WaitReason),
+    Exiting(i32),
+    Zombie(i32),
+}
+
+/**
+ * Kernel Thread Control Block and single source of truth for execution state.
+ * @property tid Stable positive thread identifier, independent of table slot reuse.
+ * @property owner Kernel ownership or the PID whose resources are shared.
+ * @property state Scheduling, blocking, exit, or retained-Zombie state.
+ * @property saved_kernel_sp Interrupt-frame SP restored by irq_resume.
+ * @property saved_user_sp User SP restored through KERNEL_SP; zero for kernel threads.
+ * @property kernel_stack Kernel stack allocation or borrowed boot-stack descriptor.
+ * @property user_stack User mapping owned by a user thread; None for kernel threads.
+ * @property joiner_tid Sole registered joiner TID, if one exists.
+ * @property notification_pending Armed notification bits already delivered.
+ * @property notification_armed Notification bits this TCB currently accepts.
+ * @property wake_result Success value or error payload installed in syscall r2 on wake.
+ */
+export struct Thread {
+    i32 tid;
+    ThreadOwner owner;
+    ThreadState state;
+    i32 saved_kernel_sp;
+    i32 saved_user_sp;
+    KernelStack kernel_stack;
+    Option<UserStack> user_stack;
+    Option<i32> joiner_tid;
+    i32 notification_pending;
+    i32 notification_armed;
+    i32 wake_result;
+};
+
+Option<Thread> g_threads[256];
+i32 g_thread_slot_high_water = 0;
+i32 g_next_tid = 1;
+i32 g_current_thread_slot = -1;
+i32 g_next_wait_sequence = 1;
+
+/**
+ * Allocates a positive TID that is not used by any published TCB.
+ * @return A stable nonzero TID; panics if a free slot has no representable TID.
+ */
+i32 allocate_tid() {
+    i32 candidate = g_next_tid;
+    i32 checked = 0;
+    while (checked <= kernel_config.MAX_THREADS) {
+        if (candidate <= 0) { candidate = 1; }
+        bool used = case slot_for_tid(candidate) of { Some(_) -> true; None -> false; };
+        if (!used) {
+            g_next_tid = candidate + 1;
+            if (g_next_tid <= 0) { g_next_tid = 1; }
+            return candidate;
+        }
+        candidate++;
+        checked++;
+    }
+    debug.panic("thread: no TID available for a free TCB slot");
+    return 0;
+}
+
+/** Clears the TCB table and resets thread, scheduler-slot, and wait IDs. */
+export void init() {
+    i32 i = 0;
+    while (i < kernel_config.MAX_THREADS) {
+        Option<Thread> empty = None;
+        g_threads[i] = empty;
+        i++;
+    }
+    g_thread_slot_high_water = 0;
+    g_next_tid = 1;
+    g_current_thread_slot = -1;
+    g_next_wait_sequence = 1;
+}
+
+/** @return One past the highest TCB slot that may currently be occupied. */
+export i32 high_water() { return g_thread_slot_high_water; }
+
+/** @return Current scheduler slot, or -1 while the idle context runs. */
+export i32 current_slot() { return g_current_thread_slot; }
+
+/**
+ * Records the scheduler slot that is currently executing.
+ * @param slot Occupied TCB slot, or -1 for the idle fallback context.
+ */
+export void set_current_slot(i32 slot) { g_current_thread_slot = slot; }
+
+/**
+ * Tests whether a slot contains a published TCB below the high-water mark.
+ * @param slot Global TCB table index.
+ * @return true when the slot contains Some(Thread); otherwise false.
+ */
+export bool occupied(i32 slot) {
+    if (slot < 0 || slot >= g_thread_slot_high_water) { return false; }
+    return case g_threads[slot] of { Some(_) -> true; None -> false; };
+}
+
+/** @return The first unused global TCB slot, or None when the table is full. */
+export Option<i32> find_free_slot() {
+    i32 i = 0;
+    while (i < kernel_config.MAX_THREADS) {
+        bool free = case g_threads[i] of { None -> true; Some(_) -> false; };
+        if (free) { return Some(i); }
+        i++;
+    }
+    return None;
+}
+
+/**
+ * Publishes a fully initialized TCB and advances the table high-water mark.
+ * @param slot Previously verified free TCB table index.
+ * @param value Complete TCB value whose resources are ready for scheduling.
+ */
+void publish_at(i32 slot, Thread value) {
+    Option<Thread> entry = Some(value);
+    g_threads[slot] = entry;
+    if (slot >= g_thread_slot_high_water) {
+        g_thread_slot_high_water = slot + 1;
+    }
+}
+
+/**
+ * Registers the boot context, whose kernel stack is borrowed.
+ * @param slot Free TCB slot reserved for the boot context.
+ */
+export void publish_boot(i32 slot) {
+    Option<UserStack> no_user_stack = None;
+    Option<i32> no_joiner = None;
+    Thread value = Thread {
+        tid: allocate_tid(),
+        owner: ThreadOwner::Kernel,
+        state: ThreadState::Runnable,
+        saved_kernel_sp: 0,
+        saved_user_sp: 0,
+        kernel_stack: KernelStack { base: 0, bytes: 0, owned: false },
+        user_stack: no_user_stack,
+        joiner_tid: no_joiner,
+        notification_pending: 0,
+        notification_armed: 0,
+        wake_result: 0,
+    };
+    publish_at(slot, value);
+}
+
+/**
+ * Publishes a fully constructed kernel thread.
+ * @param slot Free global TCB slot.
+ * @param saved_sp Initial interrupt-frame stack pointer.
+ * @param stack_base Base of the owned kernel-stack allocation.
+ * @param stack_bytes Kernel-stack allocation size in bytes.
+ * @return Newly allocated stable TID.
+ */
+export i32 publish_kernel(i32 slot, i32 saved_sp, i32 stack_base, i32 stack_bytes) {
+    i32 tid = allocate_tid();
+    Option<UserStack> no_user_stack = None;
+    Option<i32> no_joiner = None;
+    Thread value = Thread {
+        tid: tid,
+        owner: ThreadOwner::Kernel,
+        state: ThreadState::Runnable,
+        saved_kernel_sp: saved_sp,
+        saved_user_sp: 0,
+        kernel_stack: KernelStack { base: stack_base, bytes: stack_bytes, owned: true },
+        user_stack: no_user_stack,
+        joiner_tid: no_joiner,
+        notification_pending: 0,
+        notification_armed: 0,
+        wake_result: 0,
+    };
+    publish_at(slot, value);
+    return tid;
+}
+
+/**
+ * Publishes a fully constructed user thread.
+ * @param slot Free global TCB slot.
+ * @param pid Alive owner process.
+ * @param saved_kernel_sp Initial interrupt-frame stack pointer.
+ * @param saved_user_sp Initial user stack pointer.
+ * @param kernel_stack Owned kernel-stack descriptor.
+ * @param user_stack Owned user-stack mapping descriptor.
+ * @return Newly allocated stable TID.
+ */
+export i32 publish_user(
+    i32 slot,
+    i32 pid,
+    i32 saved_kernel_sp,
+    i32 saved_user_sp,
+    KernelStack kernel_stack,
+    UserStack user_stack
+) {
+    i32 tid = allocate_tid();
+    Option<UserStack> owned_user_stack = Some(user_stack);
+    Option<i32> no_joiner = None;
+    Thread value = Thread {
+        tid: tid,
+        owner: ThreadOwner::User(pid),
+        state: ThreadState::Runnable,
+        saved_kernel_sp: saved_kernel_sp,
+        saved_user_sp: saved_user_sp,
+        kernel_stack: kernel_stack,
+        user_stack: owned_user_stack,
+        joiner_tid: no_joiner,
+        notification_pending: 0,
+        notification_armed: 0,
+        wake_result: 0,
+    };
+    publish_at(slot, value);
+    return tid;
+}
+
+/**
+ * Returns the stable TID stored in a scheduler slot.
+ * @param slot Global TCB table index.
+ * @return Some(TID) for an occupied slot; otherwise None.
+ */
+export Option<i32> tid_at(i32 slot) {
+    if (!occupied(slot)) { return None; }
+    return case g_threads[slot] of { Some(t) -> Some(t.tid); None -> None; };
+}
+
+/**
+ * Resolves a stable TID to its current scheduler slot.
+ * @param tid Positive stable thread identifier.
+ * @return Some(slot) while the TCB is retained; otherwise None.
+ */
+export Option<i32> slot_for_tid(i32 tid) {
+    if (tid <= 0) { return None; }
+    i32 i = 0;
+    while (i < g_thread_slot_high_water) {
+        case g_threads[i] of {
+            Some(t) -> ({ if (t.tid == tid) { return Some(i); } });
+            None -> _;
+        };
+        i++;
+    }
+    return None;
+}
+
+/**
+ * Resolves the process owner of a TCB slot.
+ * @param slot Global TCB table index.
+ * @return Some(PID) for a user TCB; None for kernel or empty slots.
+ */
+export Option<i32> owner_pid_at(i32 slot) {
+    if (!occupied(slot)) { return None; }
+    return case g_threads[slot] of {
+        Some(t) -> case t.owner of { User(pid) -> Some(pid); Kernel -> None; };
+        None -> None;
+    };
+}
+
+/** @return Current user PID derived from the TCB, or None in a kernel/idle context. */
+export Option<i32> current_pid() { return owner_pid_at(g_current_thread_slot); }
+
+/** @return Stable TID of the current TCB, or None while idle. */
+export Option<i32> current_tid() {
+    if (g_current_thread_slot < 0) { return None; }
+    return tid_at(g_current_thread_slot);
+}
+
+/**
+ * Tests whether a TCB can be selected by the scheduler.
+ * @param slot Global TCB table index.
+ * @return true only for ThreadState::Runnable.
+ */
+export bool runnable(i32 slot) {
+    if (!occupied(slot)) { return false; }
+    return case g_threads[slot] of {
+        Some(t) -> case t.state of { Runnable -> true; _ -> false; };
+        None -> false;
+    };
+}
+
+/**
+ * Tests whether a TCB is blocked on a WaitReason.
+ * @param slot Global TCB table index.
+ * @return true only for ThreadState::Blocked(_).
+ */
+export bool blocked(i32 slot) {
+    if (!occupied(slot)) { return false; }
+    return case g_threads[slot] of {
+        Some(t) -> case t.state of { Blocked(_) -> true; _ -> false; };
+        None -> false;
+    };
+}
+
+/**
+ * Tests whether a sleeping TCB's deadline has passed.
+ * @param slot Global TCB table index.
+ * @param now Current scheduler tick.
+ * @return true only for an expired Sleep wait.
+ */
+export bool sleeping_until(i32 slot, i32 now) {
+    if (!occupied(slot)) { return false; }
+    return case g_threads[slot] of {
+        Some(t) -> case t.state of {
+            Blocked(reason) -> case reason of {
+                Sleep(wait) -> wait.deadline_tick <= now;
+                _ -> false;
+            };
+            _ -> false;
+        };
+        None -> false;
+    };
+}
+
+/**
+ * Transitions an occupied TCB to Runnable.
+ * @param slot Global TCB table index; empty or invalid slots are ignored.
+ */
+export void make_runnable(i32 slot) {
+    if (!occupied(slot)) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({ t.state = ThreadState::Runnable; });
+        None -> _;
+    };
+}
+
+/**
+ * Marks the selected TCB as the CPU's Running context.
+ * @param slot Occupied global TCB table index selected by the scheduler.
+ */
+export void make_running(i32 slot) {
+    if (!occupied(slot)) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({ t.state = ThreadState::Running; });
+        None -> _;
+    };
+}
+
+/**
+ * Saves a switched-out context and makes a still-live Running TCB Runnable.
+ * Blocked and Exiting states are preserved.
+ * @param slot TCB slot being switched out.
+ * @param kernel_sp Saved interrupt-frame SP on the thread's kernel stack.
+ * @param user_sp Hardware-saved user SP; ignored for kernel threads.
+ */
+export void switch_out(i32 slot, i32 kernel_sp, i32 user_sp) {
+    if (!occupied(slot)) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({
+            t.saved_kernel_sp = kernel_sp;
+            case t.owner of { User(_) -> ({ t.saved_user_sp = user_sp; }); Kernel -> _; };
+            case t.state of { Running -> ({ t.state = ThreadState::Runnable; }); _ -> _; };
+        });
+        None -> _;
+    };
+}
+
+/**
+ * @param slot Occupied global TCB table index.
+ * @return Saved interrupt-frame SP, or zero for an empty slot.
+ */
+export i32 saved_kernel_sp(i32 slot) {
+    return case g_threads[slot] of { Some(t) -> t.saved_kernel_sp; None -> 0; };
+}
+
+/**
+ * @param slot Occupied global TCB table index.
+ * @return Saved user SP, or zero for kernel/empty slots.
+ */
+export i32 saved_user_sp(i32 slot) {
+    return case g_threads[slot] of { Some(t) -> t.saved_user_sp; None -> 0; };
+}
+
+/**
+ * @param slot Global TCB table index.
+ * @return Some(state) for an occupied slot; otherwise None.
+ */
+export Option<ThreadState> state_at(i32 slot) {
+    if (!occupied(slot)) { return None; }
+    return case g_threads[slot] of { Some(t) -> Some(t.state); None -> None; };
+}
+
+/**
+ * @param slot Global TCB table index.
+ * @return true only when the TCB is in ThreadState::Exiting(_).
+ */
+export bool exiting(i32 slot) {
+    return case state_at(slot) of {
+        Some(state) -> case state of { ThreadState::Exiting(_) -> true; _ -> false; };
+        None -> false;
+    };
+}
+
+/**
+ * Blocks a TCB until the scheduler reaches the specified tick.
+ * @param slot Occupied global TCB table index.
+ * @param deadline Absolute scheduler tick at which the wait expires.
+ */
+export void sleep_until(i32 slot, i32 deadline) {
+    if (!occupied(slot)) { return; }
+    SleepWait wait = SleepWait { deadline_tick: deadline };
+    case g_threads[slot] of {
+        Some(t) -> ({ t.state = ThreadState::Blocked(WaitReason::Sleep(wait)); });
+        None -> _;
+    };
+}
+
+/**
+ * Arms notification bits for one TCB without blocking it.
+ * @param slot Occupied global TCB table index.
+ * @param mask Nonzero set of notification bits to accept.
+ */
+export void arm_notification(i32 slot, i32 mask) {
+    if (!occupied(slot) || mask == 0) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({ t.notification_armed = t.notification_armed | mask; });
+        None -> _;
+    };
+}
+
+/**
+ * Clears armed and pending notification bits for one TCB.
+ * @param slot Occupied global TCB table index.
+ * @param mask Notification bits to clear.
+ */
+export void disarm_notification(i32 slot, i32 mask) {
+    if (!occupied(slot) || mask == 0) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({
+            t.notification_armed = t.notification_armed & (~mask);
+            t.notification_pending = t.notification_pending & (~mask);
+        });
+        None -> _;
+    };
+}
+
+/**
+ * Arms a mask, then consumes any matching pending notification bits.
+ * @param slot Occupied global TCB table index.
+ * @param mask Notification bits accepted by the caller.
+ * @return Matching pending bits, or zero when no notification is ready.
+ */
+export i32 take_notification(i32 slot, i32 mask) {
+    if (!occupied(slot) || mask == 0) { return 0; }
+    return case g_threads[slot] of {
+        Some(t) -> ({
+            t.notification_armed = t.notification_armed | mask;
+            i32 ready = t.notification_pending & mask;
+            if (ready) {
+                t.notification_pending = t.notification_pending & (~ready);
+                t.notification_armed = t.notification_armed & (~mask);
+            }
+            ready;
+        });
+        None -> 0;
+    };
+}
+
+/**
+ * Blocks a TCB until one of the requested notification bits is delivered.
+ * @param slot Occupied global TCB table index.
+ * @param mask Notification bits accepted by the waiter.
+ */
+export void block_notification(i32 slot, i32 mask) {
+    if (!occupied(slot)) { return; }
+    NotificationWait wait = NotificationWait { mask: mask };
+    case g_threads[slot] of {
+        Some(t) -> ({ t.state = ThreadState::Blocked(WaitReason::Notification(wait)); });
+        None -> _;
+    };
+}
+
+/**
+ * Delivers armed bits and wakes a matching notification waiter.
+ * @param slot Destination TCB table index.
+ * @param mask Notification bits produced by the event source.
+ */
+export void notify(i32 slot, i32 mask) {
+    if (!occupied(slot)) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({
+            i32 matched = t.notification_armed & mask;
+            if (matched) {
+                t.notification_pending = t.notification_pending | matched;
+                case t.state of {
+                    Blocked(wait_reason) -> ({
+                        case wait_reason of {
+                            Notification(wait) -> ({
+                                i32 reason = t.notification_pending & wait.mask;
+                                if (reason) {
+                                    t.notification_pending = t.notification_pending & (~reason);
+                                    t.notification_armed = t.notification_armed & (~wait.mask);
+                                    t.state = ThreadState::Runnable;
+                                    t.wake_result = reason;
+                                    if (t.saved_kernel_sp != 0) {
+                                        mem.write_word(t.saved_kernel_sp + 24, (i32)SyscallStatus::Ok);
+                                        mem.write_word(t.saved_kernel_sp + 20, reason);
+                                    }
+                                }
+                            });
+                            _ -> _;
+                        };
+                    });
+                    _ -> _;
+                };
+            }
+        });
+        None -> _;
+    };
+}
+
+/**
+ * Removes a TCB and contracts the table high-water mark when possible.
+ * All owned resources must already have been released.
+ * @param slot Global TCB table index to clear.
+ */
+export void clear_slot(i32 slot) {
+    if (slot < 0 || slot >= kernel_config.MAX_THREADS) { return; }
+    Option<Thread> empty = None;
+    g_threads[slot] = empty;
+    if (g_current_thread_slot == slot) { g_current_thread_slot = -1; }
+    while (g_thread_slot_high_water > 0 &&
+           !occupied(g_thread_slot_high_water - 1)) {
+        g_thread_slot_high_water--;
+    }
+}
+
+// User stacks occupy fixed 2 MiB virtual slots below 0x8000_0000. Only the
+// requested top pages are mapped; the page immediately below remains a guard.
+i32 USER_STACK_TOP = 0x80000000;
+i32 USER_STACK_SLOT_BYTES = 0x00200000;
+export const i32 USER_STACK_REGION_BASE = 0x7F000000;
+
+/**
+ * Validates a requested user-stack size and rounds it to whole pages.
+ * @param requested Requested bytes; zero selects DEFAULT_USER_STACK_BYTES.
+ * @return Page-rounded byte count, or zero when the request cannot fit its slot and guard.
+ */
+i32 rounded_stack_bytes(i32 requested) {
+    i32 bytes = requested;
+    if (bytes == 0) { bytes = kernel_config.DEFAULT_USER_STACK_BYTES; }
+    if (bytes <= 0 || bytes > USER_STACK_SLOT_BYTES - mmu.PAGE_SIZE) { return 0; }
+    if (bytes > 0x7FFFF000) { return 0; }
+    return (bytes + mmu.PAGE_SIZE - 1) & ~(mmu.PAGE_SIZE - 1);
+}
+
+/**
+ * Builds the interrupt-style kernel frame used for a user thread's first iret.
+ * @param entry Initial executable user PC.
+ * @param arg0 Value restored into r5.
+ * @param arg1 Value restored into r6.
+ * @param stack_top Exclusive top of the allocated kernel stack.
+ * @return Saved kernel SP pointing at the completed interrupt frame.
+ */
+i32 build_user_context(i32 entry, i32 arg0, i32 arg1, i32 stack_top) {
+    i32 sp = stack_top;
+    sp = sp - 4; mem.write_word(sp, entry); // PC
+    sp = sp - 4; mem.write_word(sp, 0x21);  // SR_USER | SR_IE
+    sp = sp - 4; mem.write_word(sp, 0);     // IRQ entry PC
+    sp = sp - 4; mem.write_word(sp, 0);     // IRQ entry SR
+    sp = sp - 4; mem.write_word(sp, 0);     // IRQ entry lr
+    sp = sp - 4; mem.write_word(sp, 0);     // IRQ entry bp
+    sp = sp - 4; mem.write_word(sp, 0);     // lr
+    sp = sp - 4; mem.write_word(sp, 0);     // bp
+    sp = sp - 4; mem.write_word(sp, 0);     // r0
+    sp = sp - 4; mem.write_word(sp, 0);     // r1
+    sp = sp - 4; mem.write_word(sp, 0);     // r2
+    sp = sp - 4; mem.write_word(sp, 0);     // r3
+    sp = sp - 4; mem.write_word(sp, 0);     // r4
+    sp = sp - 4; mem.write_word(sp, arg0);  // r5
+    sp = sp - 4; mem.write_word(sp, arg1);  // r6
+    sp = sp - 4; mem.write_word(sp, 0);     // r7
+    return sp;
+}
+
+/**
+ * Unmaps and frees all physical frames in a thread-owned user-stack range.
+ * @param pdbr Owner process page-directory base.
+ * @param base Page-aligned first user virtual address.
+ * @param bytes Page-multiple range length.
+ */
+void release_user_mapping(i32 pdbr, i32 base, i32 bytes) {
+    i32 offset = 0;
+    while (offset < bytes) {
+        Result<i32, MmuError> unmapped = mmu.unmap_page(pdbr, base + offset);
+        case unmapped of {
+            Ok(frame) -> ({
+                if (frame != 0) {
+                    Result<_, MmuError> freed = mmu.free_frame(frame);
+                    case freed of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: invalid user stack frame"); }); };
+                }
+            });
+            Err(_) -> ({ debug.panic("thread: failed to unmap user stack"); });
+        };
+        offset = offset + mmu.PAGE_SIZE;
+    }
+}
+
+/**
+ * Creates an additional user TCB and both of its stacks transactionally.
+ * No TCB is published until the user mapping and kernel stack are complete;
+ * recoverable failures release the reserved stack slot and all allocations.
+ * @param pid Alive owner process that supplies the address space.
+ * @param args Copied and trusted-by-value thread entry, arguments, and stack request.
+ * @return Ok(new TID), or a precise allocation, entry, size, or lifecycle error.
+ */
+export Result<i32, ThreadError> spawn_user_thread(i32 pid, ThreadSpawnArgs args) {
+    if (!process.accepts_threads(pid)) { return Err(ThreadError::ProcessExiting); }
+    i32 retained = case process.retained_thread_count(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    if (retained >= kernel_config.MAX_THREADS_PER_PROC) {
+        return Err(ThreadError::NoFreeSlot);
+    }
+    i32 pdbr = case process.get_pdbr(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    if (!mmu.user_range_has_flags(pdbr, args.entry, 1, mmu.PTE_EXEC)) {
+        return Err(ThreadError::InvalidEntry(args.entry));
+    }
+    i32 stack_bytes = rounded_stack_bytes(args.stack_bytes);
+    if (stack_bytes == 0) { return Err(ThreadError::InvalidStackSize(args.stack_bytes)); }
+
+    i32 tcb_slot = case find_free_slot() of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::NoFreeSlot); });
+    };
+    i32 stack_slot = case process.reserve_user_stack_slot(pid) of {
+        Ok(Some(value)) -> value;
+        Ok(None) -> ({ return Err(ThreadError::NoFreeSlot); });
+        Err(_) -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    i32 stack_top = USER_STACK_TOP - stack_slot * USER_STACK_SLOT_BYTES;
+    i32 stack_base = stack_top - stack_bytes;
+    i32 mapped_bytes = 0;
+    while (mapped_bytes < stack_bytes) {
+        i32 frame = case mmu.alloc_page() of {
+            Some(value) -> value;
+            None -> ({
+                release_user_mapping(pdbr, stack_base, mapped_bytes);
+                process.release_user_stack_slot(pid, stack_slot);
+                return Err(ThreadError::OutOfMemory);
+            });
+        };
+        Result<_, MmuError> mapped = mmu.map_page(
+            pdbr, stack_base + mapped_bytes, frame,
+            mmu.PTE_VALID | mmu.PTE_WRITABLE | mmu.PTE_USER
+        );
+        case mapped of {
+            Ok(_) -> ({ mapped_bytes = mapped_bytes + mmu.PAGE_SIZE; });
+            Err(_) -> ({
+                mmu.free_frame(frame);
+                release_user_mapping(pdbr, stack_base, mapped_bytes);
+                process.release_user_stack_slot(pid, stack_slot);
+                return Err(ThreadError::OutOfMemory);
+            });
+        };
+    }
+
+    i32 kernel_stack = case heap.alloc(kernel_config.DEFAULT_KERNEL_STACK_BYTES) of {
+        Ok(value) -> value;
+        Err(_) -> ({
+            release_user_mapping(pdbr, stack_base, mapped_bytes);
+            process.release_user_stack_slot(pid, stack_slot);
+            return Err(ThreadError::OutOfMemory);
+        });
+    };
+    i32 user_sp = stack_top - 0x20;
+    i32 kernel_sp = build_user_context(
+        args.entry, args.arg0, args.arg1,
+        kernel_stack + kernel_config.DEFAULT_KERNEL_STACK_BYTES
+    );
+    KernelStack owned_kernel = KernelStack {
+        base: kernel_stack,
+        bytes: kernel_config.DEFAULT_KERNEL_STACK_BYTES,
+        owned: true,
+    };
+    UserStack owned_user = UserStack {
+        slot: stack_slot,
+        mapped_base: stack_base,
+        mapped_bytes: stack_bytes,
+    };
+    i32 tid = publish_user(tcb_slot, pid, kernel_sp, user_sp, owned_kernel, owned_user);
+    Result<_, ProcessError> accounted = process.retain_thread(pid);
+    case accounted of {
+        Ok(_) -> _;
+        Err(_) -> ({ debug.panic("thread: process disappeared at TCB publish"); });
+    };
+    return Ok(tid);
+}
+
+/**
+ * Marks only the calling thread for retirement after the next context switch.
+ * If this removes the final live TCB, it also starts process-wide exit using code.
+ * @param code User-visible thread exit code retained for join.
+ */
+export void exit_current_thread(i32 code) {
+    i32 slot = g_current_thread_slot;
+    if (!occupied(slot)) { return; }
+    i32 pid = case owner_pid_at(slot) of { Some(value) -> value; None -> 0; };
+    case g_threads[slot] of {
+        Some(t) -> ({ t.state = ThreadState::Exiting(code); });
+        None -> ({ return; });
+    };
+    if (pid != 0) {
+        Result<_, ProcessError> marked = process.mark_thread_exited(pid);
+        case marked of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: exiting owner is missing"); }); };
+        i32 live = case process.live_thread_count(pid) of { Some(value) -> value; None -> 0; };
+        if (live == 0) {
+            ProcessExitStatus status = ProcessExitStatus::Code(code);
+            process.begin_exit(pid, status);
+        }
+    }
+}
+
+/**
+ * Starts process-wide exit and removes every owned TCB from runnable/waiting state.
+ * Physical stack and address-space cleanup is deferred until a different stack runs.
+ * @param pid Process whose TCBs must all exit.
+ * @param status Final process status preserved in the eventual Zombie record.
+ */
+export void exit_process_threads(i32 pid, ProcessExitStatus status) {
+    Result<_, ProcessError> begun = process.begin_exit(pid, status);
+    case begun of { Ok(_) -> _; Err(_) -> ({ return; }); };
+    i32 i = 0;
+    while (i < g_thread_slot_high_water) {
+        case g_threads[i] of {
+            Some(t) -> ({
+                bool owned = case t.owner of { User(owner) -> owner == pid; Kernel -> false; };
+                if (owned) {
+                    bool live = case t.state of {
+                        Runnable -> true; Running -> true; Blocked(_) -> true; _ -> false;
+                    };
+                    if (live) { process.mark_thread_exited(pid); }
+                    t.state = ThreadState::Exiting(0);
+                }
+            });
+            None -> _;
+        };
+        i++;
+    }
+}
+
+/**
+ * Releases the user and kernel stacks owned by a switched-out TCB.
+ * @param slot Occupied TCB slot that is no longer executing on its kernel stack.
+ */
+void cleanup_stack_resources(i32 slot) {
+    if (!occupied(slot)) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({
+            i32 pid = case t.owner of { User(owner) -> owner; Kernel -> 0; };
+            if (pid != 0) {
+                i32 pdbr = case process.get_pdbr(pid) of { Some(value) -> value; None -> 0; };
+                case t.user_stack of {
+                    Some(stack) -> ({
+                        if (pdbr != 0) { release_user_mapping(pdbr, stack.mapped_base, stack.mapped_bytes); }
+                        process.release_user_stack_slot(pid, stack.slot);
+                    });
+                    None -> _;
+                };
+            }
+            if (t.kernel_stack.owned && t.kernel_stack.base != 0) { heap.free(t.kernel_stack.base); }
+            t.kernel_stack.base = 0;
+            t.kernel_stack.bytes = 0;
+            t.kernel_stack.owned = false;
+            Option<UserStack> no_user_stack = None;
+            t.user_stack = no_user_stack;
+        });
+        None -> _;
+    };
+}
+
+/**
+ * Returns an exit code to a registered joiner through the saved r2 slot and
+ * makes that joiner runnable with SyscallStatus::Ok in r1.
+ * @param target_slot Exiting target TCB carrying the joiner registration.
+ * @param code Exit code to copy to the waiting process.
+ */
+void wake_joiner(i32 target_slot, i32 code) {
+    Option<i32> joiner = case g_threads[target_slot] of {
+        Some(t) -> t.joiner_tid;
+        None -> None;
+    };
+    case joiner of {
+        Some(joiner_tid) -> ({
+            case slot_for_tid(joiner_tid) of {
+                Some(joiner_slot) -> ({
+                    case g_threads[joiner_slot] of {
+                        Some(waiter) -> ({
+                            case waiter.state of {
+                                Blocked(reason) -> ({
+                                    case reason of {
+                                    Join(_) -> ({
+                                        waiter.wake_result = code;
+                                        if (waiter.saved_kernel_sp != 0) {
+                                            mem.write_word(waiter.saved_kernel_sp + 24, (i32)SyscallStatus::Ok);
+                                            mem.write_word(waiter.saved_kernel_sp + 20, code);
+                                        }
+                                        waiter.state = ThreadState::Runnable;
+                                    });
+                                    _ -> _;
+                                    };
+                                });
+                                _ -> _;
+                            };
+                        });
+                        None -> _;
+                    };
+                });
+                None -> _;
+            };
+        });
+        None -> _;
+    };
+}
+
+/**
+ * Completes cleanup after an Exiting TCB has been switched away.
+ * A normal thread becomes a stack-free Zombie unless a joiner reaps it;
+ * an Exiting process instead releases every owned TCB and its address space.
+ * @param retired_slot TCB slot whose kernel stack is no longer active.
+ */
+export void finish_deferred_cleanup(i32 retired_slot) {
+    if (!occupied(retired_slot)) { return; }
+    i32 pid = case owner_pid_at(retired_slot) of { Some(value) -> value; None -> 0; };
+    i32 code = case state_at(retired_slot) of {
+        Some(state) -> case state of { ThreadState::Exiting(value) -> value; _ -> 0; };
+        None -> 0;
+    };
+
+    if (pid == 0) {
+        cleanup_stack_resources(retired_slot);
+        clear_slot(retired_slot);
+        return;
+    }
+
+    bool process_exiting = case process.get_state(pid) of {
+        Some(state) -> case state of { ProcessState::Exiting(_) -> true; _ -> false; };
+        None -> false;
+    };
+    if (process_exiting) {
+        i32 pdbr = case process.get_pdbr(pid) of { Some(value) -> value; None -> 0; };
+        i32 i = 0;
+        while (i < g_thread_slot_high_water) {
+            bool owned = case owner_pid_at(i) of { Some(owner) -> owner == pid; None -> false; };
+            if (owned) {
+                cleanup_stack_resources(i);
+                clear_slot(i);
+            }
+            i++;
+        }
+        if (pdbr != 0) {
+            Result<_, MmuError> destroyed = mmu.destroy_user_address_space(pdbr);
+            case destroyed of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: address-space cleanup failed"); }); };
+        }
+        process.clear_owned_resources(pid);
+        process.finish_exit(pid);
+        return;
+    }
+
+    cleanup_stack_resources(retired_slot);
+    case g_threads[retired_slot] of {
+        Some(t) -> ({ t.state = ThreadState::Zombie(code); });
+        None -> _;
+    };
+    bool has_joiner = case g_threads[retired_slot] of {
+        Some(t) -> case t.joiner_tid of { Some(_) -> true; None -> false; };
+        None -> false;
+    };
+    wake_joiner(retired_slot, code);
+    if (has_joiner) {
+        clear_slot(retired_slot);
+        process.release_thread(pid);
+    }
+}
+
+/**
+ * Installs the caller as the target's sole joiner, or reaps a Zombie immediately.
+ * The caller and target must be distinct TCBs owned by the same process.
+ * @param target_tid Stable TID to wait for.
+ * @return Ok(Completed(code)) for immediate Zombie reap, Ok(Waiting) after
+ *         blocking the caller, or Err for invalid ownership/self/double join.
+ */
+export Result<JoinOutcome, ThreadError> join_thread(i32 target_tid) {
+    i32 caller_slot = g_current_thread_slot;
+    i32 caller_tid = case current_tid() of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
+    };
+    if (caller_tid == target_tid) { return Err(ThreadError::JoinSelf); }
+    i32 target_slot = case slot_for_tid(target_tid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
+    };
+    i32 pid = case current_pid() of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
+    };
+    bool same_owner = case owner_pid_at(target_slot) of { Some(owner) -> owner == pid; None -> false; };
+    if (!same_owner) { return Err(ThreadError::InvalidTid(target_tid)); }
+    case g_threads[target_slot] of {
+        Some(target) -> ({
+            case target.state of {
+                ThreadState::Zombie(code) -> ({
+                    clear_slot(target_slot);
+                    process.release_thread(pid);
+                    return Ok(JoinOutcome::Completed(code));
+                });
+                _ -> ({
+                    bool already = case target.joiner_tid of { Some(_) -> true; None -> false; };
+                    if (already) { return Err(ThreadError::AlreadyJoined(target_tid)); }
+                    Option<i32> joiner = Some(caller_tid);
+                    target.joiner_tid = joiner;
+                    JoinWait wait = JoinWait { target_tid: target_tid };
+                    case g_threads[caller_slot] of {
+                        Some(caller) -> ({ caller.state = ThreadState::Blocked(WaitReason::Join(wait)); });
+                        None -> ({ return Err(ThreadError::InvalidTid(caller_tid)); });
+                    };
+                    return Ok(JoinOutcome::Waiting);
+                });
+            };
+        });
+        None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
+    };
+    return Err(ThreadError::InvalidTid(target_tid));
+}
+
+/**
+ * Validates a futex word, rechecks its value, and blocks the current TCB.
+ * The effective key is the caller's PID plus addr; no kernel pointer is retained.
+ * @param addr Aligned readable/writable user virtual word address.
+ * @param expected Value that must still be present before blocking.
+ * @param timeout_ticks Relative timeout; zero means no timeout.
+ * @param now Current scheduler tick used to form an absolute deadline.
+ * @return Ok(false) after publishing the wait, or Err(WouldBlock/BadAddress/etc.).
+ */
+export Result<bool, ThreadError> futex_wait(i32 addr, i32 expected, i32 timeout_ticks, i32 now) {
+    i32 pid = case current_pid() of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::BadAddress(addr)); });
+    };
+    if ((addr & 3) || timeout_ticks < 0) { return Err(ThreadError::BadAddress(addr)); }
+    i32 pdbr = case process.get_pdbr(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    if (!mmu.user_range_has_flags(pdbr, addr, 4, mmu.PTE_WRITABLE)) {
+        return Err(ThreadError::BadAddress(addr));
+    }
+    i32 value = case mmu.read_user_word(pdbr, addr) of {
+        Some(word) -> word;
+        None -> ({ return Err(ThreadError::BadAddress(addr)); });
+    };
+    if (value != expected) { return Err(ThreadError::WouldBlock); }
+    i32 deadline = 0;
+    if (timeout_ticks > 0) { deadline = now + timeout_ticks; }
+    i32 sequence = g_next_wait_sequence;
+    g_next_wait_sequence++;
+    if (g_next_wait_sequence <= 0) { g_next_wait_sequence = 1; }
+    FutexWait wait = FutexWait { addr: addr, deadline_tick: deadline, sequence: sequence };
+    case g_threads[g_current_thread_slot] of {
+        Some(t) -> ({ t.state = ThreadState::Blocked(WaitReason::Futex(wait)); });
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    return Ok(false);
+}
+
+/**
+ * Wakes FIFO waiters sharing the caller's (PID, address) futex key.
+ * @param addr Aligned readable/writable user virtual word address.
+ * @param count Maximum number of wait registrations to consume.
+ * @return Ok(number woken), or Err for an invalid address/count or exiting process.
+ */
+export Result<i32, ThreadError> futex_wake(i32 addr, i32 count) {
+    i32 pid = case current_pid() of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::BadAddress(addr)); });
+    };
+    if ((addr & 3) || count < 0) { return Err(ThreadError::BadAddress(addr)); }
+    i32 pdbr = case process.get_pdbr(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::ProcessExiting); });
+    };
+    if (!mmu.user_range_has_flags(pdbr, addr, 4, mmu.PTE_WRITABLE)) {
+        return Err(ThreadError::BadAddress(addr));
+    }
+    i32 woken = 0;
+    while (woken < count) {
+        i32 best_slot = -1;
+        i32 best_sequence = 0x7FFFFFFF;
+        i32 i = 0;
+        while (i < g_thread_slot_high_water) {
+            case g_threads[i] of {
+                Some(t) -> ({
+                    bool owner_matches = case t.owner of { User(owner) -> owner == pid; Kernel -> false; };
+                    if (owner_matches) {
+                        case t.state of {
+                            Blocked(reason) -> ({
+                                case reason of {
+                                    Futex(wait) -> ({
+                                        if (wait.addr == addr && wait.sequence < best_sequence) {
+                                            best_sequence = wait.sequence;
+                                            best_slot = i;
+                                        }
+                                    });
+                                    _ -> _;
+                                };
+                            });
+                            _ -> _;
+                        };
+                    }
+                });
+                None -> _;
+            };
+            i++;
+        }
+        if (best_slot < 0) { break; }
+        case g_threads[best_slot] of {
+            Some(t) -> ({
+                t.wake_result = 0;
+                if (t.saved_kernel_sp != 0) {
+                    mem.write_word(t.saved_kernel_sp + 24, (i32)SyscallStatus::Ok);
+                    mem.write_word(t.saved_kernel_sp + 20, 0);
+                }
+                t.state = ThreadState::Runnable;
+            });
+            None -> _;
+        };
+        woken++;
+    }
+    return Ok(woken);
+}
+
+/**
+ * Applies one futex timeout during the scheduler's tick scan.
+ * @param slot Global TCB table index to inspect.
+ * @param now Current scheduler tick.
+ */
+export void wake_futex_timeout(i32 slot, i32 now) {
+    if (!occupied(slot)) { return; }
+    case g_threads[slot] of {
+        Some(t) -> ({
+            case t.state of {
+                Blocked(reason) -> ({
+                    case reason of {
+                        Futex(wait) -> ({
+                            if (wait.deadline_tick != 0 && wait.deadline_tick <= now) {
+                                t.wake_result = wait.addr;
+                                if (t.saved_kernel_sp != 0) {
+                                    mem.write_word(t.saved_kernel_sp + 24, (i32)SyscallStatus::TimedOut);
+                                    mem.write_word(t.saved_kernel_sp + 20, wait.addr);
+                                }
+                                t.state = ThreadState::Runnable;
+                            }
+                        });
+                        _ -> _;
+                    };
+                });
+                _ -> _;
+            };
+        });
+        None -> _;
+    };
+}
