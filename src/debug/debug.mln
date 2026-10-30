@@ -3,7 +3,7 @@ package debug;
 import serial from "@kernel/io/serial.mln";
 import { halt_cpu } from "@kernel/arch/halt.masm";
 import str from "@std/text/str.mln";
-import { InlineString } from "@std/text/inline_string.mln";
+import { Text } from "@std/text/text.mln";
 
 /**
  * Converts a 4-bit nibble into its lowercase hexadecimal ASCII character.
@@ -111,7 +111,7 @@ export void printf(char* fmt, rest args) {
             i32 value = args[arg_index];
             arg_index++;
 
-            InlineString<12> decimal = value.to_string();
+            Text<12> decimal = value.to_string();
             i32 i = 0;
             while (i < decimal.len()) {
                 serial.putc(decimal.data[i]);

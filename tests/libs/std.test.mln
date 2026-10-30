@@ -5,8 +5,7 @@ import { Option } from "@std/core/option.mln";
 import bytes from "@std/text/bytes.mln";
 import bitset from "@std/collections/bitset.mln";
 import { RingBuffer } from "@std/collections/ringbuf.mln";
-import { InlineString } from "@std/text/inline_string.mln";
-import { InlineCString } from "@std/text/inline_c_string.mln";
+import { Text } from "@std/text/text.mln";
 import { Result } from "@std/core/result.mln";
 import assert from "@std/testing/assert.mln";
 import { assert_eq, assert_ne, assert_null, assert_not_null, assert_result_ok, assert_result_err } from "@std/testing/assert.mln";
@@ -293,16 +292,16 @@ void test_ringbuf() {
 
 // --- fixed strings ----------------------------------------------------------
 
-InlineCString<16> g_line;
+Text<16> g_line;
 
-void test_inline_c_string() {
-    debug.println("-- InlineCString --");
+void test_text() {
+    debug.println("-- Text --");
 
     g_line.clear();
     assert_eq<i32>(g_line.len(), 0, "clear empties");
 
     assert_eq<bool>(g_line.append("clicks: "), true, "append text");
-    InlineString<12> number = 42.to_string();
+    Text<12> number = 42.to_string();
     assert_eq<bool>(g_line.append(number.as_str()), true, "append converted integer");
     assert_eq<bool>(g_line.as_str() == "clicks: 42", true, "append content");
     assert_eq<i32>(g_line.len(), 10, "append length");
@@ -391,7 +390,7 @@ void standard_library() {
     test_bytes();
     test_bitset();
     test_ringbuf();
-    test_inline_c_string();
+    test_text();
     test_serial_queue();
 
 }
