@@ -276,6 +276,20 @@ void process_lifecycle_and_protection() {
     // Test MBIN header validation errors using LoaderError
     debug.println("kernel: testing loader error reporting with LoaderError...");
     i32 bad_buf = alloc_or_zero(256);
+    // 0. A buffer without an MBIN header is refused, not mapped and run:
+    // text long enough to hold a header, and a single instruction word.
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf, 0x68656C6C); // "hell" in place of the magic
+    Result<i32, LoaderError> no_magic_res = loader.spawn_from_buffer(bad_buf, 172);
+    assert_invalid_header_error(&no_magic_res, 0);
+    write_be32_mem(bad_buf, 0xFC000000); // halt
+    Result<i32, LoaderError> short_res = loader.spawn_from_buffer(bad_buf, 4);
+    assert_invalid_header_error(&short_res, 0);
+    init_mbin_user_binary(bad_buf);
+    Result<i32, LoaderError> short_header_res = loader.spawn_from_buffer(bad_buf, 31);
+    assert_invalid_header_error(&short_header_res, 0);
+    debug.println("SUCCESS: non-MBIN buffers rejected with InvalidHeader(0)!");
+
     // 1. Invalid version test
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf + 4, 99); // bad version = 99

@@ -45,14 +45,23 @@ void user_thread_lifecycle() {
     };
     scheduler.init();
 
-    // A legacy flat image only needs one executable word for this lifecycle
-    // test; the test never dispatches it.
-    i32 image = case heap.alloc(4) of {
+    // A minimal MBIN v2 image: this lifecycle test only needs one executable
+    // word, and never dispatches it.
+    i32 image = case heap.alloc(40) of {
         Ok(value) -> value;
         Err(_) -> ({ assert_eq<i32>(1, 0, "test image allocation"); 0; });
     };
-    mem.write_word(image, 0xFC000000); // halt
-    i32 pid = case loader.spawn_from_buffer(image, 4) of {
+    mem.write_word(image + 0, 0x4D42494E);  // magic: 'MBIN'
+    mem.write_word(image + 4, 2);           // version
+    mem.write_word(image + 8, 0x40000000);  // entry_point
+    mem.write_word(image + 12, 36);         // text_offset
+    mem.write_word(image + 16, 4);          // text_size
+    mem.write_word(image + 20, 40);         // data_offset
+    mem.write_word(image + 24, 0);          // data_size
+    mem.write_word(image + 28, 0);          // bss_size
+    mem.write_word(image + 32, 0);          // sections_offset: none
+    mem.write_word(image + 36, 0xFC000000); // halt
+    i32 pid = case loader.spawn_from_buffer(image, 40) of {
         Ok(value) -> value;
         Err(_) -> ({ assert_eq<i32>(1, 0, "main process creation"); 0; });
     };

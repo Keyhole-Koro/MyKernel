@@ -15,8 +15,6 @@ import { MmuError, LoaderError } from "@contracts/process/loader.contract.mln";
 import { ProcessError } from "process.mln";
 import { Drop } from "@std/core/drop.mln";
 
-/** Fallback virtual base used for legacy flat user binaries. */
-i32 USER_CODE_BASE  = 0x40000000;
 // The user stack: USER_STACK_PAGES pages ending just below the top of the
 // address space. A GUI app's view() and handlers build markup and copy
 // text on the stack, which one page does not hold.
@@ -35,8 +33,6 @@ i32 USER_HEAP_BASE  = 0x41000000;
 i32 PTE_USER_RX     = 0x0D; // VALID | EXEC | USER (0x01 | 0x04 | 0x08)
 /** Valid, writable, user-accessible page mapping (data, heap, and stack). */
 i32 PTE_USER_RW     = 0x0B; // VALID | WRITABLE | USER (0x01 | 0x02 | 0x08)
-/** Legacy flat-binary mapping that is valid, writable, executable, and user-accessible. */
-i32 PTE_USER_RWX    = 0x0F; // Legacy / flat fallback: VALID | WRITABLE | EXEC | USER
 
 /** Big-endian magic value identifying an MBIN executable header. */
 i32 MBIN_MAGIC      = 0x4D42494E; // 'MBIN'
@@ -196,13 +192,14 @@ i32 (borrow ProcessSlot self) keep() {
 }
 
 /**
- * Spawns a new user process from raw binary instructions in memory.
+ * Spawns a new user process from an MBIN image (header version 1 or 2) in memory.
  *
- * Automatically detects an MBIN header (version 1 or 2) for segment separation (W^X) or falls back
- * to flat binary loading for legacy compatibility.
- * @param code_ptr Memory pointer to executable binary.
- * @param code_size Binary size in bytes.
- * @return Ok(pid) with allocated process ID on success, or Err(LoaderError) on failure.
+ * Anything else is refused: a headerless buffer has no segments to keep apart,
+ * so it could only be mapped writable and executable at once.
+ * @param code_ptr Memory pointer to the MBIN image.
+ * @param code_size Image size in bytes.
+ * @return Ok(pid) with allocated process ID on success, or Err(LoaderError) on failure;
+ *         InvalidHeader(0) when the buffer has no MBIN header.
  */
 export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     Result<i32, ProcessError> proc_res = process.reserve_process();
@@ -233,79 +230,66 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     AddressSpace address_space = AddressSpace { pdbr: pd };
     mmu.setup_identity_kernel_mapping(pd)?;
 
-    // 2. Check for an MBIN executable header
-    i32 entry_point = USER_CODE_BASE;
-    i32 initial_brk = USER_HEAP_BASE;
-    i32 is_mbin = 0;
-    // Where the text segment is mapped. A v2 image is mapped at the address
-    // it was linked at (the page holding its entry point): MyLang loads
-    // symbol addresses with a 21-bit immediate, so compiled programs must
-    // be linked below 2 MB (qa/runners/build_user_apps.py uses 0x20000,
-    // unused RAM below the kernel image) rather than at USER_CODE_BASE.
-    // Their pages replace the kernel identity mapping of that range in the
-    // process's own page directory only, so isolation is unchanged.
-    i32 code_base = USER_CODE_BASE;
+    // 2. Read the MBIN header.
+    if (code_size < 32 || read_be32(code_ptr) != MBIN_MAGIC) {
+        debug.println("loader: not an MBIN executable");
+        return Err(LoaderError::InvalidHeader(0));
+    }
+    i32 version     = read_be32(code_ptr + 4);
+    i32 entry_point = read_be32(code_ptr + 8);
+    i32 text_offset = read_be32(code_ptr + 12);
+    i32 text_size   = read_be32(code_ptr + 16);
+    i32 data_offset = read_be32(code_ptr + 20);
+    i32 data_size   = read_be32(code_ptr + 24);
+    i32 bss_size    = read_be32(code_ptr + 28);
 
-    if (code_size >= 32) {
-        i32 magic = read_be32(code_ptr);
-        if (magic == MBIN_MAGIC) {
-            is_mbin = 1;
-        }
+    // Header version 2 adds a section directory offset after bss_size;
+    // the segments are laid out the same, so both load alike.
+    if (version != 1 && version != 2) {
+        debug.println("loader: unsupported MBIN version");
+        return Err(LoaderError::InvalidHeader(version));
+    }
+    if (text_offset + text_size > code_size) {
+        debug.println("loader: invalid text section bounds");
+        return Err(LoaderError::InvalidBounds(code_size));
+    }
+    if (data_offset + data_size > code_size) {
+        debug.println("loader: invalid data section bounds");
+        return Err(LoaderError::InvalidBounds(code_size));
     }
 
-    if (is_mbin == 1) {
-        i32 version     = read_be32(code_ptr + 4);
-        entry_point     = read_be32(code_ptr + 8);
-        i32 text_offset = read_be32(code_ptr + 12);
-        i32 text_size   = read_be32(code_ptr + 16);
-        i32 data_offset = read_be32(code_ptr + 20);
-        i32 data_size   = read_be32(code_ptr + 24);
-        i32 bss_size    = read_be32(code_ptr + 28);
+    debug.printf("loader: loading MBIN v%d (entry=0x%x, text_sz=%d, data_sz=%d, bss_sz=%d)\n",
+                 version, entry_point, text_size, data_size, bss_size);
+    // The text segment is mapped at the address it was linked at (the page
+    // holding its entry point). MyLang loads symbol addresses with a 21-bit
+    // immediate, so compiled programs must be linked below 2 MB
+    // (qa/runners/build_user_apps.py uses 0x20000, unused RAM below the
+    // kernel image). Their pages replace the kernel identity mapping of that
+    // range in the process's own page directory only, so isolation is
+    // unchanged.
+    i32 code_base = entry_point & 0xFFFFF000;
 
-        // Header version 2 adds a section directory offset after bss_size;
-        // the segments are laid out the same, so both load alike.
-        if (version != 1 && version != 2) {
-            debug.println("loader: unsupported MBIN version");
-            return Err(LoaderError::InvalidHeader(version));
-        }
-        if (text_offset + text_size > code_size) {
-            debug.println("loader: invalid text section bounds");
-            return Err(LoaderError::InvalidBounds(code_size));
-        }
-        if (data_offset + data_size > code_size) {
-            debug.println("loader: invalid data section bounds");
-            return Err(LoaderError::InvalidBounds(code_size));
-        }
+    // Map Text segment as RX (Read + Execute, No Write). Globals live
+    // in the data segment (the compiler's `.data`), so text is code only.
+    map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX)?;
 
-        debug.printf("loader: loading MBIN v%d (entry=0x%x, text_sz=%d, data_sz=%d, bss_sz=%d)\n",
-                     version, entry_point, text_size, data_size, bss_size);
-        code_base = entry_point & 0xFFFFF000;
+    // Map Data segment as RW (Read + Write, No Execute)
+    i32 data_vaddr = code_base + align_up_4k(text_size);
+    if (data_size > 0) {
+        map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW)?;
+    }
 
-        // Map Text segment as RX (Read + Execute, No Write). Globals live
-        // in the data segment (the compiler's `.data`), so text is code only.
-        map_segment(pd, code_base, code_ptr + text_offset, text_size, PTE_USER_RX)?;
+    // Map BSS segment as RW (Read + Write, No Execute)
+    if (bss_size > 0) {
+        i32 bss_vaddr = data_vaddr + align_up_4k(data_size);
+        map_segment(pd, bss_vaddr, 0, bss_size, PTE_USER_RW)?;
+    }
 
-        // Map Data segment as RW (Read + Write, No Execute)
-        i32 data_vaddr = code_base + align_up_4k(text_size);
-        if (data_size > 0) {
-            map_segment(pd, data_vaddr, code_ptr + data_offset, data_size, PTE_USER_RW)?;
-        }
-
-        // Map BSS segment as RW (Read + Write, No Execute)
-        if (bss_size > 0) {
-            i32 bss_vaddr = data_vaddr + align_up_4k(data_size);
-            map_segment(pd, bss_vaddr, 0, bss_size, PTE_USER_RW)?;
-        }
-
-        // Calculate heap break after loaded segments
-        i32 seg_end = data_vaddr + align_up_4k(data_size + bss_size);
-        if (seg_end > initial_brk) {
-            initial_brk = seg_end;
-        }
-    } else {
-        // Legacy flat binary fallback: map entire buffer as RWX
-        debug.println("loader: legacy flat binary detected, mapping as RWX");
-        map_segment(pd, USER_CODE_BASE, code_ptr, code_size, PTE_USER_RWX)?;
+    // Calculate heap break after loaded segments
+    i32 initial_brk = USER_HEAP_BASE;
+    i32 seg_end = data_vaddr + align_up_4k(data_size + bss_size);
+    if (seg_end > initial_brk) {
+        initial_brk = seg_end;
     }
 
     // 3. Allocate the user stack pages (RW, No Execute), zero-filled
