@@ -40,7 +40,6 @@ export const i32 MMU_CTRL_ADDR        = 0x24000100;
 export const i32 MMU_PDBR_ADDR        = 0x24000104;
 export const i32 MMU_FAULT_ADDR       = 0x24000108;
 export const i32 MMU_FAULT_STATUS_ADDR= 0x2400010C;
-export const i32 KERNEL_SP_ADDR       = 0x24000110;
 
 /** Reason recorded by the MMU for the most recent page fault. */
 export enum MmuFaultStatus {

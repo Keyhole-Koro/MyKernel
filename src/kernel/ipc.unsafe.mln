@@ -118,32 +118,6 @@ export bool has(ChannelId ch, i32 w1, i32 w2) {
 }
 
 /**
- * Returns the number of messages currently queued on a channel.
- * @param ch 1-based channel ID.
- * @return Ok(queued message count), or Err(InvalidId) when the channel ID is invalid.
- */
-export Result<i32, ChannelError> count(ChannelId ch) {
-    i32 raw = (i32)ch;
-    if (raw <= 0 || raw > CHANNELS_MAX) { return Err(ChannelError::InvalidId(raw)); }
-    i32 c = raw - 1;
-    i32 n = g_channels[c].tail - g_channels[c].head;
-    if (n < 0) { n = n + SLOTS; }
-    return Ok(n);
-}
-
-/**
- * Tests whether a channel has at least one queued message.
- * @param ch 1-based channel ID.
- * @return True if a message is queued; false if empty or the ID is invalid.
- */
-export bool pending(ChannelId ch) {
-    i32 raw = (i32)ch;
-    if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
-    i32 c = raw - 1;
-    return g_channels[c].head != g_channels[c].tail;
-}
-
-/**
  * Removes the oldest queued message and copies it to the caller's buffer.
  * @param ch 1-based channel ID.
  * @param out Destination for at least MSG_WORDS message words.
@@ -163,13 +137,3 @@ export bool recv(ChannelId ch, i32 *out) {
     return true;
 }
 
-/**
- * Sleeps in one-tick intervals until a message arrives, then receives it.
- * @param ch Valid 1-based channel ID to wait on.
- * @param out Destination for at least MSG_WORDS message words.
- */
-export void wait(ChannelId ch, i32 *out) {
-    while (!recv(ch, out)) {
-        scheduler.sleep(1);
-    }
-}
