@@ -18,7 +18,7 @@ import { MmuError } from "@contracts/process/loader.contract.mln";
 import { SpawnError } from "@contracts/process/spawn.contract.mln";
 import { Syscall, SyscallStatus } from "@contracts/myos/syscall.contract.mln";
 import { OsServiceError } from "@contracts/myos/services.contract.mln";
-import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
 
 /**
@@ -148,7 +148,7 @@ DispatchOutcome thread_result(i32 sp, Result<i32, ThreadError> result) {
  * @return Ok(new TID), or BadAddress, ProcessExiting, or a spawn validation error.
  */
 Result<i32, ThreadError> sys_thread_spawn(i32 args_addr) {
-    i32 pid = case thread.current_pid() of {
+    Pid pid = case thread.current_pid() of {
         Some(value) -> value;
         None -> ({ return Err(ThreadError::ProcessExiting); });
     };
@@ -176,7 +176,7 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 // serial port, and nothing can be spawned or served.
 
 /** The console until MyOS installs its own: every byte goes to the serial port. */
-i32 serial_write(i32 pid, UserAddress buf, i32 count) {
+i32 serial_write(Pid pid, UserAddress buf, i32 count) {
     i32 i = 0;
     while (i < count) {
         serial.putc(mem.read_byte((i32)buf.plus(i)));
@@ -186,7 +186,7 @@ i32 serial_write(i32 pid, UserAddress buf, i32 count) {
 }
 
 /** The console until MyOS installs its own: whatever the serial port has waiting. */
-i32 serial_read(i32 pid, UserAddress buf, i32 count) {
+i32 serial_read(Pid pid, UserAddress buf, i32 count) {
     i32 i = 0;
     while (i < count) {
         Option<i32> input = serial.read_input();
@@ -203,18 +203,18 @@ i32 serial_read(i32 pid, UserAddress buf, i32 count) {
     return i;
 }
 
-Result<i32, SpawnError> no_spawn(UserAddress path) {
+Result<Pid, SpawnError> no_spawn(UserAddress path) {
     return Err(SpawnError::NoHandler);
 }
 
-Result<i32, OsServiceError> no_os_services(i32 pid, i32 service, UserAddress args) {
+Result<i32, OsServiceError> no_os_services(Pid pid, i32 service, UserAddress args) {
     return Err(OsServiceError::UnknownService(service));
 }
 
-fn(i32 pid, UserAddress buf, i32 count) -> i32 g_console_write = serial_write;
-fn(i32 pid, UserAddress buf, i32 count) -> i32 g_console_read = serial_read;
-fn(UserAddress path) -> Result<i32, SpawnError> g_spawn_handler = no_spawn;
-fn(i32 pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> g_os_handler = no_os_services;
+fn(Pid pid, UserAddress buf, i32 count) -> i32 g_console_write = serial_write;
+fn(Pid pid, UserAddress buf, i32 count) -> i32 g_console_read = serial_read;
+fn(UserAddress path) -> Result<Pid, SpawnError> g_spawn_handler = no_spawn;
+fn(Pid pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> g_os_handler = no_os_services;
 
 /**
  * Registers the OS_CALL handler: every service the OS offers a process
@@ -225,7 +225,7 @@ fn(i32 pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> g_os_h
  * are active for the syscall's duration.
  * @param handler Function taking (pid, service, args).
  */
-export void set_os_handler(fn(i32 pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> handler) {
+export void set_os_handler(fn(Pid pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> handler) {
     g_os_handler = handler;
 }
 
@@ -234,8 +234,8 @@ export void set_os_handler(fn(i32 pid, i32 service, UserAddress args) -> Result<
  * @param write_handler Function taking (pid, buf, count) and returning bytes written.
  * @param read_handler Function taking (pid, buf, count) and returning bytes read.
  */
-export void set_console(fn(i32 pid, UserAddress buf, i32 count) -> i32 write_handler,
-                        fn(i32 pid, UserAddress buf, i32 count) -> i32 read_handler) {
+export void set_console(fn(Pid pid, UserAddress buf, i32 count) -> i32 write_handler,
+                        fn(Pid pid, UserAddress buf, i32 count) -> i32 read_handler) {
     g_console_write = write_handler;
     g_console_read = read_handler;
 }
@@ -244,7 +244,7 @@ export void set_console(fn(i32 pid, UserAddress buf, i32 count) -> i32 write_han
  * Registers the OS-level process spawning hook for SYS_SPAWN.
  * @param handler Function taking the path and returning the new process ID.
  */
-export void set_spawn_handler(fn(UserAddress path) -> Result<i32, SpawnError> handler) {
+export void set_spawn_handler(fn(UserAddress path) -> Result<Pid, SpawnError> handler) {
     g_spawn_handler = handler;
 }
 
@@ -262,7 +262,7 @@ export void sys_exit(i32 code) {
  * @param status Process exit status to preserve in the Zombie state.
  */
 export void sys_exit_status(ProcessExitStatus status) {
-    i32 pid = case thread.current_pid() of {
+    Pid pid = case thread.current_pid() of {
         Some(value) -> value;
         None -> ({ return; });
     };
@@ -281,7 +281,7 @@ export Result<i32, SyscallError> sys_write(i32 fd, UserAddress buf, i32 count) {
         return Ok(0);
     }
     if (fd == 1 || fd == 2) {
-        i32 pid = case thread.current_pid() of {
+        Pid pid = case thread.current_pid() of {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };
@@ -303,7 +303,7 @@ export Result<i32, SyscallError> sys_read(i32 fd, UserAddress buf, i32 count) {
         return Ok(0);
     }
     if (fd == 0) {
-        i32 pid = case thread.current_pid() of {
+        Pid pid = case thread.current_pid() of {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };
@@ -319,14 +319,14 @@ export Result<i32, SyscallError> sys_read(i32 fd, UserAddress buf, i32 count) {
  * @return Ok(pid) on success, or Err(NoProcess), Err(UnknownSyscall), or Err(SpawnFailed).
  */
 export Result<i32, SyscallError> sys_spawn(UserAddress path) {
-    Option<i32> current = thread.current_pid();
+    Option<Pid> current = thread.current_pid();
     case current of {
         Some(_) -> _;
         None -> ({ return Err(SyscallError::NoProcess); });
     };
-    Result<i32, SpawnError> spawned = g_spawn_handler(path);
+    Result<Pid, SpawnError> spawned = g_spawn_handler(path);
     return case spawned of {
-        Ok(pid) -> Ok(pid);
+        Ok(pid) -> Ok((i32)pid);
         Err(_) -> Err(SyscallError::SpawnFailed);
     };
 }
@@ -337,7 +337,7 @@ export Result<i32, SyscallError> sys_spawn(UserAddress path) {
  * @return Ok(prev_brk) with previous heap break on success, or Err(SyscallError) on error.
  */
 export Result<i32, SyscallError> sys_sbrk(i32 increment) {
-    i32 pid = case thread.current_pid() of {
+    Pid pid = case thread.current_pid() of {
         Some(current) -> current;
         None -> ({ return Err(SyscallError::NoProcess); });
     };
@@ -401,7 +401,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
                 // and `cur_page`/`frame` are always page-aligned by
                 // construction. Not a recoverable syscall error -- panic
                 // while we still have the pid for the diagnostic.
-                debug.printf("sys_sbrk: unexpected MMU error for pid=%d\n", pid);
+                debug.printf("sys_sbrk: unexpected MMU error for pid=%d\n", (i32)pid);
                 debug.panic("kernel invariant broken -- MMU rejected an address sys_sbrk computed itself");
             });
         };
@@ -498,7 +498,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         return resume_after_syscall(sp, &result);
     }
     if (sys_nr == Syscall::OS_CALL) {
-        i32 pid = case thread.current_pid() of {
+        Pid pid = case thread.current_pid() of {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };

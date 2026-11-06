@@ -9,7 +9,7 @@ import scheduler from "@kernel/kernel/scheduler.mln";
 import process from "@kernel/kernel/process.mln";
 import thread from "@kernel/kernel/thread.mln";
 import { ProcessState, ProcessError } from "@kernel/kernel/process.mln";
-import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import loader from "@kernel/kernel/loader.mln";
 import { Result } from "@std/core/result.mln";
 import { result_take_err } from "@std/core/result_take.mln";
@@ -177,21 +177,21 @@ void fail(str message) {
     assert_eq<i32>(1, 0, message);
 }
 
-void assert_invalid_pid(Result<Option<i32>, ProcessError> *result, i32 expected_pid) {
+void assert_invalid_pid(Result<Option<i32>, ProcessError> *result, Pid expected_pid) {
     ProcessError error;
     if (!result_take_err<Option<i32>, ProcessError>(result, &error)) {
         fail("expected ProcessError::InvalidPid");
     }
     case error of {
         ProcessError::InvalidPid(actual_pid) -> ({
-            assert_eq<i32>(actual_pid, expected_pid, "InvalidPid payload mismatch");
+            assert_eq<i32>((i32)actual_pid, (i32)expected_pid, "InvalidPid payload mismatch");
         });
         ProcessError::NoFreeSlot -> ({ fail("expected InvalidPid, got NoFreeSlot"); });
         ProcessError::InvalidFd(fd) -> ({ fail("expected InvalidPid, got InvalidFd"); });
     };
 }
 
-void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_version) {
+void assert_invalid_header_error(Result<Pid, LoaderError> *result, i32 expected_version) {
     case *result of {
         Err(LoaderError::InvalidHeader(actual_version)) -> ({
             assert_eq<i32>(actual_version, expected_version, "InvalidHeader payload mismatch");
@@ -205,7 +205,7 @@ void assert_invalid_header_error(Result<i32, LoaderError> *result, i32 expected_
     };
 }
 
-void assert_invalid_bounds_error(Result<i32, LoaderError> *result, i32 expected_size) {
+void assert_invalid_bounds_error(Result<Pid, LoaderError> *result, i32 expected_size) {
     case *result of {
         Err(LoaderError::InvalidBounds(actual_size)) -> ({
             assert_eq<i32>(actual_size, expected_size, "InvalidBounds payload mismatch");
@@ -233,14 +233,14 @@ void process_lifecycle_and_protection() {
     // current process is Option::None, while an invalid PID is a Result error
     // with the offending value.  This prevents the old 0/-1/Unused sentinels
     // from being mistaken for valid process data by callers.
-    Option<i32> no_current = thread.current_pid();
+    Option<Pid> no_current = thread.current_pid();
     bool has_current = case no_current of { Some(_) -> true; None -> false; };
     assert_eq<bool>(has_current, false, "initial current process must be None");
-    Option<ProcessState> no_state = process.get_state(99);
+    Option<ProcessState> no_state = process.get_state(Pid(99));
     bool has_state = case no_state of { Some(_) -> true; None -> false; };
     assert_eq<bool>(has_state, false, "invalid pid state must be None");
-    Result<Option<i32>, ProcessError> bad_pid = process.get_fd(99, 0);
-    assert_invalid_pid(&bad_pid, 99);
+    Result<Option<i32>, ProcessError> bad_pid = process.get_fd(Pid(99), 0);
+    assert_invalid_pid(&bad_pid, Pid(99));
     debug.println("kernel: initializing scheduler...");
     scheduler.init();
     debug.println("kernel: setting up irq handler...");
@@ -280,27 +280,27 @@ void process_lifecycle_and_protection() {
     // text long enough to hold a header, and a single instruction word.
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf, 0x68656C6C); // "hell" in place of the magic
-    Result<i32, LoaderError> no_magic_res = loader.spawn_from_buffer(bad_buf, 172);
+    Result<Pid, LoaderError> no_magic_res = loader.spawn_from_buffer(bad_buf, 172);
     assert_invalid_header_error(&no_magic_res, 0);
     write_be32_mem(bad_buf, 0xFC000000); // halt
-    Result<i32, LoaderError> short_res = loader.spawn_from_buffer(bad_buf, 4);
+    Result<Pid, LoaderError> short_res = loader.spawn_from_buffer(bad_buf, 4);
     assert_invalid_header_error(&short_res, 0);
     init_mbin_user_binary(bad_buf);
-    Result<i32, LoaderError> short_header_res = loader.spawn_from_buffer(bad_buf, 31);
+    Result<Pid, LoaderError> short_header_res = loader.spawn_from_buffer(bad_buf, 31);
     assert_invalid_header_error(&short_header_res, 0);
     debug.println("SUCCESS: non-MBIN buffers rejected with InvalidHeader(0)!");
 
     // 1. Invalid version test
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf + 4, 99); // bad version = 99
-    Result<i32, LoaderError> bad_ver_res = loader.spawn_from_buffer(bad_buf, 172);
+    Result<Pid, LoaderError> bad_ver_res = loader.spawn_from_buffer(bad_buf, 172);
     assert_invalid_header_error(&bad_ver_res, 99);
     debug.println("SUCCESS: InvalidHeader(99) reported correctly!");
 
     // 2. Out of bounds test
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf + 16, 9999); // text_size = 9999 > buffer size 172
-    Result<i32, LoaderError> bad_size_res = loader.spawn_from_buffer(bad_buf, 172);
+    Result<Pid, LoaderError> bad_size_res = loader.spawn_from_buffer(bad_buf, 172);
     assert_invalid_bounds_error(&bad_size_res, 172);
     debug.println("SUCCESS: InvalidBounds(172) reported correctly!");
 
@@ -310,12 +310,12 @@ void process_lifecycle_and_protection() {
     init_mbin_user_binary(user_code);
 
     debug.println("kernel: spawning MBIN v2 user process (Normal)...");
-    Result<i32, LoaderError> pid1_res = loader.spawn_from_buffer(user_code, 172);
-    i32 pid1 = case pid1_res of {
+    Result<Pid, LoaderError> pid1_res = loader.spawn_from_buffer(user_code, 172);
+    Pid pid1 = case pid1_res of {
         Ok(p)  -> p;
         Err(e) -> ({
             fail("spawn normal user process");
-            0;
+            return;
         });
     };
     debug.println("kernel: MBIN v2 user process spawned!");
@@ -391,12 +391,12 @@ void process_lifecycle_and_protection() {
     debug.println("kernel: testing W^X protection (attempt write to text section)...");
     i32 fault_buf = alloc_or_zero(128);
     init_wx_fault_binary(fault_buf);
-    Result<i32, LoaderError> spawn_res2 = loader.spawn_from_buffer(fault_buf, 48);
-    i32 pid2 = case spawn_res2 of {
+    Result<Pid, LoaderError> spawn_res2 = loader.spawn_from_buffer(fault_buf, 48);
+    Pid pid2 = case spawn_res2 of {
         Ok(p)  -> p;
         Err(e) -> ({
             fail("spawn W^X fault process");
-            0;
+            return;
         });
     };
 

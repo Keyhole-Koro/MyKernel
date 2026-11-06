@@ -2,13 +2,13 @@ package process;
 
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
-import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import kernel_config from "kernel_config.mln";
 
 /** Failure cases returned by process-table operations. */
 export enum ProcessError {
     NoFreeSlot,
-    InvalidPid(i32),
+    InvalidPid(Pid),
     InvalidFd(i32),
 }
 
@@ -37,7 +37,7 @@ export enum ProcessState {
  * @property retained_threads Live plus unreaped Zombie TCB count.
  */
 export struct Process {
-    i32 pid;
+    Pid pid;
     ProcessState state;
     i32 pdbr;
     i32 heap_break;
@@ -94,11 +94,12 @@ export void init() {
  * @param pid Positive process identifier to resolve.
  * @return Ok(zero-based index), or Err(InvalidPid(pid)).
  */
-Result<i32, ProcessError> index_for_pid(i32 pid) {
-    if (pid <= 0 || pid > kernel_config.MAX_PROCS) {
+Result<i32, ProcessError> index_for_pid(Pid pid) {
+    i32 number = (i32)pid;
+    if (number <= 0 || number > kernel_config.MAX_PROCS) {
         return Err(ProcessError::InvalidPid(pid));
     }
-    i32 idx = pid - 1;
+    i32 idx = number - 1;
     bool matches = case g_procs[idx] of {
         Some(p) -> p.pid == pid;
         None -> false;
@@ -111,13 +112,13 @@ Result<i32, ProcessError> index_for_pid(i32 pid) {
  * Reserves a process table entry in Loading state and initializes its fd table.
  * @return Ok(new PID), or Err(NoFreeSlot) when all process slots are occupied.
  */
-export Result<i32, ProcessError> reserve_process() {
+export Result<Pid, ProcessError> reserve_process() {
     if (!g_procs_initialized) { init(); }
     i32 i = 0;
     while (i < kernel_config.MAX_PROCS) {
         bool free = case g_procs[i] of { None -> true; Some(_) -> false; };
         if (free) {
-            i32 pid = i + 1;
+            Pid pid = Pid(i + 1);
             Process value = Process {
                 pid: pid,
                 state: ProcessState::Loading,
@@ -144,7 +145,7 @@ export Result<i32, ProcessError> reserve_process() {
  * @param heap_break Initial user heap break following loaded segments.
  * @return Ok(_) on commit, or Err(InvalidPid) for a missing/non-Loading process.
  */
-export Result<_, ProcessError> commit_process(i32 pid, i32 pdbr, i32 heap_break) {
+export Result<_, ProcessError> commit_process(Pid pid, i32 pdbr, i32 heap_break) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({
@@ -165,7 +166,7 @@ export Result<_, ProcessError> commit_process(i32 pid, i32 pdbr, i32 heap_break)
  * @param pid Process slot to release.
  * @return Ok(_) on release, or Err(InvalidPid) when no such slot exists.
  */
-export Result<_, ProcessError> free_proc(i32 pid) {
+export Result<_, ProcessError> free_proc(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     Option<Process> empty = None;
     g_procs[idx] = empty;
@@ -177,7 +178,7 @@ export Result<_, ProcessError> free_proc(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return Some(lifecycle state) for an allocated process; otherwise None.
  */
-export Option<ProcessState> get_state(i32 pid) {
+export Option<ProcessState> get_state(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
     return case g_procs[idx] of { Some(p) -> Some(p.state); None -> None; };
 }
@@ -186,7 +187,7 @@ export Option<ProcessState> get_state(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return true only when the process exists in Alive state.
  */
-export bool accepts_threads(i32 pid) {
+export bool accepts_threads(Pid pid) {
     return case get_state(pid) of {
         Some(state) -> case state of { Alive -> true; _ -> false; };
         None -> false;
@@ -197,7 +198,7 @@ export bool accepts_threads(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return Some(physical PDBR) for an allocated process; otherwise None.
  */
-export Option<i32> get_pdbr(i32 pid) {
+export Option<i32> get_pdbr(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
     return case g_procs[idx] of { Some(p) -> Some(p.pdbr); None -> None; };
 }
@@ -206,7 +207,7 @@ export Option<i32> get_pdbr(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return Some(current user heap break) for an allocated process; otherwise None.
  */
-export Option<i32> get_heap_break(i32 pid) {
+export Option<i32> get_heap_break(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
     return case g_procs[idx] of { Some(p) -> Some(p.heap_break); None -> None; };
 }
@@ -217,7 +218,7 @@ export Option<i32> get_heap_break(i32 pid) {
  * @param heap_break New end-exclusive user heap address.
  * @return Ok(_) on update, or Err(InvalidPid) when the process is absent.
  */
-export Result<_, ProcessError> set_heap_break(i32 pid, i32 heap_break) {
+export Result<_, ProcessError> set_heap_break(Pid pid, i32 heap_break) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({ p.heap_break = heap_break; });
@@ -232,7 +233,7 @@ export Result<_, ProcessError> set_heap_break(i32 pid, i32 heap_break) {
  * @return Ok(Some(slot)) on success, Ok(None) when all per-process slots are used,
  *         or Err(InvalidPid) when the process is absent.
  */
-export Result<Option<i32>, ProcessError> reserve_user_stack_slot(i32 pid) {
+export Result<Option<i32>, ProcessError> reserve_user_stack_slot(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({
@@ -257,7 +258,7 @@ export Result<Option<i32>, ProcessError> reserve_user_stack_slot(i32 pid) {
  * @param slot Slot index in 0..MAX_THREADS_PER_PROC.
  * @return Ok(_) on release, or Err when PID/slot is invalid.
  */
-export Result<_, ProcessError> release_user_stack_slot(i32 pid, i32 slot) {
+export Result<_, ProcessError> release_user_stack_slot(Pid pid, i32 slot) {
     i32 idx = index_for_pid(pid)?;
     if (slot < 0 || slot >= kernel_config.MAX_THREADS_PER_PROC) {
         return Err(ProcessError::InvalidPid(pid));
@@ -274,7 +275,7 @@ export Result<_, ProcessError> release_user_stack_slot(i32 pid, i32 slot) {
  * @param pid Owner process.
  * @return Ok(_) on increment, or Err(InvalidPid) when the owner disappeared.
  */
-export Result<_, ProcessError> retain_thread(i32 pid) {
+export Result<_, ProcessError> retain_thread(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({ p.live_threads++; p.retained_threads++; });
@@ -288,7 +289,7 @@ export Result<_, ProcessError> retain_thread(i32 pid) {
  * @param pid Owner process.
  * @return Ok(_) on update, or Err(InvalidPid) when the owner is absent.
  */
-export Result<_, ProcessError> mark_thread_exited(i32 pid) {
+export Result<_, ProcessError> mark_thread_exited(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({ if (p.live_threads > 0) { p.live_threads--; } });
@@ -302,7 +303,7 @@ export Result<_, ProcessError> mark_thread_exited(i32 pid) {
  * @param pid Owner process.
  * @return Ok(_) on update, or Err(InvalidPid) when the owner is absent.
  */
-export Result<_, ProcessError> release_thread(i32 pid) {
+export Result<_, ProcessError> release_thread(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({ if (p.retained_threads > 0) { p.retained_threads--; } });
@@ -315,7 +316,7 @@ export Result<_, ProcessError> release_thread(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return Some(number of Runnable, Running, or Blocked TCBs), or None if absent.
  */
-export Option<i32> live_thread_count(i32 pid) {
+export Option<i32> live_thread_count(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
     return case g_procs[idx] of { Some(p) -> Some(p.live_threads); None -> None; };
 }
@@ -324,7 +325,7 @@ export Option<i32> live_thread_count(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return Some(live plus unreaped Zombie TCB count), or None if absent.
  */
-export Option<i32> retained_thread_count(i32 pid) {
+export Option<i32> retained_thread_count(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
     return case g_procs[idx] of { Some(p) -> Some(p.retained_threads); None -> None; };
 }
@@ -335,7 +336,7 @@ export Option<i32> retained_thread_count(i32 pid) {
  * @param status Exit code or fatal-fault reason retained for the parent.
  * @return Ok(_) on transition, or Err(InvalidPid) when absent.
  */
-export Result<_, ProcessError> begin_exit(i32 pid, ProcessExitStatus status) {
+export Result<_, ProcessError> begin_exit(Pid pid, ProcessExitStatus status) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({ p.state = ProcessState::Exiting(status); });
@@ -349,7 +350,7 @@ export Result<_, ProcessError> begin_exit(i32 pid, ProcessExitStatus status) {
  * @param pid Process whose TCBs and owned resources have all been released.
  * @return Ok(_) on transition, or Err(InvalidPid) unless the process is Exiting.
  */
-export Result<_, ProcessError> finish_exit(i32 pid) {
+export Result<_, ProcessError> finish_exit(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({
@@ -369,7 +370,7 @@ export Result<_, ProcessError> finish_exit(i32 pid) {
  * @param pid Exiting process whose owned resources are gone.
  * @return Ok(_) on reset, or Err(InvalidPid) when absent.
  */
-export Result<_, ProcessError> clear_owned_resources(i32 pid) {
+export Result<_, ProcessError> clear_owned_resources(Pid pid) {
     i32 idx = index_for_pid(pid)?;
     case g_procs[idx] of {
         Some(p) -> ({
@@ -389,7 +390,7 @@ export Result<_, ProcessError> clear_owned_resources(i32 pid) {
  * @param pid Process identifier to inspect.
  * @return Some(final status) for Exiting/Zombie, otherwise None.
  */
-export Option<ProcessExitStatus> get_exit_status(i32 pid) {
+export Option<ProcessExitStatus> get_exit_status(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
     return case g_procs[idx] of {
         Some(p) -> case p.state of {
@@ -407,7 +408,7 @@ export Option<ProcessExitStatus> get_exit_status(i32 pid) {
  * @param fd Descriptor-table index.
  * @return Ok(Some(value)) when open, Ok(None) when closed, or an invalid PID/fd error.
  */
-export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
+export Result<Option<i32>, ProcessError> get_fd(Pid pid, i32 fd) {
     i32 idx = index_for_pid(pid)?;
     if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));
@@ -422,7 +423,7 @@ export Result<Option<i32>, ProcessError> get_fd(i32 pid, i32 fd) {
  * @param value Some(raw descriptor) to install, or None to close the slot.
  * @return Ok(_) on update, or an invalid PID/fd error.
  */
-export Result<_, ProcessError> set_fd(i32 pid, i32 fd, Option<i32> value) {
+export Result<_, ProcessError> set_fd(Pid pid, i32 fd, Option<i32> value) {
     i32 idx = index_for_pid(pid)?;
     if (fd < 0 || fd >= kernel_config.MAX_FDS) {
         return Err(ProcessError::InvalidFd(fd));

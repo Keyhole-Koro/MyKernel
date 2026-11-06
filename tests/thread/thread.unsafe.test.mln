@@ -10,7 +10,7 @@ import thread from "@kernel/kernel/thread.mln";
 import { ThreadState, JoinOutcome } from "@kernel/kernel/thread.mln";
 import loader from "@kernel/kernel/loader.mln";
 import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
-import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import { SyscallStatus, SyscallFailure } from "@contracts/myos/syscall.contract.mln";
 import { Result } from "@std/core/result.mln";
 import { assert_eq } from "@std/testing/assert.mln";
@@ -61,9 +61,9 @@ void user_thread_lifecycle() {
     mem.write_word(image + 28, 0);          // bss_size
     mem.write_word(image + 32, 0);          // sections_offset: none
     mem.write_word(image + 36, 0xFC000000); // halt
-    i32 pid = case loader.spawn_from_buffer(image, 40) of {
+    Pid pid = case loader.spawn_from_buffer(image, 40) of {
         Ok(value) -> value;
-        Err(_) -> ({ assert_eq<i32>(1, 0, "main process creation"); 0; });
+        Err(_) -> ({ assert_eq<i32>(1, 0, "main process creation"); return; });
     };
     assert_eq<i32>(process.live_thread_count(pid).unwrap_or(0), 1, "main TCB accounted");
 

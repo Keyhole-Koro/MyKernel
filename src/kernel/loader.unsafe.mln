@@ -12,6 +12,7 @@ import { KernelStack, UserStack } from "thread.mln";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { MmuError, LoaderError } from "@contracts/process/loader.contract.mln";
+import { Pid } from "@contracts/process/control.contract.mln";
 import { ProcessError } from "process.mln";
 import { Drop } from "@std/core/drop.mln";
 
@@ -131,22 +132,22 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
  * A process slot claimed while a process is being loaded. Every failed load
  * returns its slot: the slot is released when the owner goes out of scope,
  * unless keep() hands the loaded process over first.
- * @property pid Process ID of the claimed slot, or 0 once kept.
+ * @property pid Process ID of the claimed slot, or None once kept.
  */
 struct ProcessSlot {
-    i32 pid;
+    Option<Pid> pid;
 };
 
 impl Drop for ProcessSlot {
     /** Rolls back the pid reservation unless keep() already committed ownership. */
     void (borrow Self self) drop() {
-        if (self.pid == 0) { return; }
-        Result<_, ProcessError> release = process.free_proc(self.pid);
+        Pid pid = case self.pid of { Some(value) -> value; None -> ({ return; }); };
+        Result<_, ProcessError> release = process.free_proc(pid);
         case release of {
             Ok(_) -> _;
             Err(_) -> ({ debug.panic("loader: allocated process disappeared during cleanup"); });
         };
-        self.pid = 0;
+        self.pid = None;
     }
 }
 
@@ -181,14 +182,9 @@ i32 (borrow AddressSpace self) keep() {
     return pdbr;
 }
 
-/**
- * Hands the loaded process over; the slot is no longer released.
- * @return The process ID.
- */
-i32 (borrow ProcessSlot self) keep() {
-    i32 pid = self.pid;
-    self.pid = 0;
-    return pid;
+/** Hands the loaded process over; the slot is no longer released. */
+void (borrow ProcessSlot self) keep() {
+    self.pid = None;
 }
 
 /**
@@ -201,9 +197,9 @@ i32 (borrow ProcessSlot self) keep() {
  * @return Ok(pid) with allocated process ID on success, or Err(LoaderError) on failure;
  *         InvalidHeader(0) when the buffer has no MBIN header.
  */
-export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
-    Result<i32, ProcessError> proc_res = process.reserve_process();
-    i32 pid = case proc_res of {
+export Result<Pid, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
+    Result<Pid, ProcessError> proc_res = process.reserve_process();
+    Pid pid = case proc_res of {
         Ok(p) -> p;
         Err(ProcessError::NoFreeSlot) -> ({
             debug.println("loader: failed to allocate process slot");
@@ -217,7 +213,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
             debug.panic("loader: reserve_process returned an invalid file descriptor error");
         });
     };
-    ProcessSlot slot = ProcessSlot { pid: pid };
+    ProcessSlot slot = ProcessSlot { pid: Some(pid) };
 
     // 1. Create Page Directory and map kernel regions identity
     i32 pd = case mmu.create_page_directory() of {
@@ -372,5 +368,6 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     irq.restore(irq_state);
     kstack_block.keep();
     address_space.keep();
-    return Ok(slot.keep());
+    slot.keep();
+    return Ok(pid);
 }

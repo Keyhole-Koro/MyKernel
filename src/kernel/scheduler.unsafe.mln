@@ -9,6 +9,7 @@ import mmu from "@kernel/mm/mmu.mln";
 import { wfi_cpu } from "@kernel/arch/wfi.masm";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
+import { Pid } from "@contracts/process/control.contract.mln";
 
 /** Failure cases returned by kernel-thread creation. */
 export enum SchedulerError {
@@ -192,7 +193,7 @@ export i32 wait_notification(i32 sp, i32 mask, i32 *notification_out) {
  * @param pid Destination process.
  * @param mask Notification bits produced by the event source.
  */
-export void notify_pid(i32 pid, i32 mask) {
+export void notify_pid(Pid pid, i32 mask) {
     i32 i = 0;
     while (i < thread.high_water()) {
         case thread.owner_pid_at(i) of {

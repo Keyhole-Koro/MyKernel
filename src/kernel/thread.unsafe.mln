@@ -10,7 +10,7 @@ import mmu from "@kernel/mm/mmu.mln";
 import mem from "@kernel/mm/mem.mln";
 import debug from "@kernel/debug/debug.mln";
 import { MmuError } from "@contracts/process/loader.contract.mln";
-import { ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
 import { SyscallStatus } from "@contracts/myos/syscall.contract.mln";
 
@@ -21,7 +21,7 @@ import { SyscallStatus } from "@contracts/myos/syscall.contract.mln";
  */
 export enum ThreadOwner {
     Kernel,
-    User(i32),
+    User(Pid),
 }
 
 /**
@@ -289,7 +289,7 @@ export i32 publish_kernel(i32 slot, i32 saved_sp, i32 stack_base, i32 stack_byte
  */
 export i32 publish_user(
     i32 slot,
-    i32 pid,
+    Pid pid,
     i32 saved_kernel_sp,
     i32 saved_user_sp,
     KernelStack kernel_stack,
@@ -346,7 +346,7 @@ export Option<i32> slot_for_tid(i32 tid) {
  * @param slot Global TCB table index.
  * @return Some(PID) for a user TCB; None for kernel or empty slots.
  */
-export Option<i32> owner_pid_at(i32 slot) {
+export Option<Pid> owner_pid_at(i32 slot) {
     if (!occupied(slot)) { return None; }
     return case g_threads[slot] of {
         Some(t) -> case t.owner of { User(pid) -> Some(pid); Kernel -> None; };
@@ -355,7 +355,7 @@ export Option<i32> owner_pid_at(i32 slot) {
 }
 
 /** @return Current user PID derived from the TCB, or None in a kernel/idle context. */
-export Option<i32> current_pid() { return owner_pid_at(g_current_thread_slot); }
+export Option<Pid> current_pid() { return owner_pid_at(g_current_thread_slot); }
 
 /** @return Stable TID of the current TCB, or None while idle. */
 export Option<i32> current_tid() {
@@ -701,7 +701,7 @@ void release_user_mapping(i32 pdbr, i32 base, i32 bytes) {
  * @param args Copied and trusted-by-value thread entry, arguments, and stack request.
  * @return Ok(new TID), or a precise allocation, entry, size, or lifecycle error.
  */
-export Result<i32, ThreadError> spawn_user_thread(i32 pid, ThreadSpawnArgs args) {
+export Result<i32, ThreadError> spawn_user_thread(Pid pid, ThreadSpawnArgs args) {
     if (!process.accepts_threads(pid)) { return Err(ThreadError::ProcessExiting); }
     i32 retained = case process.retained_thread_count(pid) of {
         Some(value) -> value;
@@ -798,19 +798,18 @@ export Result<i32, ThreadError> spawn_user_thread(i32 pid, ThreadSpawnArgs args)
 export void exit_current_thread(i32 code) {
     i32 slot = g_current_thread_slot;
     if (!occupied(slot)) { return; }
-    i32 pid = case owner_pid_at(slot) of { Some(value) -> value; None -> 0; };
+    Option<Pid> owner = owner_pid_at(slot);
     case g_threads[slot] of {
         Some(t) -> ({ t.state = ThreadState::Exiting(code); });
         None -> ({ return; });
     };
-    if (pid != 0) {
-        Result<_, ProcessError> marked = process.mark_thread_exited(pid);
-        case marked of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: exiting owner is missing"); }); };
-        i32 live = case process.live_thread_count(pid) of { Some(value) -> value; None -> 0; };
-        if (live == 0) {
-            ProcessExitStatus status = ProcessExitStatus::Code(code);
-            process.begin_exit(pid, status);
-        }
+    Pid pid = case owner of { Some(value) -> value; None -> ({ return; }); };
+    Result<_, ProcessError> marked = process.mark_thread_exited(pid);
+    case marked of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: exiting owner is missing"); }); };
+    i32 live = case process.live_thread_count(pid) of { Some(value) -> value; None -> 0; };
+    if (live == 0) {
+        ProcessExitStatus status = ProcessExitStatus::Code(code);
+        process.begin_exit(pid, status);
     }
 }
 
@@ -820,7 +819,7 @@ export void exit_current_thread(i32 code) {
  * @param pid Process whose TCBs must all exit.
  * @param status Final process status preserved in the eventual Zombie record.
  */
-export void exit_process_threads(i32 pid, ProcessExitStatus status) {
+export void exit_process_threads(Pid pid, ProcessExitStatus status) {
     Result<_, ProcessError> begun = process.begin_exit(pid, status);
     case begun of { Ok(_) -> _; Err(_) -> ({ return; }); };
     i32 i = 0;
@@ -850,17 +849,19 @@ void cleanup_stack_resources(i32 slot) {
     if (!occupied(slot)) { return; }
     case g_threads[slot] of {
         Some(t) -> ({
-            i32 pid = case t.owner of { User(owner) -> owner; Kernel -> 0; };
-            if (pid != 0) {
-                i32 pdbr = case process.get_pdbr(pid) of { Some(value) -> value; None -> 0; };
-                case t.user_stack of {
-                    Some(stack) -> ({
-                        if (pdbr != 0) { release_user_mapping(pdbr, stack.mapped_base, stack.mapped_bytes); }
-                        process.release_user_stack_slot(pid, stack.slot);
-                    });
-                    None -> _;
-                };
-            }
+            case t.owner of {
+                User(pid) -> ({
+                    i32 pdbr = case process.get_pdbr(pid) of { Some(value) -> value; None -> 0; };
+                    case t.user_stack of {
+                        Some(stack) -> ({
+                            if (pdbr != 0) { release_user_mapping(pdbr, stack.mapped_base, stack.mapped_bytes); }
+                            process.release_user_stack_slot(pid, stack.slot);
+                        });
+                        None -> _;
+                    };
+                });
+                Kernel -> _;
+            };
             if (t.kernel_stack.owned && t.kernel_stack.base != 0) { heap.free(t.kernel_stack.base); }
             t.kernel_stack.base = 0;
             t.kernel_stack.bytes = 0;
@@ -923,17 +924,19 @@ void wake_joiner(i32 target_slot, i32 code) {
  */
 export void finish_deferred_cleanup(i32 retired_slot) {
     if (!occupied(retired_slot)) { return; }
-    i32 pid = case owner_pid_at(retired_slot) of { Some(value) -> value; None -> 0; };
     i32 code = case state_at(retired_slot) of {
         Some(state) -> case state of { ThreadState::Exiting(value) -> value; _ -> 0; };
         None -> 0;
     };
 
-    if (pid == 0) {
-        cleanup_stack_resources(retired_slot);
-        clear_slot(retired_slot);
-        return;
-    }
+    Pid pid = case owner_pid_at(retired_slot) of {
+        Some(value) -> value;
+        None -> ({
+            cleanup_stack_resources(retired_slot);
+            clear_slot(retired_slot);
+            return;
+        });
+    };
 
     bool process_exiting = case process.get_state(pid) of {
         Some(state) -> case state of { ProcessState::Exiting(_) -> true; _ -> false; };
@@ -993,7 +996,7 @@ export Result<JoinOutcome, ThreadError> join_thread(i32 target_tid) {
         Some(value) -> value;
         None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
     };
-    i32 pid = case current_pid() of {
+    Pid pid = case current_pid() of {
         Some(value) -> value;
         None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
     };
@@ -1036,7 +1039,7 @@ export Result<JoinOutcome, ThreadError> join_thread(i32 target_tid) {
  * @return Ok(false) after publishing the wait, or Err(WouldBlock/BadAddress/etc.).
  */
 export Result<bool, ThreadError> futex_wait(i32 addr, i32 expected, i32 timeout_ticks, i32 now) {
-    i32 pid = case current_pid() of {
+    Pid pid = case current_pid() of {
         Some(value) -> value;
         None -> ({ return Err(ThreadError::BadAddress(addr)); });
     };
@@ -1073,7 +1076,7 @@ export Result<bool, ThreadError> futex_wait(i32 addr, i32 expected, i32 timeout_
  * @return Ok(number woken), or Err for an invalid address/count or exiting process.
  */
 export Result<i32, ThreadError> futex_wake(i32 addr, i32 count) {
-    i32 pid = case current_pid() of {
+    Pid pid = case current_pid() of {
         Some(value) -> value;
         None -> ({ return Err(ThreadError::BadAddress(addr)); });
     };
