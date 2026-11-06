@@ -173,7 +173,7 @@ void init_wx_fault_binary(i32 buf) {
     mem.write_byte(t + 12, 116); mem.write_byte(t + 13, 129); mem.write_byte(t + 14, 0); mem.write_byte(t + 15, 0);
 }
 
-void fail(char* message) {
+void fail(str message) {
     assert_eq<i32>(1, 0, message);
 }
 

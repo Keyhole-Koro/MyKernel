@@ -16,33 +16,11 @@ char hex_digit(i32 nibble) {
 }
 
 /**
- * Outputs a null-terminated string to the serial console.
- * @param s Pointer to null-terminated string to print.
- */
-export void print(char* s) {
-    if (s) {
-        while (*s) {
-            serial.putc(*s);
-            s++;
-        }
-    }
-}
-
-/**
- * Outputs a null-terminated string followed by a newline to the serial console.
- * @param s Pointer to null-terminated string to print.
- */
-export void println(char* s) {
-    print(s);
-    serial.putc('\n');
-}
-
-/**
- * Outputs a string view to the serial console.
- * @param s View to print.
+ * Outputs a string to the serial console.
+ * @param s Bytes to print.
  */
 @safe
-export void print_str(str s) {
+export void print(str s) {
     i32 i = 0;
     while (i < s.length) {
         serial.putc(s.data[i]);
@@ -51,14 +29,28 @@ export void print_str(str s) {
 }
 
 /**
- * Outputs a string view and a newline to the serial console.
- * @param s View to print.
+ * Outputs a string followed by a newline to the serial console.
+ * @param s Bytes to print.
  */
 @safe
-export void println_str(str s) {
-    print_str(s);
+export void println(str s) {
+    print(s);
     serial.putc('\n');
 }
+
+/**
+ * The same as print(), for callers that still use this name.
+ * @param s Bytes to print.
+ */
+@safe
+export void print_str(str s) { print(s); }
+
+/**
+ * The same as println(), for callers that still use this name.
+ * @param s Bytes to print.
+ */
+@safe
+export void println_str(str s) { println(s); }
 
 /**
  * Outputs a signed decimal integer to the serial console.
@@ -68,21 +60,11 @@ export void println_str(str s) {
 export void print_i32(i32 value) { printf("%i", value); }
 
 /**
- * Reports an unrecoverable failure and halts the CPU.
- * @param s Error message describing the panic reason.
- */
-@safe
-export void panic_str(str s) {
-    print_str("panic: ");
-    println_str(s);
-    halt_cpu();
-}
-
-/**
  * Reports an unrecoverable kernel invariant failure and halts the CPU.
  * @param msg Error message describing the panic reason.
  */
-export void panic(char* msg) {
+@safe
+export void panic(str msg) {
     print("panic: ");
     println(msg);
     halt_cpu();
@@ -109,41 +91,32 @@ export void hex(i32 value) {
 /**
  * Formatted print to the serial console.
  *
- * Supports format specifiers: %s (string), %i / %d (decimal int), %c (char), %x (hex), %% (percent).
+ * Supports format specifiers: %i / %d (decimal int), %c (char), %x (hex), %% (percent).
  * @param fmt Format string.
  * @param args Variable arguments matching format specifiers.
  */
-export void printf(char* fmt, rest args) {
+export void printf(str fmt, rest args) {
     i32 arg_index = 0;
+    i32 at = 0;
 
-    while (*fmt) {
-        if (*fmt != '%') {
-            serial.putc(*fmt);
-            fmt++;
+    while (at < fmt.length) {
+        i32 c = fmt.byte(at);
+        if (c != '%') {
+            serial.putc(c);
+            at++;
             continue;
         }
 
-        fmt++;
-        if (!*fmt) {
+        at++;
+        if (at >= fmt.length) {
             serial.putc('%');
             break;
         }
 
-        if (*fmt == '%') {
+        c = fmt.byte(at);
+        if (c == '%') {
             serial.putc('%');
-        } else if (*fmt == 's') {
-            if (arg_index >= args.len) {
-                print("%<missing>");
-                break;
-            }
-            char* s = args[arg_index];
-            arg_index++;
-            if (s) {
-                print(s);
-            } else {
-                print("(null)");
-            }
-        } else if (*fmt == 'i' || *fmt == 'd') {
+        } else if (c == 'i' || c == 'd') {
             // %d is accepted as an alias for %i (signed decimal integer).
             if (arg_index >= args.len) {
                 print("%<missing>");
@@ -151,14 +124,8 @@ export void printf(char* fmt, rest args) {
             }
             i32 value = args[arg_index];
             arg_index++;
-
-            Text<12> decimal = value.to_string();
-            i32 i = 0;
-            while (i < decimal.len()) {
-                serial.putc(decimal.data[i]);
-                i++;
-            }
-        } else if (*fmt == 'c') {
+            print(value.to_string().as_str());
+        } else if (c == 'c') {
             if (arg_index >= args.len) {
                 print("%<missing>");
                 break;
@@ -166,7 +133,7 @@ export void printf(char* fmt, rest args) {
             i32 ch = args[arg_index];
             arg_index++;
             serial.putc(ch);
-        } else if (*fmt == 'x') {
+        } else if (c == 'x') {
             if (arg_index >= args.len) {
                 print("%<missing>");
                 break;
@@ -176,9 +143,9 @@ export void printf(char* fmt, rest args) {
             hex(value);
         } else {
             serial.putc('%');
-            serial.putc(*fmt);
+            serial.putc(c);
         }
 
-        fmt++;
+        at++;
     }
 }

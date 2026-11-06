@@ -21,7 +21,7 @@ import serial from "@kernel/io/serial.mln";
 i32 g_assert_value = 42;
 i32* g_assert_null = (i32*)0;
 
-i32 atoi_value(char *input) {
+i32 atoi_value(str input) {
     Result<i32, ParseIntError> parsed = str.atoi(input);
     return case parsed of {
         Ok(value) -> value;
@@ -56,58 +56,43 @@ void test_assert() {
 char g_buf[64];
 char g_buf2[64];
 
+bool buffer_is(char *buffer, str text) { return str.from_c(buffer) == text; }
+
 void test_str() {
     debug.println("-- str --");
 
     assert_eq<i32>(str.len(""), 0, "str.len empty");
     assert_eq<i32>(str.len("hello"), 5, "str.len hello");
 
-    assert_eq<i32>(str.cmp("abc", "abc"), 0, "str.cmp equal");
-    assert.assert_true(str.cmp("abc", "abd") < 0, "str.cmp less");
-    assert.assert_true(str.cmp("abd", "abc") > 0, "str.cmp greater");
-    assert.assert_true(str.cmp("ab", "abc") < 0, "str.cmp prefix is less");
+    str abc = "abc";
+    assert_eq<i32>(abc.compare("abc"), 0, "str compare equal");
+    assert.assert_true(abc.compare("abd") < 0, "str compare less");
+    assert.assert_true(abc.compare("abb") > 0, "str compare greater");
+    assert.assert_true(abc.compare("abcd") < 0, "str compare prefix is less");
 
-    assert_eq<i32>(str.eq("ls", "ls"), 1, "str.eq same");
-    assert_eq<i32>(str.eq("ls", "dom"), 0, "str.eq different");
+    str ls = "ls";
+    assert.assert_true(ls == "ls", "str == same");
+    assert.assert_true(ls != "dom", "str == different");
 
-    assert_eq<i32>(str.ncmp("abcXX", "abcYY", 3), 0, "str.ncmp first 3 match");
-    assert.assert_true(str.ncmp("abcXX", "abcYY", 4) != 0, "str.ncmp 4th differs");
+    str prompt = "MyOS> ls";
+    assert.assert_true(prompt.starts_with("MyOS>"), "str starts_with hit");
+    assert.assert_false(ls.starts_with("MyOS>"), "str starts_with miss");
+    assert.assert_true(ls.starts_with(""), "str starts_with empty prefix");
 
-    assert_eq<i32>(str.starts_with("MyOS> ls", "MyOS>"), 1, "str.starts_with hit");
-    assert_eq<i32>(str.starts_with("ls", "MyOS>"), 0, "str.starts_with miss");
-    assert_eq<i32>(str.starts_with("anything", ""), 1, "str.starts_with empty prefix");
+    str greeting = "hello world";
+    case greeting.find("world") of { Some(v) -> assert_eq<i32>(v, 6, "str find hit"); None -> assert.assert_true(false, "str find hit"); };
+    case greeting.find("xyz") of { Some(v) -> assert.assert_true(false, "str find miss"); None -> assert.assert_true(true, "str find miss"); };
+    case greeting.find("") of { Some(v) -> assert_eq<i32>(v, 0, "str find empty"); None -> assert.assert_true(false, "str find empty"); };
 
-    assert_eq<i32>(str.copy(&g_buf[0], "hello"), 5, "str.copy returns length");
-    assert_eq<i32>(str.eq(&g_buf[0], "hello"), 1, "str.copy content");
-
-    assert_eq<i32>(str.ncopy(&g_buf[0], "hello", 4), 3, "str.ncopy truncates");
-    assert_eq<i32>(str.eq(&g_buf[0], "hel"), 1, "str.ncopy content");
-    assert_eq<i32>(str.ncopy(&g_buf[0], "hi", 16), 2, "str.ncopy fits");
-
-    str.copy(&g_buf[0], "clicks: ");
-    assert_eq<i32>(str.cat(&g_buf[0], "12"), 10, "str.cat returns total");
-    assert_eq<i32>(str.eq(&g_buf[0], "clicks: 12"), 1, "str.cat content");
-
-    case str.chr("hello", 'l') of { Some(v) -> assert_eq<i32>(v, 2, "str.chr found"); None -> assert.assert_true(false, "str.chr found"); };
-    case str.chr("hello", 'z') of { Some(v) -> assert.assert_true(false, "str.chr missing"); None -> assert.assert_true(true, "str.chr missing"); };
-
-    case str.find("hello world", "world") of { Some(v) -> assert_eq<i32>(v, 6, "str.find hit"); None -> assert.assert_true(false, "str.find hit"); };
-    case str.find("hello", "xyz") of { Some(v) -> assert.assert_true(false, "str.find miss"); None -> assert.assert_true(true, "str.find miss"); };
-    case str.find("hello", "") of { Some(v) -> assert_eq<i32>(v, 0, "str.find empty"); None -> assert.assert_true(false, "str.find empty"); };
-
-    assert_eq<i32>(str.itoa(0, &g_buf[0]), 1, "str.itoa zero length");
-    assert_eq<i32>(str.eq(&g_buf[0], "0"), 1, "str.itoa zero");
-    str.itoa(4210, &g_buf[0]);
-    assert_eq<i32>(str.eq(&g_buf[0], "4210"), 1, "str.itoa positive");
-    str.itoa(0 - 42, &g_buf[0]);
-    assert_eq<i32>(str.eq(&g_buf[0], "-42"), 1, "str.itoa negative");
-
-    str.xtoa(0, &g_buf[0]);
-    assert_eq<i32>(str.eq(&g_buf[0], "0"), 1, "str.xtoa zero");
-    str.xtoa(0x1abcde, &g_buf[0]);
-    assert_eq<i32>(str.eq(&g_buf[0], "1abcde"), 1, "str.xtoa multi nibble");
-    str.xtoa(0x1f, &g_buf[0]);
-    assert_eq<i32>(str.eq(&g_buf[0], "1f"), 1, "str.xtoa strips leading zeros");
+    i32 zero = 0;
+    Text<12> zero_text = zero.to_string();
+    assert.assert_true(zero_text.as_str() == "0", "to_string zero");
+    i32 positive = 4210;
+    Text<12> positive_text = positive.to_string();
+    assert.assert_true(positive_text.as_str() == "4210", "to_string positive");
+    i32 negative = 0 - 42;
+    Text<12> negative_text = negative.to_string();
+    assert.assert_true(negative_text.as_str() == "-42", "to_string negative");
 
     assert_eq<i32>(atoi_value("0"), 0, "str.atoi zero");
     assert_eq<i32>(atoi_value("4210"), 4210, "str.atoi positive");
@@ -125,14 +110,14 @@ void test_bytes() {
 
     bytes.set(&g_buf[0], 'A', 4);
     g_buf[4] = 0;
-    assert_eq<i32>(str.eq(&g_buf[0], "AAAA"), 1, "bytes.set fills");
+    assert.assert_true(buffer_is(&g_buf[0], "AAAA"), "bytes.set fills");
 
     bytes.zero(&g_buf[0], 4);
     assert_eq<i32>(str.len(&g_buf[0]), 0, "bytes.zero clears");
 
-    str.copy(&g_buf[0], "source");
+    bytes.copy(&g_buf[0], "source", 7);
     bytes.copy(&g_buf2[0], &g_buf[0], 7);
-    assert_eq<i32>(str.eq(&g_buf2[0], "source"), 1, "bytes.copy content");
+    assert.assert_true(buffer_is(&g_buf2[0], "source"), "bytes.copy content");
 
     assert_eq<i32>(bytes.cmp("abc", "abc", 3), 0, "bytes.cmp equal");
     assert.assert_true(bytes.cmp("abc", "abd", 3) < 0, "bytes.cmp less");
@@ -147,13 +132,13 @@ void test_bytes() {
     // previous test left further along g_buf is still there.
 
     // Forward direction: dst before src.
-    str.copy(&g_buf[0], "abcdef");
+    bytes.copy(&g_buf[0], "abcdef", 7);
     bytes.overlapping_copy(&g_buf[0], &g_buf[2], 5);
     assert_eq<i32>(bytes.eq(&g_buf[0], "cdef", 5), 1, "bytes.move dst below src");
 
     // Backward direction: dst after src. Copying forwards here would smear
     // the first byte across the range, giving "aaaaaaa".
-    str.copy(&g_buf[0], "abcdef");
+    bytes.copy(&g_buf[0], "abcdef", 7);
     bytes.overlapping_copy(&g_buf[2], &g_buf[0], 5);
     assert_eq<i32>(bytes.eq(&g_buf[0], "ababcde", 7), 1, "bytes.move dst above src");
 }

@@ -55,10 +55,10 @@ void append_child(i32 parent, i32 child) {
 // mock.called_with only compares raw ABI words, so a char* argument needs a
 // content predicate rather than a literal -- two "Root" string literals are
 // not guaranteed to share an address.
-i32 is_root_title(i32 addr) { return str.eq((char *)addr, "Root"); }
-i32 is_ok_text(i32 addr) { return str.eq((char *)addr, "OK"); }
-i32 is_hi_text(i32 addr) { return str.eq((char *)addr, "hi"); }
-i32 is_nested_text(i32 addr) { return str.eq((char *)addr, "nested"); }
+i32 is_root_title(i32 addr) { return str.from_c((char *)addr) == "Root"; }
+i32 is_ok_text(i32 addr) { return str.from_c((char *)addr) == "OK"; }
+i32 is_hi_text(i32 addr) { return str.from_c((char *)addr) == "hi"; }
+i32 is_nested_text(i32 addr) { return str.from_c((char *)addr) == "nested"; }
 
 /*@Test "dom lowering" {
     step: 10000000;
