@@ -116,20 +116,3 @@ export void pop_event() {
     }
 }
 
-/**
- * Determines whether a 2D point lies within an axis-aligned bounding rectangle.
- * @param px Point X coordinate.
- * @param py Point Y coordinate.
- * @param rx Rectangle left origin X.
- * @param ry Rectangle top origin Y.
- * @param rw Rectangle width.
- * @param rh Rectangle height.
- * @return True if inside, false otherwise.
- */
-export bool in_rect(i32 px, i32 py, i32 rx, i32 ry, i32 rw, i32 rh) {
-    if (px < rx) { return false; }
-    if (py < ry) { return false; }
-    if (px >= rx + rw) { return false; }
-    if (py >= ry + rh) { return false; }
-    return true;
-}
