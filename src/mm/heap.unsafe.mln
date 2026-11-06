@@ -262,9 +262,9 @@ export struct HeapBlock {
 };
 
 export impl Drop for HeapBlock {
-    void (Self *self) drop() {
-        free(self->addr);
-        self->addr = 0;
+    void (borrow mut Self self) drop() {
+        free(self.addr);
+        self.addr = 0;
     }
 }
 
@@ -272,8 +272,8 @@ export impl Drop for HeapBlock {
  * Gives up ownership, so the allocation outlives this owner.
  * @return The payload address, now the caller's to free.
  */
-export i32 (HeapBlock *self) keep() {
-    i32 addr = self->addr;
-    self->addr = 0;
+export i32 (borrow mut HeapBlock self) keep() {
+    i32 addr = self.addr;
+    self.addr = 0;
     return addr;
 }

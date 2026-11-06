@@ -4,3 +4,4 @@ __pycache__
 # mytest leftovers if a run is interrupted
 *_mytest.mln
 *_mytest.*.mln
+*_gen_test*.mln

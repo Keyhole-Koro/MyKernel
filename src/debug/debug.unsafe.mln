@@ -38,6 +38,47 @@ export void println(char* s) {
 }
 
 /**
+ * Outputs a string view to the serial console.
+ * @param s View to print.
+ */
+@safe
+export void print_str(str s) {
+    i32 i = 0;
+    while (i < s.length) {
+        serial.putc(s.data[i]);
+        i++;
+    }
+}
+
+/**
+ * Outputs a string view and a newline to the serial console.
+ * @param s View to print.
+ */
+@safe
+export void println_str(str s) {
+    print_str(s);
+    serial.putc('\n');
+}
+
+/**
+ * Outputs a signed decimal integer to the serial console.
+ * @param value Integer to print.
+ */
+@safe
+export void print_i32(i32 value) { printf("%i", value); }
+
+/**
+ * Reports an unrecoverable failure and halts the CPU.
+ * @param s Error message describing the panic reason.
+ */
+@safe
+export void panic_str(str s) {
+    print_str("panic: ");
+    println_str(s);
+    halt_cpu();
+}
+
+/**
  * Reports an unrecoverable kernel invariant failure and halts the CPU.
  * @param msg Error message describing the panic reason.
  */

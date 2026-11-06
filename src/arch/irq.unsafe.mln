@@ -44,6 +44,7 @@ export void enable() {
  * This preserves a surrounding interrupt-disabled context.
  * @return Previous interrupt-enable state: 1 if enabled, otherwise 0.
  */
+@safe
 export i32 save_disable() {
     hw_irq_disable();
     i32 prev = g_enabled;
@@ -58,6 +59,7 @@ export i32 save_disable() {
  * is updated. If it is zero, interrupts remain disabled.
  * @param prev State returned by the matching `save_disable()` call.
  */
+@safe
 export void restore(i32 prev) {
     if (prev != 0) {
         g_enabled = 1;

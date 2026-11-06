@@ -29,6 +29,7 @@ void idle_main() {
 }
 
 /** @return Scheduler timer-tick count used by sleep and futex deadlines. */
+@safe
 export i32 ticks() { return g_irq_count; }
 
 /**
@@ -201,6 +202,7 @@ export void notify_armed(i32 mask) {
  * Timer IRQ scheduling switches away while this function waits in WFI.
  * @param ticks_to_sleep Relative nonnegative scheduler tick count.
  */
+@safe
 export void sleep(i32 ticks_to_sleep) {
     i32 current = thread.current_slot();
     if (current < 0) { return; }

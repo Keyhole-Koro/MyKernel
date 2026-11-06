@@ -3,7 +3,7 @@
 ;
 ; irq_dispatch_entry() is the MyLang IRQ coordinator. The linker resolves its
 ; address so MyLang can install it into the IRQ vector slot.
-import { irq_dispatch_entry } from "../kernel/irq_dispatch.mln"
+import { irq_dispatch_entry } from "../kernel/irq_dispatch.unsafe.mln"
 
 export hw_irq_enable
 export hw_irq_disable
