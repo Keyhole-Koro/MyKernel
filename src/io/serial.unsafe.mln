@@ -14,6 +14,7 @@ i32 SERIAL_LSR_DR = 0x01;
  * Transmits a single byte over the serial UART.
  * @param c Byte value to transmit.
  */
+@safe
 export void putc(i32 c) {
     mem.write_word(SERIAL_TX_ADDR, c);
 }
@@ -84,6 +85,7 @@ export bool has_input() {
  * Consumes and returns the next keystroke from the input queue, if available.
  * @return Some(byte) if a keystroke was queued, or None if empty.
  */
+@safe
 export Option<i32> read_input() {
     ensure_queue();
     i32 value = 0;
