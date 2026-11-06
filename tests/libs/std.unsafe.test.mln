@@ -148,13 +148,13 @@ void test_bytes() {
 
     // Forward direction: dst before src.
     str.copy(&g_buf[0], "abcdef");
-    bytes.move(&g_buf[0], &g_buf[2], 5);
+    bytes.overlapping_copy(&g_buf[0], &g_buf[2], 5);
     assert_eq<i32>(bytes.eq(&g_buf[0], "cdef", 5), 1, "bytes.move dst below src");
 
     // Backward direction: dst after src. Copying forwards here would smear
     // the first byte across the range, giving "aaaaaaa".
     str.copy(&g_buf[0], "abcdef");
-    bytes.move(&g_buf[2], &g_buf[0], 5);
+    bytes.overlapping_copy(&g_buf[2], &g_buf[0], 5);
     assert_eq<i32>(bytes.eq(&g_buf[0], "ababcde", 7), 1, "bytes.move dst above src");
 }
 

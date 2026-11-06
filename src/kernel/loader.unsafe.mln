@@ -143,7 +143,7 @@ struct ProcessSlot {
 
 impl Drop for ProcessSlot {
     /** Rolls back the pid reservation unless keep() already committed ownership. */
-    void (borrow mut Self self) drop() {
+    void (borrow Self self) drop() {
         if (self.pid == 0) { return; }
         Result<_, ProcessError> release = process.free_proc(self.pid);
         case release of {
@@ -164,7 +164,7 @@ struct AddressSpace {
 
 impl Drop for AddressSpace {
     /** Destroys the unpublished address space unless keep() committed ownership. */
-    void (borrow mut Self self) drop() {
+    void (borrow Self self) drop() {
         if (self.pdbr == 0) { return; }
         Result<_, MmuError> destroyed = mmu.destroy_user_address_space(self.pdbr);
         case destroyed of {
@@ -179,7 +179,7 @@ impl Drop for AddressSpace {
  * Transfers the page directory out of its rollback guard.
  * @return Physical page-directory base now owned by the committed Process.
  */
-i32 (borrow mut AddressSpace self) keep() {
+i32 (borrow AddressSpace self) keep() {
     i32 pdbr = self.pdbr;
     self.pdbr = 0;
     return pdbr;
@@ -189,7 +189,7 @@ i32 (borrow mut AddressSpace self) keep() {
  * Hands the loaded process over; the slot is no longer released.
  * @return The process ID.
  */
-i32 (borrow mut ProcessSlot self) keep() {
+i32 (borrow ProcessSlot self) keep() {
     i32 pid = self.pid;
     self.pid = 0;
     return pid;
