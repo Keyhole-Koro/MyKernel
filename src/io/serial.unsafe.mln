@@ -20,16 +20,16 @@ export void putc(i32 c) {
 
 /**
  * Checks whether a byte is waiting in the hardware UART RX register.
- * @return Non-zero if RX data is ready, 0 otherwise.
+ * @return True if RX data is ready.
  */
-export i32 rx_ready() {
-    return mem.read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR;
+export bool rx_ready() {
+    return (mem.read_word(SERIAL_LSR_ADDR) & SERIAL_LSR_DR) != 0;
 }
 
 /**
  * Consumes and returns the next received byte directly from the hardware RX register.
  *
- * Should only be called when rx_ready() returns non-zero.
+ * Should only be called when rx_ready() returns true.
  * @return Received byte value in range 0-255.
  */
 export i32 read_rx() {
@@ -48,7 +48,7 @@ export i32 read_rx() {
 // open-coded.
 i32 in_storage[128];
 RingBuffer<i32> in_q;
-i32 in_ready = 0;
+bool in_ready = false;
 
 /**
  * Initializes the input ring buffer on first use if not already initialized.
@@ -56,7 +56,7 @@ i32 in_ready = 0;
 void ensure_queue() {
     if (!in_ready) {
         in_q.init(&in_storage[0], 128);
-        in_ready = 1;
+        in_ready = true;
     }
 }
 

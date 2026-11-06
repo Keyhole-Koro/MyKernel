@@ -332,7 +332,7 @@ export Result<_, MmuError> map_range(i32 pd_addr, i32 vstart, i32 pstart, i32 si
 // tables by copying the directory entries. The one table a process changes
 // -- the first 4 MB, where its text and data are mapped over the identity
 // range -- is copied for it, so the shared one stays the kernel's.
-i32 g_shared_ready = 0;
+bool g_shared_ready = false;
 i32 g_shared_pd = 0;      // kernel-only directory holding the shared tables
 
 /**
@@ -378,7 +378,7 @@ export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
         };
         build_identity_tables(template)?;
         g_shared_pd = template;
-        g_shared_ready = 1;
+        g_shared_ready = true;
     }
     // Share every kernel table; give this directory its own copy of the
     // first one, the only one a process overwrites entries in.
@@ -407,8 +407,11 @@ export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
     return Ok(_);
 }
 
-/** @return Kernel-only shared page-directory base, or zero before setup. */
-export i32 kernel_page_directory() { return g_shared_pd; }
+/** @return Kernel-only shared page-directory base, or None before setup. */
+export Option<i32> kernel_page_directory() {
+    if (!g_shared_ready) { return None; }
+    return Some(g_shared_pd);
+}
 
 /**
  * Releases every process-private user frame and page-table frame, followed by

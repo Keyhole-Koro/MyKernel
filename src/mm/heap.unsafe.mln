@@ -209,7 +209,7 @@ void free_unlocked(i32 ptr) {
 // handler -- allocates would leave two blocks overlapping. Before
 // enable_locking() (boot, interrupts still off) the sections run bare, so
 // they cannot switch interrupts on early.
-i32 g_locking = 0;
+bool g_locking = false;
 
 /**
  * Enables interrupt protection around public heap allocation and free operations.
@@ -217,7 +217,7 @@ i32 g_locking = 0;
  * Call once the scheduler is live. This only enables heap protection; it does
  * not itself enable hardware interrupts.
  */
-export void enable_locking() { g_locking = 1; }
+export void enable_locking() { g_locking = true; }
 
 /**
  * Allocates a block from the kernel heap.
@@ -231,7 +231,7 @@ export void enable_locking() { g_locking = 1; }
  */
 export Result<i32, AllocationError> alloc(i32 size) {
     if (!g_locking) { return alloc_unlocked(size); }
-    i32 was = irq.save_disable();
+    bool was = irq.save_disable();
     defer irq.restore(was);
     return alloc_unlocked(size);
 }
@@ -246,7 +246,7 @@ export Result<i32, AllocationError> alloc(i32 size) {
  */
 export void free(i32 ptr) {
     if (!g_locking) { free_unlocked(ptr); return; }
-    i32 was = irq.save_disable();
+    bool was = irq.save_disable();
     defer irq.restore(was);
     free_unlocked(ptr);
 }

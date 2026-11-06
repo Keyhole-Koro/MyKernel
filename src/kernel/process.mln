@@ -48,7 +48,7 @@ export struct Process {
 
 Option<Process> g_procs[16];
 Option<i32> g_proc_fds[128];
-i32 g_procs_initialized = 0;
+bool g_procs_initialized = false;
 
 /**
  * Clears every descriptor owned by one process-table slot.
@@ -86,7 +86,7 @@ export void init() {
         clear_fds(i);
         i++;
     }
-    g_procs_initialized = 1;
+    g_procs_initialized = true;
 }
 
 /**

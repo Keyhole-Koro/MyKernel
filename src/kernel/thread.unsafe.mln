@@ -180,14 +180,20 @@ export void init() {
 /** @return One past the highest TCB slot that may currently be occupied. */
 export i32 high_water() { return g_thread_slot_high_water; }
 
-/** @return Current scheduler slot, or -1 while the idle context runs. */
-export i32 current_slot() { return g_current_thread_slot; }
+/** @return Current scheduler slot, or None while the idle context runs. */
+export Option<i32> current_slot() {
+    if (g_current_thread_slot < 0) { return None; }
+    return Some(g_current_thread_slot);
+}
 
 /**
  * Records the scheduler slot that is currently executing.
- * @param slot Occupied TCB slot, or -1 for the idle fallback context.
+ * @param slot Occupied TCB slot.
  */
 export void set_current_slot(i32 slot) { g_current_thread_slot = slot; }
+
+/** Records that the idle fallback context is executing. */
+export void set_idle() { g_current_thread_slot = -1; }
 
 /**
  * Tests whether a slot contains a published TCB below the high-water mark.
@@ -631,14 +637,14 @@ export const i32 USER_STACK_REGION_BASE = 0x7F000000;
 /**
  * Validates a requested user-stack size and rounds it to whole pages.
  * @param requested Requested bytes; zero selects DEFAULT_USER_STACK_BYTES.
- * @return Page-rounded byte count, or zero when the request cannot fit its slot and guard.
+ * @return Page-rounded byte count, or None when the request cannot fit its slot and guard.
  */
-i32 rounded_stack_bytes(i32 requested) {
+Option<i32> rounded_stack_bytes(i32 requested) {
     i32 bytes = requested;
     if (bytes == 0) { bytes = kernel_config.DEFAULT_USER_STACK_BYTES; }
-    if (bytes <= 0 || bytes > USER_STACK_SLOT_BYTES - mmu.PAGE_SIZE) { return 0; }
-    if (bytes > 0x7FFFF000) { return 0; }
-    return (bytes + mmu.PAGE_SIZE - 1) & ~(mmu.PAGE_SIZE - 1);
+    if (bytes <= 0 || bytes > USER_STACK_SLOT_BYTES - mmu.PAGE_SIZE) { return None; }
+    if (bytes > 0x7FFFF000) { return None; }
+    return Some((bytes + mmu.PAGE_SIZE - 1) & ~(mmu.PAGE_SIZE - 1));
 }
 
 /**
@@ -717,8 +723,10 @@ export Result<i32, ThreadError> spawn_user_thread(i32 pid, ThreadSpawnArgs args)
     if (!mmu.user_range_has_flags(pdbr, args.entry, 1, mmu.PTE_EXEC)) {
         return Err(ThreadError::InvalidEntry(args.entry));
     }
-    i32 stack_bytes = rounded_stack_bytes(args.stack_bytes);
-    if (stack_bytes == 0) { return Err(ThreadError::InvalidStackSize(args.stack_bytes)); }
+    i32 stack_bytes = case rounded_stack_bytes(args.stack_bytes) of {
+        Some(value) -> value;
+        None -> ({ return Err(ThreadError::InvalidStackSize(args.stack_bytes)); });
+    };
 
     i32 tcb_slot = case find_free_slot() of {
         Some(value) -> value;

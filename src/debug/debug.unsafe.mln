@@ -94,13 +94,13 @@ export void panic(char* msg) {
  */
 export void hex(i32 value) {
     i32 shift = 28;
-    i32 started = 0;
+    bool started = false;
 
     while (shift >= 0) {
         i32 nibble = (value >> shift) & 15;
         if (nibble != 0 || started || shift == 0) {
             serial.putc(hex_digit(nibble));
-            started = 1;
+            started = true;
         }
         shift = shift - 4;
     }

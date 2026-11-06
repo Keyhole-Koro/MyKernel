@@ -348,7 +348,7 @@ export Result<i32, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
     // The scheduler may pick this thread the moment it is published, and it
     // installs the owner's PDBR: no tick may land before commit_process has
     // set it, or the CPU runs on a zero page directory.
-    i32 irq_state = irq.save_disable();
+    bool irq_state = irq.save_disable();
     thread.publish_user(thread_slot, pid, sp, USER_STACK_TOP, kernel_stack, user_stack);
 
     Result<_, ProcessError> retained = process.retain_thread(pid);

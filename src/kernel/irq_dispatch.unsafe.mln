@@ -78,7 +78,7 @@ export void entry() {
  * @param sp Stack pointer of the saved interrupt frame.
  */
 export void dispatch(i32 sp) {
-    i32 was_enabled = irq.enter_handler();
+    bool was_enabled = irq.enter_handler();
     i32 cause = mem.read_word(IRQ_CAUSE_ADDR);
     
     // Ack the handled interrupts to hardware

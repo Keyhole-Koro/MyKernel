@@ -17,9 +17,9 @@ export enum SchedulerError {
 }
 
 i32 g_irq_count = 0;
-i32 g_initialized = 0;
+bool g_initialized = false;
 i32 idle_sp = 0;
-i32 deferred_cleanup_slot = -1;
+Option<i32> deferred_cleanup_slot;
 i32 MMU_PDBR_ADDR = 0x24000104;
 i32 KERNEL_SP_ADDR = 0x24000110;
 
@@ -36,7 +36,9 @@ export i32 ticks() { return g_irq_count; }
  * Exposes a stable nonzero execution-context index to the mocking runtime.
  * @return Current TCB slot plus one; zero represents the idle context.
  */
-export i32 current_context() { return thread.current_slot() + 1; }
+export i32 current_context() {
+    return case thread.current_slot() of { Some(slot) -> slot + 1; None -> 0; };
+}
 
 /**
  * Finds the next Runnable TCB by round-robin slot order.
@@ -77,11 +79,13 @@ export i32 reschedule(i32 sp) {
 
     // This invocation runs on a different stack from the TCB retired by the
     // preceding switch, so its stack can finally be released safely.
-    if (deferred_cleanup_slot >= 0) {
-        i32 retired = deferred_cleanup_slot;
-        deferred_cleanup_slot = -1;
-        thread.finish_deferred_cleanup(retired);
-    }
+    case deferred_cleanup_slot of {
+        Some(retired) -> ({
+            deferred_cleanup_slot = None;
+            thread.finish_deferred_cleanup(retired);
+        });
+        None -> _;
+    };
 
     i32 count = thread.high_water();
     i32 i = 0;
@@ -91,16 +95,15 @@ export i32 reschedule(i32 sp) {
         i++;
     }
 
-    i32 current = thread.current_slot();
-    if (current >= 0) {
-        thread.switch_out(current, sp, mem.read_word(KERNEL_SP_ADDR));
-        if (thread.exiting(current)) { deferred_cleanup_slot = current; }
-    } else {
-        idle_sp = sp;
-    }
-
     i32 start = 0;
-    if (current >= 0 && count > 0) { start = (current + 1) % count; }
+    case thread.current_slot() of {
+        Some(current) -> ({
+            thread.switch_out(current, sp, mem.read_word(KERNEL_SP_ADDR));
+            if (thread.exiting(current)) { deferred_cleanup_slot = Some(current); }
+            if (count > 0) { start = (current + 1) % count; }
+        });
+        None -> ({ idle_sp = sp; });
+    };
     Option<i32> next = find_next_runnable(start, count);
     return case next of {
         Some(slot) -> ({
@@ -115,8 +118,10 @@ export i32 reschedule(i32 sp) {
                     mem.write_word(KERNEL_SP_ADDR, thread.saved_user_sp(slot));
                 });
                 None -> ({
-                    i32 kernel_pdbr = mmu.kernel_page_directory();
-                    if (kernel_pdbr != 0) { mem.write_word(MMU_PDBR_ADDR, kernel_pdbr); }
+                    case mmu.kernel_page_directory() of {
+                        Some(kernel_pdbr) -> ({ mem.write_word(MMU_PDBR_ADDR, kernel_pdbr); });
+                        None -> _;
+                    };
                     mem.write_word(KERNEL_SP_ADDR, 0);
                 });
             };
@@ -124,7 +129,7 @@ export i32 reschedule(i32 sp) {
             thread.saved_kernel_sp(slot);
         });
         None -> ({
-            thread.set_current_slot(-1);
+            thread.set_idle();
             idle_sp;
         });
     };
@@ -136,19 +141,27 @@ export i32 reschedule(i32 sp) {
  * @return Saved kernel SP of the next context to resume.
  */
 export i32 yield_until_tick(i32 sp) {
-    i32 current = thread.current_slot();
-    if (current >= 0) { thread.sleep_until(current, g_irq_count + 1); }
+    case thread.current_slot() of {
+        Some(current) -> ({ thread.sleep_until(current, g_irq_count + 1); });
+        None -> _;
+    };
     return reschedule(sp);
 }
 
 /** @param mask Nonzero notification bits to arm on the current TCB. */
 export void arm_notification(i32 mask) {
-    thread.arm_notification(thread.current_slot(), mask);
+    case thread.current_slot() of {
+        Some(current) -> ({ thread.arm_notification(current, mask); });
+        None -> _;
+    };
 }
 
 /** @param mask Notification bits to clear from armed and pending state. */
 export void disarm_notification(i32 mask) {
-    thread.disarm_notification(thread.current_slot(), mask);
+    case thread.current_slot() of {
+        Some(current) -> ({ thread.disarm_notification(current, mask); });
+        None -> _;
+    };
 }
 
 /**
@@ -160,8 +173,11 @@ export void disarm_notification(i32 mask) {
  */
 export i32 wait_notification(i32 sp, i32 mask, i32 *notification_out) {
     *notification_out = 0;
-    i32 current = thread.current_slot();
-    if (current < 0 || mask == 0) { return sp; }
+    if (mask == 0) { return sp; }
+    i32 current = case thread.current_slot() of {
+        Some(slot) -> slot;
+        None -> ({ return sp; });
+    };
     i32 ready = thread.take_notification(current, mask);
     if (ready) {
         *notification_out = ready;
@@ -204,8 +220,10 @@ export void notify_armed(i32 mask) {
  */
 @safe
 export void sleep(i32 ticks_to_sleep) {
-    i32 current = thread.current_slot();
-    if (current < 0) { return; }
+    i32 current = case thread.current_slot() of {
+        Some(slot) -> slot;
+        None -> ({ return; });
+    };
     thread.sleep_until(current, g_irq_count + ticks_to_sleep);
     while (thread.blocked(current)) { wfi_cpu(); }
 }
@@ -262,7 +280,7 @@ export Result<i32, SchedulerError> spawn_kernel_thread(fn() -> void entry, i32 s
 export void init() {
     thread.init();
     g_irq_count = 0;
-    deferred_cleanup_slot = -1;
+    deferred_cleanup_slot = None;
 
     i32 idle_bytes = 8192;
     i32 idle_stack = case heap.alloc(idle_bytes) of {
@@ -273,5 +291,5 @@ export void init() {
 
     thread.publish_boot(0);
     thread.set_current_slot(0);
-    g_initialized = 1;
+    g_initialized = true;
 }

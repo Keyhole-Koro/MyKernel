@@ -172,33 +172,33 @@ void test_bitset() {
 
     bitset.clear_all(&g_bits[0], 128);
     assert_eq<i32>(bitset.count(&g_bits[0], 128), 0, "bitset.clear_all");
-    assert_eq<i32>(bitset.get(&g_bits[0], 5), 0, "bitset.get unset");
+    assert_eq<bool>(bitset.get(&g_bits[0], 5), false, "bitset.get unset");
 
     bitset.set(&g_bits[0], 5);
-    assert_eq<i32>(bitset.get(&g_bits[0], 5), 1, "bitset.set");
-    assert_eq<i32>(bitset.get(&g_bits[0], 4), 0, "bitset.set leaves neighbour");
-    assert_eq<i32>(bitset.get(&g_bits[0], 6), 0, "bitset.set leaves neighbour 2");
+    assert_eq<bool>(bitset.get(&g_bits[0], 5), true, "bitset.set");
+    assert_eq<bool>(bitset.get(&g_bits[0], 4), false, "bitset.set leaves neighbour");
+    assert_eq<bool>(bitset.get(&g_bits[0], 6), false, "bitset.set leaves neighbour 2");
 
     // Crossing a byte boundary is where an index shift goes wrong.
     bitset.set(&g_bits[0], 8);
     bitset.set(&g_bits[0], 15);
-    assert_eq<i32>(bitset.get(&g_bits[0], 8), 1, "bitset.set byte boundary");
-    assert_eq<i32>(bitset.get(&g_bits[0], 15), 1, "bitset.set high bit");
-    assert_eq<i32>(bitset.get(&g_bits[0], 7), 0, "bitset.set no bleed down");
-    assert_eq<i32>(bitset.get(&g_bits[0], 16), 0, "bitset.set no bleed up");
+    assert_eq<bool>(bitset.get(&g_bits[0], 8), true, "bitset.set byte boundary");
+    assert_eq<bool>(bitset.get(&g_bits[0], 15), true, "bitset.set high bit");
+    assert_eq<bool>(bitset.get(&g_bits[0], 7), false, "bitset.set no bleed down");
+    assert_eq<bool>(bitset.get(&g_bits[0], 16), false, "bitset.set no bleed up");
 
     assert_eq<i32>(bitset.count(&g_bits[0], 128), 3, "bitset.count");
 
     bitset.clear(&g_bits[0], 8);
-    assert_eq<i32>(bitset.get(&g_bits[0], 8), 0, "bitset.clear");
+    assert_eq<bool>(bitset.get(&g_bits[0], 8), false, "bitset.clear");
 
-    bitset.put(&g_bits[0], 20, 1);
-    assert_eq<i32>(bitset.get(&g_bits[0], 20), 1, "bitset.put 1");
-    bitset.put(&g_bits[0], 20, 0);
-    assert_eq<i32>(bitset.get(&g_bits[0], 20), 0, "bitset.put 0");
+    bitset.put(&g_bits[0], 20, true);
+    assert_eq<bool>(bitset.get(&g_bits[0], 20), true, "bitset.put 1");
+    bitset.put(&g_bits[0], 20, false);
+    assert_eq<bool>(bitset.get(&g_bits[0], 20), false, "bitset.put 0");
 
-    assert_eq<i32>(bitset.toggle(&g_bits[0], 30), 1, "bitset.toggle on");
-    assert_eq<i32>(bitset.toggle(&g_bits[0], 30), 0, "bitset.toggle off");
+    assert_eq<bool>(bitset.toggle(&g_bits[0], 30), true, "bitset.toggle on");
+    assert_eq<bool>(bitset.toggle(&g_bits[0], 30), false, "bitset.toggle off");
 
     case bitset.find_set(&g_bits[0], 128, 0) of { Some(v) -> assert_eq<i32>(v, 5, "bitset.find_set"); None -> assert.assert_true(false, "bitset.find_set"); };
     case bitset.find_clear(&g_bits[0], 128, 0) of { Some(v) -> assert_eq<i32>(v, 0, "bitset.find_clear at 0"); None -> assert.assert_true(false, "bitset.find_clear at 0"); };
