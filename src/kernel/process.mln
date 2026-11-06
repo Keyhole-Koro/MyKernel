@@ -245,8 +245,7 @@ export Result<Option<i32>, ProcessError> reserve_user_stack_slot(i32 pid) {
                 }
                 slot++;
             }
-            Option<i32> none = None;
-            return Ok(none);
+            return Ok(None);
         });
         None -> ({ return Err(ProcessError::InvalidPid(pid)); });
     };

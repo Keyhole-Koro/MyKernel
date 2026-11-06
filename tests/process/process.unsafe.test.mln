@@ -335,8 +335,7 @@ void process_lifecycle_and_protection() {
         };
         Err(_) -> fail("get_fd(pid1, 3) failed");
     };
-    Option<i32> open_fd = Some(99);
-    case process.set_fd(pid1, 3, open_fd) of {
+    case process.set_fd(pid1, 3, Some(99)) of {
         Ok(_) -> 0;
         Err(_) -> fail("set_fd(pid1, 3, Some(99)) failed");
     };
@@ -347,8 +346,7 @@ void process_lifecycle_and_protection() {
         };
         Err(_) -> fail("get_fd(pid1, 3) failed");
     };
-    Option<i32> close_fd = None;
-    case process.set_fd(pid1, 3, close_fd) of {
+    case process.set_fd(pid1, 3, None) of {
         Ok(_) -> 0;
         Err(_) -> fail("set_fd(pid1, 3, None) failed");
     };

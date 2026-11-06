@@ -234,8 +234,6 @@ void publish_at(i32 slot, Thread value) {
  * @param slot Free TCB slot reserved for the boot context.
  */
 export void publish_boot(i32 slot) {
-    Option<UserStack> no_user_stack = None;
-    Option<i32> no_joiner = None;
     Thread value = Thread {
         tid: allocate_tid(),
         owner: ThreadOwner::Kernel,
@@ -243,8 +241,8 @@ export void publish_boot(i32 slot) {
         saved_kernel_sp: 0,
         saved_user_sp: 0,
         kernel_stack: KernelStack { base: 0, bytes: 0, owned: false },
-        user_stack: no_user_stack,
-        joiner_tid: no_joiner,
+        user_stack: None,
+        joiner_tid: None,
         notification_pending: 0,
         notification_armed: 0,
         wake_result: 0,
@@ -262,8 +260,6 @@ export void publish_boot(i32 slot) {
  */
 export i32 publish_kernel(i32 slot, i32 saved_sp, i32 stack_base, i32 stack_bytes) {
     i32 tid = allocate_tid();
-    Option<UserStack> no_user_stack = None;
-    Option<i32> no_joiner = None;
     Thread value = Thread {
         tid: tid,
         owner: ThreadOwner::Kernel,
@@ -271,8 +267,8 @@ export i32 publish_kernel(i32 slot, i32 saved_sp, i32 stack_base, i32 stack_byte
         saved_kernel_sp: saved_sp,
         saved_user_sp: 0,
         kernel_stack: KernelStack { base: stack_base, bytes: stack_bytes, owned: true },
-        user_stack: no_user_stack,
-        joiner_tid: no_joiner,
+        user_stack: None,
+        joiner_tid: None,
         notification_pending: 0,
         notification_armed: 0,
         wake_result: 0,
@@ -300,8 +296,6 @@ export i32 publish_user(
     UserStack user_stack
 ) {
     i32 tid = allocate_tid();
-    Option<UserStack> owned_user_stack = Some(user_stack);
-    Option<i32> no_joiner = None;
     Thread value = Thread {
         tid: tid,
         owner: ThreadOwner::User(pid),
@@ -309,8 +303,8 @@ export i32 publish_user(
         saved_kernel_sp: saved_kernel_sp,
         saved_user_sp: saved_user_sp,
         kernel_stack: kernel_stack,
-        user_stack: owned_user_stack,
-        joiner_tid: no_joiner,
+        user_stack: Some(user_stack),
+        joiner_tid: None,
         notification_pending: 0,
         notification_armed: 0,
         wake_result: 0,
@@ -871,8 +865,7 @@ void cleanup_stack_resources(i32 slot) {
             t.kernel_stack.base = 0;
             t.kernel_stack.bytes = 0;
             t.kernel_stack.owned = false;
-            Option<UserStack> no_user_stack = None;
-            t.user_stack = no_user_stack;
+            t.user_stack = None;
         });
         None -> _;
     };
@@ -1017,8 +1010,7 @@ export Result<JoinOutcome, ThreadError> join_thread(i32 target_tid) {
                 _ -> ({
                     bool already = case target.joiner_tid of { Some(_) -> true; None -> false; };
                     if (already) { return Err(ThreadError::AlreadyJoined(target_tid)); }
-                    Option<i32> joiner = Some(caller_tid);
-                    target.joiner_tid = joiner;
+                    target.joiner_tid = Some(caller_tid);
                     JoinWait wait = JoinWait { target_tid: target_tid };
                     case g_threads[caller_slot] of {
                         Some(caller) -> ({ caller.state = ThreadState::Blocked(WaitReason::Join(wait)); });
