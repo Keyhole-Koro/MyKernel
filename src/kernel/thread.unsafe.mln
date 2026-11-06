@@ -1003,9 +1003,10 @@ export Result<JoinOutcome, ThreadError> join_thread(i32 target_tid) {
         Some(target) -> ({
             case target.state of {
                 ThreadState::Zombie(code) -> ({
+                    i32 exit_code = code; // `code` names the field clear_slot() wipes
                     clear_slot(target_slot);
                     process.release_thread(pid);
-                    return Ok(JoinOutcome::Completed(code));
+                    return Ok(JoinOutcome::Completed(exit_code));
                 });
                 _ -> ({
                     bool already = case target.joiner_tid of { Some(_) -> true; None -> false; };

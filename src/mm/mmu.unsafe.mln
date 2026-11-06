@@ -264,7 +264,9 @@ export bool user_range_has_flags(i32 pd_addr, i32 addr, i32 bytes, i32 required)
         };
         if ((pte & required) != required) { return false; }
         i32 next = (current & FRAME_MASK) + PAGE_SIZE;
-        if (next <= current) { return false; }
+        // Past the top of the address space: the range ended in this page,
+        // where a process's first stack is.
+        if (next <= current) { return true; }
         current = next;
     }
     return true;

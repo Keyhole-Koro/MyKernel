@@ -89,11 +89,3 @@ export bool enter_handler() {
 export void leave_handler(bool prev) {
     g_enabled = prev;
 }
-
-/**
- * Disables hardware interrupts globally.
- */
-export void disable() {
-    hw_irq_disable();
-    g_enabled = false;
-}
