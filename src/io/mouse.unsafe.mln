@@ -41,10 +41,13 @@ export i32 y() {
 // its own event, a click shorter than a display frame still arrives as a
 // press event followed by a release event instead of vanishing.
 i32 QUEUE_SIZE = 64;
-i32 q_x[64];
-i32 q_y[64];
-i32 q_btn[64];
-i32 q_wheel[64];
+struct MouseEvent {
+    i32 x;
+    i32 y;
+    i32 btn;
+    i32 wheel;
+};
+MouseEvent queue[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
@@ -63,10 +66,7 @@ export void drain_hw() {
 
         i32 next = (q_tail + 1) % QUEUE_SIZE;
         if (next != q_head) { // drop if full
-            q_x[q_tail] = nx;
-            q_y[q_tail] = ny;
-            q_btn[q_tail] = nb;
-            q_wheel[q_tail] = nw;
+            queue[q_tail] = MouseEvent { x: nx, y: ny, btn: nb, wheel: nw };
             q_tail = next;
         }
     }
@@ -85,19 +85,19 @@ export bool has_event() {
  * Returns the X coordinate of the current head event.
  * @return Event X coordinate in pixels.
  */
-export i32 event_x() { return q_x[q_head]; }
+export i32 event_x() { return queue[q_head].x; }
 
 /**
  * Returns the Y coordinate of the current head event.
  * @return Event Y coordinate in pixels.
  */
-export i32 event_y() { return q_y[q_head]; }
+export i32 event_y() { return queue[q_head].y; }
 
 /**
  * Returns the button bitmask of the current head event.
  * @return Event button bitmask.
  */
-export i32 event_btn() { return q_btn[q_head]; }
+export i32 event_btn() { return queue[q_head].btn; }
 
 /**
  * Returns the signed wheel scroll steps of the current head event.
@@ -105,7 +105,7 @@ export i32 event_btn() { return q_btn[q_head]; }
  * Positive values indicate scrolling up, negative scrolling down, 0 none.
  * @return Wheel scroll delta.
  */
-export i32 event_wheel() { return q_wheel[q_head]; }
+export i32 event_wheel() { return queue[q_head].wheel; }
 
 /**
  * Consumes and pops the head event from the queue.

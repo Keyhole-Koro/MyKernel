@@ -16,9 +16,12 @@ i32 KBD_EVT_POP_ADDR    = 0x240000B0;
 // The keyboard IRQ handler drains the hardware FIFO into this ring buffer;
 // the UI task consumes it. Same shape as mouse.mln's queue.
 i32 QUEUE_SIZE = 64;
-i32 q_type[64];
-i32 q_code[64];
-i32 q_mods[64];
+struct KeyEvent {
+    i32 type;
+    i32 code;
+    i32 mods;
+};
+KeyEvent queue[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
@@ -33,14 +36,7 @@ export void drain_hw() {
         i32 c = mem.read_word(KBD_EVT_CODE_ADDR);
         i32 m = mem.read_word(KBD_EVT_MODS_ADDR);
         mem.write_word(KBD_EVT_POP_ADDR, 1);
-
-        i32 next = (q_tail + 1) % QUEUE_SIZE;
-        if (next != q_head) { // drop if full
-            q_type[q_tail] = t;
-            q_code[q_tail] = c;
-            q_mods[q_tail] = m;
-            q_tail = next;
-        }
+        inject(t, c, m);
     }
 }
 
@@ -57,19 +53,19 @@ export bool has_event() {
  * Returns the event type of the current head event.
  * @return A KeyEventType value from the shared keyboard contract.
  */
-export i32 event_type() { return q_type[q_head]; }
+export i32 event_type() { return queue[q_head].type; }
 
 /**
  * Returns the key code or character code of the current head event.
  * @return Key code or ASCII value.
  */
-export i32 event_code() { return q_code[q_head]; }
+export i32 event_code() { return queue[q_head].code; }
 
 /**
  * Returns the modifier bitmask of the current head event.
  * @return KeyModifier flags combined as a bitmask.
  */
-export i32 event_mods() { return q_mods[q_head]; }
+export i32 event_mods() { return queue[q_head].mods; }
 
 /**
  * Consumes and pops the head event from the queue.
@@ -81,9 +77,9 @@ export void pop_event() {
 }
 
 /**
- * Injects a synthetic keyboard event into the queue.
+ * Queues a keyboard event, dropping it if the queue is full.
  *
- * Used for testing and automation to simulate keystrokes.
+ * Used by drain_hw, and by tests and automation to simulate keystrokes.
  * @param type KeyEventType value from the shared keyboard contract.
  * @param code Key code or ASCII code.
  * @param mods Active modifier key mask.
@@ -91,9 +87,7 @@ export void pop_event() {
 export void inject(i32 type, i32 code, i32 mods) {
     i32 next = (q_tail + 1) % QUEUE_SIZE;
     if (next != q_head) {
-        q_type[q_tail] = type;
-        q_code[q_tail] = code;
-        q_mods[q_tail] = mods;
+        queue[q_tail] = KeyEvent { type: type, code: code, mods: mods };
         q_tail = next;
     }
 }

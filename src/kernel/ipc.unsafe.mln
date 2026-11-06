@@ -40,9 +40,12 @@ export const i32 MSG_WORDS = 24;
 i32 CHANNELS_MAX = 40;   // the UI protocol takes two per process plus one
 i32 SLOTS = 32;
 
-i32 g_used[40];
-i32 g_head[40];     // next slot to read
-i32 g_tail[40];     // next slot to write
+struct Channel {
+    bool used;
+    i32 head;       // next slot to read
+    i32 tail;       // next slot to write
+};
+Channel g_channels[40];
 i32 g_ring[30720];  // CHANNELS_MAX * SLOTS * MSG_WORDS
 
 /**
@@ -52,10 +55,8 @@ i32 g_ring[30720];  // CHANNELS_MAX * SLOTS * MSG_WORDS
 export Option<ChannelId> create() {
     i32 c = 0;
     while (c < CHANNELS_MAX) {
-        if (!g_used[c]) {
-            g_used[c] = 1;
-            g_head[c] = 0;
-            g_tail[c] = 0;
+        if (!g_channels[c].used) {
+            g_channels[c] = Channel { used: true, head: 0, tail: 0 };
             return Some(ChannelId(c + 1));
         }
         c++;
@@ -83,13 +84,13 @@ export bool send(ChannelId ch, i32 *words) {
     i32 raw = (i32)ch;
     if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
     i32 c = raw - 1;
-    i32 next = g_tail[c] + 1;
+    i32 next = g_channels[c].tail + 1;
     if (next >= SLOTS) { next = 0; }
-    if (next == g_head[c]) { return false; }
-    i32 at = slot_base(c, g_tail[c]);
+    if (next == g_channels[c].head) { return false; }
+    i32 at = slot_base(c, g_channels[c].tail);
     i32 i = 0;
     while (i < MSG_WORDS) { g_ring[at + i] = words[i]; i++; }
-    g_tail[c] = next;
+    g_channels[c].tail = next;
     return true;
 }
 
@@ -106,8 +107,8 @@ export bool has(ChannelId ch, i32 w1, i32 w2) {
     i32 raw = (i32)ch;
     if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
     i32 c = raw - 1;
-    i32 i = g_head[c];
-    while (i != g_tail[c]) {
+    i32 i = g_channels[c].head;
+    while (i != g_channels[c].tail) {
         i32 at = slot_base(c, i);
         if (g_ring[at + 1] == w1 && g_ring[at + 2] == w2) { return true; }
         i = i + 1;
@@ -125,7 +126,7 @@ export Result<i32, ChannelError> count(ChannelId ch) {
     i32 raw = (i32)ch;
     if (raw <= 0 || raw > CHANNELS_MAX) { return Err(ChannelError::InvalidId(raw)); }
     i32 c = raw - 1;
-    i32 n = g_tail[c] - g_head[c];
+    i32 n = g_channels[c].tail - g_channels[c].head;
     if (n < 0) { n = n + SLOTS; }
     return Ok(n);
 }
@@ -139,7 +140,7 @@ export bool pending(ChannelId ch) {
     i32 raw = (i32)ch;
     if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
     i32 c = raw - 1;
-    return g_head[c] != g_tail[c];
+    return g_channels[c].head != g_channels[c].tail;
 }
 
 /**
@@ -152,13 +153,13 @@ export bool recv(ChannelId ch, i32 *out) {
     i32 raw = (i32)ch;
     if (raw <= 0 || raw > CHANNELS_MAX) { return false; }
     i32 c = raw - 1;
-    if (g_head[c] == g_tail[c]) { return false; }
-    i32 at = slot_base(c, g_head[c]);
+    if (g_channels[c].head == g_channels[c].tail) { return false; }
+    i32 at = slot_base(c, g_channels[c].head);
     i32 i = 0;
     while (i < MSG_WORDS) { out[i] = g_ring[at + i]; i++; }
-    i32 next = g_head[c] + 1;
+    i32 next = g_channels[c].head + 1;
     if (next >= SLOTS) { next = 0; }
-    g_head[c] = next;
+    g_channels[c].head = next;
     return true;
 }
 
