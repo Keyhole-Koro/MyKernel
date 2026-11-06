@@ -13,6 +13,7 @@ import loader from "loader.mln";
 import { Result } from "@std/core/result.mln";
 import { result_take_ok, result_take_err } from "@std/core/result_take.mln";
 import { Option } from "@std/core/option.mln";
+import { UserAddress } from "@std/core/address.mln";
 import { MmuError } from "@contracts/process/loader.contract.mln";
 import { SpawnError } from "@contracts/process/spawn.contract.mln";
 import { Syscall, SyscallStatus } from "@contracts/myos/syscall.contract.mln";
@@ -171,45 +172,79 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 // --- console and spawn hooks (MYOS-015) ---
 // The kernel owns the syscall boundary but not the desktop: where a
 // process's stdout goes and how a path becomes an executable image are
-// MyOS decisions. MyOS registers handlers here at boot; without them the
-// syscalls fall back to the serial port and SPAWN fails with UnknownSyscall.
-//   console_write(pid, buf, count) -> bytes written (buf is a user address)
-//   console_read(pid, buf, count)  -> bytes read, 0 when no input is pending
-//   spawn(path, Result<i32, SpawnError>* out) -> typed launch result
-fn(i32 pid, i32 buf, i32 count) -> i32 g_console_write = 0;
-fn(i32 pid, i32 buf, i32 count) -> i32 g_console_read = 0;
-fn(i32 path, i32 result_out) -> void g_spawn_handler = 0;
-fn(i32 pid, i32 service, i32 args, i32 result_out) -> void g_os_handler = 0;
+// MyOS decisions. MyOS replaces these at boot. Until then the console is the
+// serial port, and nothing can be spawned or served.
+
+/** The console until MyOS installs its own: every byte goes to the serial port. */
+i32 serial_write(i32 pid, UserAddress buf, i32 count) {
+    i32 i = 0;
+    while (i < count) {
+        serial.putc(mem.read_byte((i32)buf.plus(i)));
+        i++;
+    }
+    return count;
+}
+
+/** The console until MyOS installs its own: whatever the serial port has waiting. */
+i32 serial_read(i32 pid, UserAddress buf, i32 count) {
+    i32 i = 0;
+    while (i < count) {
+        Option<i32> input = serial.read_input();
+        bool has_input = case input of {
+            Some(c) -> ({
+                mem.write_byte((i32)buf.plus(i), c);
+                i++;
+                true;
+            });
+            None -> false;
+        };
+        if (!has_input) { break; }
+    }
+    return i;
+}
+
+Result<i32, SpawnError> no_spawn(UserAddress path) {
+    return Err(SpawnError::NoHandler);
+}
+
+Result<i32, OsServiceError> no_os_services(i32 pid, i32 service, UserAddress args) {
+    return Err(OsServiceError::UnknownService(service));
+}
+
+fn(i32 pid, UserAddress buf, i32 count) -> i32 g_console_write = serial_write;
+fn(i32 pid, UserAddress buf, i32 count) -> i32 g_console_read = serial_read;
+fn(UserAddress path) -> Result<i32, SpawnError> g_spawn_handler = no_spawn;
+fn(i32 pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> g_os_handler = no_os_services;
 
 /**
  * Registers the OS_CALL handler: every service the OS offers a process
  * beyond the kernel's own syscalls -- the UI protocol, the filesystem,
- * process control -- goes through one syscall, OS_CALL(service, args), and
- * this handler writes Result<i32, OsServiceError> to result_out.
- * `args` is a user address; the handler reads and writes it through the
- * process's page tables, which are active for the syscall's duration.
- * @param handler Function pointer taking (pid, service, args, result_out).
+ * process control -- goes through one syscall, OS_CALL(service, args).
+ * `service` is the wire value as the process sent it, known or not. The
+ * handler reads and writes `args` through the process's page tables, which
+ * are active for the syscall's duration.
+ * @param handler Function taking (pid, service, args).
  */
-export void set_os_handler(fn(i32 pid, i32 service, i32 args, i32 result_out) -> void handler) {
+export void set_os_handler(fn(i32 pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> handler) {
     g_os_handler = handler;
 }
 
 /**
  * Registers OS-level console I/O hook functions for stdout/stdin redirection.
- * @param write_handler Function pointer taking (pid, buf, count) and returning bytes written.
- * @param read_handler Function pointer taking (pid, buf, count) and returning bytes read.
+ * @param write_handler Function taking (pid, buf, count) and returning bytes written.
+ * @param read_handler Function taking (pid, buf, count) and returning bytes read.
  */
-export void set_console(fn(i32 pid, i32 buf, i32 count) -> i32 write_handler,
-                        fn(i32 pid, i32 buf, i32 count) -> i32 read_handler) {
+export void set_console(fn(i32 pid, UserAddress buf, i32 count) -> i32 write_handler,
+                        fn(i32 pid, UserAddress buf, i32 count) -> i32 read_handler) {
     g_console_write = write_handler;
     g_console_read = read_handler;
 }
 
 /**
  * Registers the OS-level process spawning hook for SYS_SPAWN.
- * @param handler Function pointer taking (path, Result<i32, SpawnError>* out).
+ * @param handler Function taking the path and returning the new process ID.
  */
-export void set_spawn_handler(fn(i32 path, i32 result_out) -> void handler) {
+export void set_spawn_handler(fn(UserAddress path) -> Result<i32, SpawnError> handler) {
     g_spawn_handler = handler;
 }
 
@@ -239,29 +274,18 @@ export void sys_exit_status(ProcessExitStatus status) {
  * @param fd File descriptor index (1 = stdout, 2 = stderr).
  * @param buf Virtual memory address of source buffer.
  * @param count Number of bytes to write.
- * @return Ok(written), Err(BadFd) for an unsupported fd, or Err(NoProcess) if a configured handler has no current process.
+ * @return Ok(written), Err(BadFd) for an unsupported fd, or Err(NoProcess) outside a process.
  */
-export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
+export Result<i32, SyscallError> sys_write(i32 fd, UserAddress buf, i32 count) {
     if (count <= 0) {
         return Ok(0);
     }
     if (fd == 1 || fd == 2) {
-        fn(i32 pid, i32 buf, i32 count) -> i32 handler = g_console_write;
-        if (handler != 0) {
-            i32 pid = case thread.current_pid() of {
-                Some(value) -> value;
-                None -> ({ return Err(SyscallError::NoProcess); });
-            };
-            i32 written = handler(pid, buf, count);
-            return Ok(written);
-        }
-        i32 i = 0;
-        while (i < count) {
-            i32 c = mem.read_byte(buf + i);
-            serial.putc(c);
-            i++;
-        }
-        return Ok(count);
+        i32 pid = case thread.current_pid() of {
+            Some(value) -> value;
+            None -> ({ return Err(SyscallError::NoProcess); });
+        };
+        return Ok(g_console_write(pid, buf, count));
     }
     SyscallError cause = BadFd;
     return Err(cause);
@@ -272,36 +296,18 @@ export Result<i32, SyscallError> sys_write(i32 fd, i32 buf, i32 count) {
  * @param fd File descriptor index (0 = stdin).
  * @param buf Virtual memory address of destination buffer.
  * @param count Maximum number of bytes to read.
- * @return Ok(read_bytes), Err(BadFd) for an unsupported fd, or Err(NoProcess) if a configured handler has no current process.
+ * @return Ok(read_bytes), Err(BadFd) for an unsupported fd, or Err(NoProcess) outside a process.
  */
-export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
+export Result<i32, SyscallError> sys_read(i32 fd, UserAddress buf, i32 count) {
     if (count <= 0) {
         return Ok(0);
     }
     if (fd == 0) {
-        fn(i32 pid, i32 buf, i32 count) -> i32 handler = g_console_read;
-        if (handler != 0) {
-            i32 pid = case thread.current_pid() of {
-                Some(value) -> value;
-                None -> ({ return Err(SyscallError::NoProcess); });
-            };
-            i32 got = handler(pid, buf, count);
-            return Ok(got);
-        }
-        i32 i = 0;
-        while (i < count) {
-            Option<i32> opt_c = serial.read_input();
-            bool has_c = case opt_c of {
-                Some(c) -> ({
-                    mem.write_byte(buf + i, c);
-                    i++;
-                    true;
-                });
-                None -> false;
-            };
-            if (!has_c) { break; }
-        }
-        return Ok(i);
+        i32 pid = case thread.current_pid() of {
+            Some(value) -> value;
+            None -> ({ return Err(SyscallError::NoProcess); });
+        };
+        return Ok(g_console_read(pid, buf, count));
     }
     SyscallError cause = BadFd;
     return Err(cause);
@@ -312,23 +318,17 @@ export Result<i32, SyscallError> sys_read(i32 fd, i32 buf, i32 count) {
  * @param path Pointer to null-terminated file path string.
  * @return Ok(pid) on success, or Err(NoProcess), Err(UnknownSyscall), or Err(SpawnFailed).
  */
-export Result<i32, SyscallError> sys_spawn(i32 path) {
+export Result<i32, SyscallError> sys_spawn(UserAddress path) {
     Option<i32> current = thread.current_pid();
     case current of {
         Some(_) -> _;
         None -> ({ return Err(SyscallError::NoProcess); });
     };
-    fn(i32 path, i32 result_out) -> void handler = g_spawn_handler;
-    if (handler == 0) {
-        return Err(SyscallError::UnknownSyscall);
-    }
-    Result<i32, SpawnError> spawn_result;
-    handler(path, (i32)(&spawn_result));
-    i32 pid = 0;
-    if (!result_take_ok<i32, SpawnError>(&spawn_result, &pid)) {
-        return Err(SyscallError::SpawnFailed);
-    }
-    return Ok(pid);
+    Result<i32, SpawnError> spawned = g_spawn_handler(path);
+    return case spawned of {
+        Ok(pid) -> Ok(pid);
+        Err(_) -> Err(SyscallError::SpawnFailed);
+    };
 }
 
 /**
@@ -475,11 +475,11 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         return Ok(outcome);
     }
     if (sys_nr == Syscall::READ) {
-        Result<i32, SyscallError> result = sys_read(arg1, arg2, arg3);
+        Result<i32, SyscallError> result = sys_read(arg1, UserAddress(arg2), arg3);
         return resume_after_syscall(sp, &result);
     }
     if (sys_nr == Syscall::WRITE) {
-        Result<i32, SyscallError> result = sys_write(arg1, arg2, arg3);
+        Result<i32, SyscallError> result = sys_write(arg1, UserAddress(arg2), arg3);
         return resume_after_syscall(sp, &result);
     }
     if (sys_nr == Syscall::SBRK) {
@@ -494,18 +494,15 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         return Ok(outcome);
     }
     if (sys_nr == Syscall::SPAWN) {
-        Result<i32, SyscallError> result = sys_spawn(arg1);
+        Result<i32, SyscallError> result = sys_spawn(UserAddress(arg1));
         return resume_after_syscall(sp, &result);
     }
     if (sys_nr == Syscall::OS_CALL) {
-        fn(i32 pid, i32 service, i32 args, i32 result_out) -> void handler = g_os_handler;
-        if (handler == 0) { return Err(SyscallError::UnknownSyscall); }
         i32 pid = case thread.current_pid() of {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };
-        Result<i32, OsServiceError> result;
-        handler(pid, arg1, arg2, (i32)(&result));
+        Result<i32, OsServiceError> result = g_os_handler(pid, arg1, UserAddress(arg2));
         DispatchOutcome outcome;
         outcome.next_sp = sp;
         case result of {
