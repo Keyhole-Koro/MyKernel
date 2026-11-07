@@ -8,7 +8,6 @@ package kernel_config;
 /** Maximum number of simultaneously allocated process slots; PIDs are 1-based. */
 export const i32 MAX_PROCS = 16;
 /** Number of descriptor slots maintained per process. */
-export const i32 MAX_FDS   = 8;
 /** Maximum number of schedulable kernel and user TCBs. */
 export const i32 MAX_THREADS = 256;
 export const i32 MAX_THREADS_PER_PROC = 8;

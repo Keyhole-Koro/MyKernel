@@ -210,9 +210,6 @@ export Result<Pid, LoaderError> spawn_from_buffer(Option<Pid> parent, i32 code_p
             debug.println("loader: invalid pid allocated");
             return Err(LoaderError::ProcSlotFull);
         });
-        Err(InvalidFd(fd)) -> ({
-            debug.panic("loader: reserve_process returned an invalid file descriptor error");
-        });
     };
     ProcessSlot slot = ProcessSlot { pid: Some(pid) };
 

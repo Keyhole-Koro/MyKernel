@@ -10,7 +10,6 @@ import kernel_config from "kernel_config.mln";
 export enum ProcessError {
     NoFreeSlot,
     InvalidPid(Pid),
-    InvalidFd(i32),
 }
 
 /**
@@ -52,46 +51,49 @@ export struct Process {
 };
 
 Option<Process> g_procs[16];
-Option<i32> g_proc_fds[128];
+i32 g_slot_generations[16];
 bool g_procs_initialized = false;
 
-/**
- * Clears every descriptor owned by one process-table slot.
- * @param idx Zero-based validated process-table index.
- */
-void clear_fds(i32 idx) {
-    Option<i32> no_fd = None;
-    i32 fd = 0;
-    while (fd < kernel_config.MAX_FDS) {
-        g_proc_fds[idx * kernel_config.MAX_FDS + fd] = no_fd;
-        fd++;
-    }
-}
+// A pid is `generation << 5 | slot + 1`, one word. The low bits find the table
+// slot, and the generation counts how often that slot has been freed, so a pid
+// kept past its reap names nobody instead of the slot's next process. The first
+// process in each slot has generation 0, so those pids are simply 1 to 16.
+const i32 PID_SLOT_BITS = 5;
+const i32 PID_SLOT_MASK = 31;
+const i32 PID_GENERATION_MASK = 0x03FFFFFF;
 
-/**
- * Initializes stdin, stdout, and stderr for a newly reserved process slot.
- * @param idx Zero-based validated process-table index.
- */
-void initialize_fds(i32 idx) {
-    clear_fds(idx);
-    Option<i32> stdin_fd = Some(0);
-    Option<i32> stdout_fd = Some(1);
-    Option<i32> stderr_fd = Some(2);
-    g_proc_fds[idx * kernel_config.MAX_FDS + 0] = stdin_fd;
-    g_proc_fds[idx * kernel_config.MAX_FDS + 1] = stdout_fd;
-    g_proc_fds[idx * kernel_config.MAX_FDS + 2] = stderr_fd;
-}
-
-/** Clears all process and descriptor slots. */
+/** Clears all process slots. */
 export void init() {
     i32 i = 0;
     while (i < kernel_config.MAX_PROCS) {
         Option<Process> empty = None;
         g_procs[i] = empty;
-        clear_fds(i);
+        g_slot_generations[i] = 0;
         i++;
     }
     g_procs_initialized = true;
+}
+
+/**
+ * Finds the table slot a pid points at, without asking whether it is still there.
+ * @param pid Any process identifier.
+ * @return Some(zero-based slot), or None when no pid could name a slot this way.
+ */
+export Option<i32> slot_of(Pid pid) {
+    i32 number = (i32)pid;
+    if (number <= 0) { return None; }
+    i32 slot = number & PID_SLOT_MASK;
+    if (slot == 0 || slot > kernel_config.MAX_PROCS) { return None; }
+    return Some(slot - 1);
+}
+
+/**
+ * Walks the process table.
+ * @param slot Zero-based slot, below kernel_config.MAX_PROCS.
+ * @return Some(pid) of the process there, or None for a free slot.
+ */
+export Option<Pid> pid_at(i32 slot) {
+    return case g_procs[slot] of { Some(p) -> Some(p.pid); None -> None; };
 }
 
 /**
@@ -100,11 +102,10 @@ export void init() {
  * @return Ok(zero-based index), or Err(InvalidPid(pid)).
  */
 Result<i32, ProcessError> index_for_pid(Pid pid) {
-    i32 number = (i32)pid;
-    if (number <= 0 || number > kernel_config.MAX_PROCS) {
-        return Err(ProcessError::InvalidPid(pid));
-    }
-    i32 idx = number - 1;
+    i32 idx = case slot_of(pid) of {
+        Some(value) -> value;
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
     bool matches = case g_procs[idx] of {
         Some(p) -> p.pid == pid;
         None -> false;
@@ -114,7 +115,7 @@ Result<i32, ProcessError> index_for_pid(Pid pid) {
 }
 
 /**
- * Reserves a process table entry in Loading state and initializes its fd table.
+ * Reserves a process table entry in Loading state.
  * Interrupts stay off: the server task and syscalls both spawn, and a slot found
  * free must still be free when it is taken.
  * @param parent Process that will own this one; None for the OS itself.
@@ -128,7 +129,7 @@ export Result<Pid, ProcessError> reserve_process(Option<Pid> parent) {
     while (i < kernel_config.MAX_PROCS) {
         bool free = case g_procs[i] of { None -> true; Some(_) -> false; };
         if (free) {
-            Pid pid = Pid(i + 1);
+            Pid pid = Pid((g_slot_generations[i] << PID_SLOT_BITS) | (i + 1));
             Process value = Process {
                 pid: pid,
                 parent: parent,
@@ -141,7 +142,6 @@ export Result<Pid, ProcessError> reserve_process(Option<Pid> parent) {
             };
             Option<Process> entry = Some(value);
             g_procs[i] = entry;
-            initialize_fds(i);
             return Ok(pid);
         }
         i++;
@@ -172,10 +172,10 @@ export Result<_, ProcessError> commit_process(Pid pid, i32 pdbr, i32 heap_break)
 }
 
 /**
- * Releases a process-table slot and all of its descriptor entries.
+ * Releases a process-table slot, which ends its pid for good.
  * Callers use this after Loading rollback or a reap, when everything held under
- * the PID is gone: the slot is what makes the number available again, so it goes
- * last, and with interrupts off, since a spawn may be waiting to take it.
+ * the PID is gone: the slot is what the next process takes, so it goes last, and
+ * with interrupts off, since a spawn may be waiting to take it.
  * @param pid Process slot to release.
  * @return Ok(_) on release, or Err(InvalidPid) when no such slot exists.
  */
@@ -183,9 +183,9 @@ export Result<_, ProcessError> free_proc(Pid pid) {
     bool was_enabled = irq.save_disable();
     defer irq.restore(was_enabled);
     i32 idx = index_for_pid(pid)?;
-    clear_fds(idx);
     Option<Process> empty = None;
     g_procs[idx] = empty;
+    g_slot_generations[idx] = (g_slot_generations[idx] + 1) & PID_GENERATION_MASK;
     return Ok(_);
 }
 
@@ -435,7 +435,6 @@ export Result<_, ProcessError> clear_owned_resources(Pid pid) {
         });
         None -> ({ return Err(ProcessError::InvalidPid(pid)); });
     };
-    clear_fds(idx);
     return Ok(_);
 }
 
@@ -454,34 +453,4 @@ export Option<ProcessExitStatus> get_exit_status(Pid pid) {
         };
         None -> None;
     };
-}
-
-/**
- * Looks up one descriptor from a process-owned descriptor table.
- * @param pid Owner process.
- * @param fd Descriptor-table index.
- * @return Ok(Some(value)) when open, Ok(None) when closed, or an invalid PID/fd error.
- */
-export Result<Option<i32>, ProcessError> get_fd(Pid pid, i32 fd) {
-    i32 idx = index_for_pid(pid)?;
-    if (fd < 0 || fd >= kernel_config.MAX_FDS) {
-        return Err(ProcessError::InvalidFd(fd));
-    }
-    return Ok(g_proc_fds[idx * kernel_config.MAX_FDS + fd]);
-}
-
-/**
- * Installs or clears one descriptor in a process-owned descriptor table.
- * @param pid Owner process.
- * @param fd Descriptor-table index.
- * @param value Some(raw descriptor) to install, or None to close the slot.
- * @return Ok(_) on update, or an invalid PID/fd error.
- */
-export Result<_, ProcessError> set_fd(Pid pid, i32 fd, Option<i32> value) {
-    i32 idx = index_for_pid(pid)?;
-    if (fd < 0 || fd >= kernel_config.MAX_FDS) {
-        return Err(ProcessError::InvalidFd(fd));
-    }
-    g_proc_fds[idx * kernel_config.MAX_FDS + fd] = value;
-    return Ok(_);
 }
