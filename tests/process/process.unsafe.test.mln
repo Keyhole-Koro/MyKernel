@@ -280,27 +280,27 @@ void process_lifecycle_and_protection() {
     // text long enough to hold a header, and a single instruction word.
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf, 0x68656C6C); // "hell" in place of the magic
-    Result<Pid, LoaderError> no_magic_res = loader.spawn_from_buffer(bad_buf, 172);
+    Result<Pid, LoaderError> no_magic_res = loader.spawn_from_buffer(None, bad_buf, 172);
     assert_invalid_header_error(&no_magic_res, 0);
     write_be32_mem(bad_buf, 0xFC000000); // halt
-    Result<Pid, LoaderError> short_res = loader.spawn_from_buffer(bad_buf, 4);
+    Result<Pid, LoaderError> short_res = loader.spawn_from_buffer(None, bad_buf, 4);
     assert_invalid_header_error(&short_res, 0);
     init_mbin_user_binary(bad_buf);
-    Result<Pid, LoaderError> short_header_res = loader.spawn_from_buffer(bad_buf, 31);
+    Result<Pid, LoaderError> short_header_res = loader.spawn_from_buffer(None, bad_buf, 31);
     assert_invalid_header_error(&short_header_res, 0);
     debug.println("SUCCESS: non-MBIN buffers rejected with InvalidHeader(0)!");
 
     // 1. Invalid version test
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf + 4, 99); // bad version = 99
-    Result<Pid, LoaderError> bad_ver_res = loader.spawn_from_buffer(bad_buf, 172);
+    Result<Pid, LoaderError> bad_ver_res = loader.spawn_from_buffer(None, bad_buf, 172);
     assert_invalid_header_error(&bad_ver_res, 99);
     debug.println("SUCCESS: InvalidHeader(99) reported correctly!");
 
     // 2. Out of bounds test
     init_mbin_user_binary(bad_buf);
     write_be32_mem(bad_buf + 16, 9999); // text_size = 9999 > buffer size 172
-    Result<Pid, LoaderError> bad_size_res = loader.spawn_from_buffer(bad_buf, 172);
+    Result<Pid, LoaderError> bad_size_res = loader.spawn_from_buffer(None, bad_buf, 172);
     assert_invalid_bounds_error(&bad_size_res, 172);
     debug.println("SUCCESS: InvalidBounds(172) reported correctly!");
 
@@ -310,7 +310,7 @@ void process_lifecycle_and_protection() {
     init_mbin_user_binary(user_code);
 
     debug.println("kernel: spawning MBIN v2 user process (Normal)...");
-    Result<Pid, LoaderError> pid1_res = loader.spawn_from_buffer(user_code, 172);
+    Result<Pid, LoaderError> pid1_res = loader.spawn_from_buffer(None, user_code, 172);
     Pid pid1 = case pid1_res of {
         Ok(p)  -> p;
         Err(e) -> ({
@@ -391,7 +391,7 @@ void process_lifecycle_and_protection() {
     debug.println("kernel: testing W^X protection (attempt write to text section)...");
     i32 fault_buf = alloc_or_zero(128);
     init_wx_fault_binary(fault_buf);
-    Result<Pid, LoaderError> spawn_res2 = loader.spawn_from_buffer(fault_buf, 48);
+    Result<Pid, LoaderError> spawn_res2 = loader.spawn_from_buffer(None, fault_buf, 48);
     Pid pid2 = case spawn_res2 of {
         Ok(p)  -> p;
         Err(e) -> ({

@@ -16,6 +16,45 @@ import { Result } from "@std/core/result.mln";
 import { assert_eq } from "@std/testing/assert.mln";
 import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
 
+/** Starts the kernel state the tests here share, with no process yet. */
+void boot() {
+    heap.init();
+    process.init();
+
+    i32 kernel_pd = case mmu.create_page_directory() of {
+        Some(value) -> value;
+        None -> ({ assert_eq<i32>(1, 0, "kernel page directory"); 0; });
+    };
+    case mmu.setup_identity_kernel_mapping(kernel_pd) of {
+        Ok(_) -> _;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "kernel identity mapping"); });
+    };
+    scheduler.init();
+}
+
+/**
+ * A minimal MBIN v2 image: these lifecycle tests only need one executable
+ * word, and never dispatch it.
+ * @return Address of the 40-byte image.
+ */
+i32 halt_image() {
+    i32 image = case heap.alloc(40) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "test image allocation"); 0; });
+    };
+    mem.write_word(image + 0, 0x4D42494E);  // magic: 'MBIN'
+    mem.write_word(image + 4, 2);           // version
+    mem.write_word(image + 8, 0x40000000);  // entry_point
+    mem.write_word(image + 12, 36);         // text_offset
+    mem.write_word(image + 16, 4);          // text_size
+    mem.write_word(image + 20, 40);         // data_offset
+    mem.write_word(image + 24, 0);          // data_size
+    mem.write_word(image + 28, 0);          // bss_size
+    mem.write_word(image + 32, 0);          // sections_offset: none
+    mem.write_word(image + 36, 0xFC000000); // halt
+    return image;
+}
+
 /**
  * Exercises TCB publication, join wake/reap, futex wake, and process-wide
  * cleanup without executing the synthetic user instructions.
@@ -32,36 +71,9 @@ void user_thread_lifecycle() {
     i32 converted_tid = case converted of { ThreadError::InvalidTid(value) -> value; _ -> -1; };
     assert_eq<i32>(converted_tid, 77, "From<SyscallFailure> preserves payload");
 
-    heap.init();
-    process.init();
-
-    i32 kernel_pd = case mmu.create_page_directory() of {
-        Some(value) -> value;
-        None -> ({ assert_eq<i32>(1, 0, "kernel page directory"); 0; });
-    };
-    case mmu.setup_identity_kernel_mapping(kernel_pd) of {
-        Ok(_) -> _;
-        Err(_) -> ({ assert_eq<i32>(1, 0, "kernel identity mapping"); });
-    };
-    scheduler.init();
-
-    // A minimal MBIN v2 image: this lifecycle test only needs one executable
-    // word, and never dispatches it.
-    i32 image = case heap.alloc(40) of {
-        Ok(value) -> value;
-        Err(_) -> ({ assert_eq<i32>(1, 0, "test image allocation"); 0; });
-    };
-    mem.write_word(image + 0, 0x4D42494E);  // magic: 'MBIN'
-    mem.write_word(image + 4, 2);           // version
-    mem.write_word(image + 8, 0x40000000);  // entry_point
-    mem.write_word(image + 12, 36);         // text_offset
-    mem.write_word(image + 16, 4);          // text_size
-    mem.write_word(image + 20, 40);         // data_offset
-    mem.write_word(image + 24, 0);          // data_size
-    mem.write_word(image + 28, 0);          // bss_size
-    mem.write_word(image + 32, 0);          // sections_offset: none
-    mem.write_word(image + 36, 0xFC000000); // halt
-    Pid pid = case loader.spawn_from_buffer(image, 40) of {
+    boot();
+    i32 image = halt_image();
+    Pid pid = case loader.spawn_from_buffer(None, image, 40) of {
         Ok(value) -> value;
         Err(_) -> ({ assert_eq<i32>(1, 0, "main process creation"); return; });
     };
@@ -158,4 +170,83 @@ void user_thread_lifecycle() {
 
     heap.free(image);
     testkit.pass("user thread lifecycle");
+}
+
+/**
+ * Ends a process from outside while one of its threads is still parked for
+ * the next reschedule. Terminating must take that thread off the scheduler's
+ * hands: its slot is free afterwards, and a thread reusing it is not retired.
+ */
+/*@Test "terminating a process drops its parked thread" {
+    step: 50000000;
+}*/
+void terminating_a_process_drops_its_parked_thread() {
+    boot();
+    i32 image = halt_image();
+    i32 kernel_slot = 0;
+    Pid pid = case loader.spawn_from_buffer(None, image, 40) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "victim creation"); return; });
+    };
+    i32 main_slot = 1;
+    thread.set_current_slot(main_slot);
+    thread.make_running(main_slot);
+    ThreadSpawnArgs args = ThreadSpawnArgs {
+        entry: 0x40000000,
+        arg0: 0,
+        arg1: 0,
+        stack_bytes: 8192,
+    };
+    i32 worker_tid = case thread.spawn_user_thread(pid, args) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "worker creation"); 0; });
+    };
+    i32 worker_slot = thread.slot_for_tid(worker_tid).unwrap_or(-1);
+
+    // The worker exits and is switched away: its cleanup waits for a reschedule.
+    thread.set_current_slot(worker_slot);
+    thread.make_running(worker_slot);
+    thread.exit_current_thread(5);
+    scheduler.reschedule(0);
+
+    // From here this test is the kernel task doing the terminating.
+    thread.set_current_slot(kernel_slot);
+    ProcessExitStatus hangup = ProcessExitStatus::Code(9);
+    scheduler.terminate(pid, hangup);
+    bool zombie = case process.get_state(pid) of {
+        Some(state) -> case state of { ProcessState::Zombie(_) -> true; _ -> false; };
+        None -> false;
+    };
+    assert_eq<bool>(zombie, true, "the process is a Zombie when terminate returns");
+    assert_eq<i32>(process.retained_thread_count(pid).unwrap_or(-1), 0, "all its TCBs are released");
+    assert_eq<bool>(thread.occupied(worker_slot), false, "the parked thread's slot is free");
+
+    // Terminating is for an Alive process; doing it again changes nothing.
+    ProcessExitStatus again = ProcessExitStatus::Code(1);
+    scheduler.terminate(pid, again);
+    i32 code = case process.get_exit_status(pid) of {
+        Some(status) -> case status of { ProcessExitStatus::Code(value) -> value; _ -> -1; };
+        None -> -1;
+    };
+    assert_eq<i32>(code, 9, "the first status stands");
+
+    // A new thread takes the slot before the reschedule that had it parked.
+    Pid next = case loader.spawn_from_buffer(None, image, 40) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "next process creation"); return; });
+    };
+    i32 reused_tid = case thread.spawn_user_thread(next, args) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "reusing thread creation"); 0; });
+    };
+    assert_eq<i32>(thread.slot_for_tid(reused_tid).unwrap_or(-1), worker_slot, "the slot is reused");
+    scheduler.reschedule(0);
+    bool retired = case thread.state_at(worker_slot) of {
+        Some(state) -> case state of { ThreadState::Zombie(_) -> true; _ -> false; };
+        None -> true;
+    };
+    assert_eq<bool>(retired, false, "the reschedule leaves the new thread alone");
+
+    heap.free(image);
+    testkit.pass("terminating a process drops its parked thread");
 }

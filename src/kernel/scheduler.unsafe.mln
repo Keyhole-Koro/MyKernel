@@ -6,10 +6,11 @@ import heap from "@kernel/mm/heap.mln";
 import process from "process.mln";
 import thread from "thread.mln";
 import mmu from "@kernel/mm/mmu.mln";
+import irq from "@kernel/arch/irq.mln";
 import { wfi_cpu } from "@kernel/arch/wfi.masm";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
-import { Pid } from "@contracts/process/control.contract.mln";
+import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 
 /** Failure cases returned by kernel-thread creation. */
 export enum SchedulerError {
@@ -211,6 +212,30 @@ export void notify_armed(i32 mask) {
         thread.notify(i, mask);
         i++;
     }
+}
+
+/**
+ * Ends a process from outside it: an Alive process is a Zombie when this returns.
+ * Its threads are switched out, so nothing is left to wait for and their stacks
+ * can go at once. A process already Exiting finishes on its own next reschedule.
+ * @param pid Process to end; the caller must not be one of its threads.
+ * @param status Final status recorded in the Zombie.
+ */
+export void terminate(Pid pid, ProcessExitStatus status) {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
+    if (!process.accepts_threads(pid)) { return; }
+    thread.exit_process_threads(pid, status);
+    // One of its threads may be waiting here. Its slot is about to be cleared
+    // and could be reused before the next reschedule would look at it.
+    case deferred_cleanup_slot of {
+        Some(retired) -> ({
+            bool owned = case thread.owner_pid_at(retired) of { Some(owner) -> owner == pid; None -> false; };
+            if (owned) { deferred_cleanup_slot = None; }
+        });
+        None -> _;
+    };
+    thread.finish_process_exit(pid);
 }
 
 /** Kernel-side sleep used outside the syscall frame path. */

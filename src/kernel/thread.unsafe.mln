@@ -917,6 +917,30 @@ void wake_joiner(i32 target_slot, i32 code) {
 }
 
 /**
+ * Releases every TCB and the address space of an Exiting process, leaving its
+ * Zombie record. None of its TCBs may still be running on a kernel stack.
+ * @param pid Exiting process.
+ */
+export void finish_process_exit(Pid pid) {
+    i32 pdbr = case process.get_pdbr(pid) of { Some(value) -> value; None -> 0; };
+    i32 i = 0;
+    while (i < g_thread_slot_high_water) {
+        bool owned = case owner_pid_at(i) of { Some(owner) -> owner == pid; None -> false; };
+        if (owned) {
+            cleanup_stack_resources(i);
+            clear_slot(i);
+        }
+        i++;
+    }
+    if (pdbr != 0) {
+        Result<_, MmuError> destroyed = mmu.destroy_user_address_space(pdbr);
+        case destroyed of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: address-space cleanup failed"); }); };
+    }
+    process.clear_owned_resources(pid);
+    process.finish_exit(pid);
+}
+
+/**
  * Completes cleanup after an Exiting TCB has been switched away.
  * A normal thread becomes a stack-free Zombie unless a joiner reaps it;
  * an Exiting process instead releases every owned TCB and its address space.
@@ -943,22 +967,7 @@ export void finish_deferred_cleanup(i32 retired_slot) {
         None -> false;
     };
     if (process_exiting) {
-        i32 pdbr = case process.get_pdbr(pid) of { Some(value) -> value; None -> 0; };
-        i32 i = 0;
-        while (i < g_thread_slot_high_water) {
-            bool owned = case owner_pid_at(i) of { Some(owner) -> owner == pid; None -> false; };
-            if (owned) {
-                cleanup_stack_resources(i);
-                clear_slot(i);
-            }
-            i++;
-        }
-        if (pdbr != 0) {
-            Result<_, MmuError> destroyed = mmu.destroy_user_address_space(pdbr);
-            case destroyed of { Ok(_) -> _; Err(_) -> ({ debug.panic("thread: address-space cleanup failed"); }); };
-        }
-        process.clear_owned_resources(pid);
-        process.finish_exit(pid);
+        finish_process_exit(pid);
         return;
     }
 

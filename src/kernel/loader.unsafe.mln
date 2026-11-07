@@ -192,13 +192,14 @@ void (borrow ProcessSlot self) keep() {
  *
  * Anything else is refused: a headerless buffer has no segments to keep apart,
  * so it could only be mapped writable and executable at once.
+ * @param parent Process that will own the new one; None for the OS itself.
  * @param code_ptr Memory pointer to the MBIN image.
  * @param code_size Image size in bytes.
  * @return Ok(pid) with allocated process ID on success, or Err(LoaderError) on failure;
  *         InvalidHeader(0) when the buffer has no MBIN header.
  */
-export Result<Pid, LoaderError> spawn_from_buffer(i32 code_ptr, i32 code_size) {
-    Result<Pid, ProcessError> proc_res = process.reserve_process();
+export Result<Pid, LoaderError> spawn_from_buffer(Option<Pid> parent, i32 code_ptr, i32 code_size) {
+    Result<Pid, ProcessError> proc_res = process.reserve_process(parent);
     Pid pid = case proc_res of {
         Ok(p) -> p;
         Err(ProcessError::NoFreeSlot) -> ({

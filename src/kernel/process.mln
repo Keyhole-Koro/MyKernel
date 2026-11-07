@@ -3,6 +3,7 @@ package process;
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
+import irq from "@kernel/arch/irq.mln";
 import kernel_config from "kernel_config.mln";
 
 /** Failure cases returned by process-table operations. */
@@ -17,19 +18,22 @@ export enum ProcessError {
  * @property Loading Reserved slot whose address space and main TCB are not yet public.
  * @property Alive Committed process accepting normal syscalls and thread creation.
  * @property Exiting Final status fixed while TCB and resource cleanup is in progress.
- * @property Zombie Resource-free exit record waiting to be reaped.
+ * @property Zombie Kernel resources are gone; the OS still holds state under this PID.
+ * @property Released All that is left is the exit record, waiting to be reaped.
  */
 export enum ProcessState {
     Loading,
     Alive,
     Exiting(ProcessExitStatus),
     Zombie(ProcessExitStatus),
+    Released(ProcessExitStatus),
 }
 
 /**
  * Process-owned address-space and shared-resource accounting.
  * @property pid Positive process identifier associated with this table entry.
- * @property state Loading, Alive, Exiting, or Zombie lifecycle state.
+ * @property parent Process that may control and reap this one; None is the OS itself.
+ * @property state Lifecycle state.
  * @property pdbr Physical page-directory base; zero after resource cleanup.
  * @property heap_break Process-wide end of the user heap.
  * @property user_stack_slots Bit n is set while a TCB owns stack slot n.
@@ -38,6 +42,7 @@ export enum ProcessState {
  */
 export struct Process {
     Pid pid;
+    Option<Pid> parent;
     ProcessState state;
     i32 pdbr;
     i32 heap_break;
@@ -110,10 +115,15 @@ Result<i32, ProcessError> index_for_pid(Pid pid) {
 
 /**
  * Reserves a process table entry in Loading state and initializes its fd table.
+ * Interrupts stay off: the server task and syscalls both spawn, and a slot found
+ * free must still be free when it is taken.
+ * @param parent Process that will own this one; None for the OS itself.
  * @return Ok(new PID), or Err(NoFreeSlot) when all process slots are occupied.
  */
-export Result<Pid, ProcessError> reserve_process() {
+export Result<Pid, ProcessError> reserve_process(Option<Pid> parent) {
     if (!g_procs_initialized) { init(); }
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
     i32 i = 0;
     while (i < kernel_config.MAX_PROCS) {
         bool free = case g_procs[i] of { None -> true; Some(_) -> false; };
@@ -121,6 +131,7 @@ export Result<Pid, ProcessError> reserve_process() {
             Pid pid = Pid(i + 1);
             Process value = Process {
                 pid: pid,
+                parent: parent,
                 state: ProcessState::Loading,
                 pdbr: 0,
                 heap_break: 0,
@@ -162,16 +173,36 @@ export Result<_, ProcessError> commit_process(Pid pid, i32 pdbr, i32 heap_break)
 
 /**
  * Releases a process-table slot and all of its descriptor entries.
- * Callers use this after Loading rollback or Zombie reap, after owned resources are gone.
+ * Callers use this after Loading rollback or a reap, when everything held under
+ * the PID is gone: the slot is what makes the number available again, so it goes
+ * last, and with interrupts off, since a spawn may be waiting to take it.
  * @param pid Process slot to release.
  * @return Ok(_) on release, or Err(InvalidPid) when no such slot exists.
  */
 export Result<_, ProcessError> free_proc(Pid pid) {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
     i32 idx = index_for_pid(pid)?;
+    clear_fds(idx);
     Option<Process> empty = None;
     g_procs[idx] = empty;
-    clear_fds(idx);
     return Ok(_);
+}
+
+/**
+ * @param pid Process identifier to inspect.
+ * @param parent Claimed parent; None is the OS itself.
+ * @return true only when the process exists and that is its parent.
+ */
+export bool is_child_of(Pid pid, Option<Pid> parent) {
+    i32 idx = case index_for_pid(pid) of { Ok(value) -> value; Err(_) -> ({ return false; }); };
+    return case g_procs[idx] of {
+        Some(p) -> case p.parent of {
+            Some(held) -> case parent of { Some(claimed) -> held == claimed; None -> false; };
+            None -> case parent of { Some(_) -> false; None -> true; };
+        };
+        None -> false;
+    };
 }
 
 /**
@@ -365,6 +396,28 @@ export Result<_, ProcessError> finish_exit(Pid pid) {
 }
 
 /**
+ * Records that the OS holds nothing under this PID any more, so it may be reaped.
+ * Interrupts stay off because a parent's reap can run the moment this is visible.
+ * @param pid Zombie whose OS state has been released.
+ * @return Ok(_) on transition, or Err(InvalidPid) unless the process is a Zombie.
+ */
+export Result<_, ProcessError> mark_released(Pid pid) {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
+    i32 idx = index_for_pid(pid)?;
+    case g_procs[idx] of {
+        Some(p) -> ({
+            case p.state of {
+                Zombie(status) -> ({ p.state = ProcessState::Released(status); });
+                _ -> ({ return Err(ProcessError::InvalidPid(pid)); });
+            };
+        });
+        None -> ({ return Err(ProcessError::InvalidPid(pid)); });
+    };
+    return Ok(_);
+}
+
+/**
  * Clears resource handles and counters after lifecycle code physically frees them.
  * The ProcessState and final exit status are intentionally preserved.
  * @param pid Exiting process whose owned resources are gone.
@@ -388,7 +441,7 @@ export Result<_, ProcessError> clear_owned_resources(Pid pid) {
 
 /**
  * @param pid Process identifier to inspect.
- * @return Some(final status) for Exiting/Zombie, otherwise None.
+ * @return Some(final status) for Exiting, Zombie or Released, otherwise None.
  */
 export Option<ProcessExitStatus> get_exit_status(Pid pid) {
     i32 idx = index_for_pid(pid).ok()?;
@@ -396,6 +449,7 @@ export Option<ProcessExitStatus> get_exit_status(Pid pid) {
         Some(p) -> case p.state of {
             Exiting(status) -> Some(status);
             Zombie(status) -> Some(status);
+            Released(status) -> Some(status);
             _ -> None;
         };
         None -> None;
