@@ -1035,7 +1035,6 @@ export Result<JoinOutcome, ThreadError> join_thread(i32 target_tid) {
         });
         None -> ({ return Err(ThreadError::InvalidTid(target_tid)); });
     };
-    return Err(ThreadError::InvalidTid(target_tid));
 }
 
 /**
