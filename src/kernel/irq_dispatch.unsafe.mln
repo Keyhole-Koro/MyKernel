@@ -10,6 +10,7 @@ import process from "process.mln";
 import thread from "thread.mln";
 import syscall from "syscall.mln";
 import irq from "@kernel/arch/irq.mln";
+import irq_frame from "@kernel/arch/irq_frame.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import { irq_trampoline, irq_resume } from "@kernel/arch/irq_trampoline.masm";
 import { Result } from "@std/core/result.mln";
@@ -37,35 +38,14 @@ i32 IRQ_CAUSE_KEYBOARD = 128;
 /** Bit mask for illegal-instruction traps raised from user mode. */
 i32 IRQ_CAUSE_ILLEGAL_INSTRUCTION = 256;
 
-// irq_entry's fixed prologue leaves the interrupted bp/lr and the CPU's
-// saved SR/PC directly above the synthetic frame allocated by
-// irq_trampoline(). Copy them into its reserved tail so irq_resume() can
-// restore one contiguous r7..r0, bp, lr, SR, PC frame.
-// TODO(irq-abi): replace these compiler-prologue offsets with a first-class
-// interrupt/naked entry ABI (or a compiler-generated frame descriptor). Any
-// codegen change to irq_entry's prologue must update this layout.
-/**
- * Completes the synthetic interrupt frame with saved registers from the compiler prologue.
- *
- * Copies bp, lr, SR, and PC into the frame reserved tail so irq_resume() can restore a contiguous frame.
- * @param frame Pointer to synthetic interrupt frame.
- * @return Frame pointer with completed register state.
- */
-i32 complete_interrupt_frame(i32 frame) {
-    mem.write_word(frame + 32, mem.read_word(frame + 48)); // bp
-    mem.write_word(frame + 36, mem.read_word(frame + 52)); // lr
-    mem.write_word(frame + 40, mem.read_word(frame + 56)); // SR
-    mem.write_word(frame + 44, mem.read_word(frame + 60)); // PC
-    return frame;
-}
-
 /**
  * Top-level hardware interrupt entry point called from the vector table.
  *
  * Preserves CPU state via trampoline, dispatches to interrupt handlers, and never returns directly.
+ * The saved frame depends on this function's prologue; see irq_frame.unsafe.mln.
  */
 export void entry() {
-    dispatch(complete_interrupt_frame(irq_trampoline()));
+    dispatch(irq_frame.complete(irq_trampoline()));
     debug.panic("irq dispatcher returned unexpectedly");
 }
 
@@ -151,14 +131,10 @@ export void dispatch(i32 sp) {
     if (cause & IRQ_CAUSE_SYSCALL) {
         case syscall.dispatch(sp) of {
             Ok(outcome) -> ({
-                mem.write_word(sp + 24, (i32)outcome.status);
-                mem.write_word(sp + 20, outcome.value);
+                irq_frame.set_syscall_return(sp, outcome.status, outcome.value);
                 sp = outcome.next_sp;
             });
-            Err(error) -> ({
-                mem.write_word(sp + 24, (i32)syscall.error_status(error));
-                mem.write_word(sp + 20, 0);
-            });
+            Err(error) -> ({ irq_frame.set_syscall_return(sp, syscall.error_status(error), 0); });
         };
     }
 

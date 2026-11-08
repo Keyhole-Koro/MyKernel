@@ -1,0 +1,157 @@
+package irq_frame;
+
+import mem from "@kernel/mm/mem.mln";
+import { SyscallStatus } from "@contracts/myos/syscall.contract.mln";
+
+// The saved interrupt frame: the registers of a context stopped by an
+// interrupt, a trap or a syscall, kept on that context's kernel stack. A
+// thread's saved kernel SP points at its frame, and irq_resume() in
+// irq_trampoline.masm restores one.
+//
+// An interrupt builds the frame in three steps. The CPU pushes PC, then SR.
+// irq_dispatch.entry()'s prologue pushes lr, then bp. irq_trampoline() leaves
+// four words free and pushes r0..r7, and complete() fills the free words.
+// irq_resume() pops r7..r0, bp and lr, steps over the next four words, and
+// irets on the CPU's SR and PC.
+//
+// Offsets from the saved SP:
+//
+//   +0   r7   third syscall argument
+//   +4   r6   second syscall argument
+//   +8   r5   first syscall argument
+//   +12  r4
+//   +16  r3
+//   +20  r2   syscall value or error detail, on return
+//   +24  r1   syscall number on entry, SyscallStatus on return
+//   +28  r0
+//   +32  bp
+//   +36  lr
+//   +40  SR   copy of +56; irq_resume() steps over it
+//   +44  PC   copy of +60; likewise
+//   +48  bp   saved by entry()'s prologue; likewise
+//   +52  lr   saved by entry()'s prologue; likewise
+//   +56  SR   pushed by the CPU, restored by iret
+//   +60  PC   pushed by the CPU, restored by iret
+//
+// TODO(irq-abi): +48 and +52 come from the compiler's prologue for
+// irq_dispatch.entry(). Replace them with a first-class interrupt/naked entry
+// ABI (or a compiler-generated frame descriptor); until then any codegen
+// change to that prologue must update this layout.
+
+const i32 SAVED_R7 = 0;
+const i32 SAVED_R6 = 4;
+const i32 SAVED_R5 = 8;
+const i32 SAVED_R2 = 20;
+const i32 SAVED_R1 = 24;
+const i32 SAVED_BP = 32;
+const i32 SAVED_LR = 36;
+const i32 SR_COPY = 40;
+const i32 PC_COPY = 44;
+const i32 ENTRY_BP = 48;
+const i32 ENTRY_LR = 52;
+const i32 CPU_SR = 56;
+const i32 CPU_PC = 60;
+const i32 FRAME_BYTES = 64;
+
+// Status-register bits (runtime/MyEmulator/src/constants.rs).
+const i32 SR_IE = 0x01;   // interrupts enabled
+const i32 SR_USER = 0x20; // user mode
+
+/**
+ * Fills the four words irq_trampoline() left free: bp and lr from
+ * irq_dispatch.entry()'s prologue, and copies of the CPU's SR and PC.
+ * @param sp Frame irq_trampoline() returned.
+ * @return sp, now a complete frame.
+ */
+export i32 complete(i32 sp) {
+    mem.write_word(sp + SAVED_BP, mem.read_word(sp + ENTRY_BP));
+    mem.write_word(sp + SAVED_LR, mem.read_word(sp + ENTRY_LR));
+    mem.write_word(sp + SR_COPY, mem.read_word(sp + CPU_SR));
+    mem.write_word(sp + PC_COPY, mem.read_word(sp + CPU_PC));
+    return sp;
+}
+
+/**
+ * Writes a new context's first frame at the top of its kernel stack, so that
+ * irq_resume() on it starts the context at pc.
+ * @param stack_top Exclusive top of the kernel stack.
+ * @param pc Address the context starts at.
+ * @param sr Status register it starts with.
+ * @param bp Its bp.
+ * @param arg0 Its r5.
+ * @param arg1 Its r6.
+ * @return The frame's SP. Every register not given is zero.
+ */
+i32 build_frame(i32 stack_top, i32 pc, i32 sr, i32 bp, i32 arg0, i32 arg1) {
+    i32 sp = stack_top - FRAME_BYTES;
+    i32 offset = 0;
+    while (offset < FRAME_BYTES) {
+        mem.write_word(sp + offset, 0);
+        offset = offset + 4;
+    }
+    mem.write_word(sp + CPU_PC, pc);
+    mem.write_word(sp + CPU_SR, sr);
+    mem.write_word(sp + SAVED_BP, bp);
+    mem.write_word(sp + SAVED_R5, arg0);
+    mem.write_word(sp + SAVED_R6, arg1);
+    return sp;
+}
+
+/**
+ * Builds a kernel thread's first frame: kernel mode, interrupts enabled.
+ * @param entry Function the thread runs.
+ * @param stack_top Exclusive top of the thread's kernel stack.
+ * @return Saved kernel SP pointing at the frame.
+ */
+export i32 build_kernel(fn() -> void entry, i32 stack_top) {
+    return build_frame(stack_top, (i32)entry, SR_IE, stack_top, 0, 0);
+}
+
+/**
+ * Builds a user thread's first frame: user mode, interrupts enabled, and
+ * the entry's two arguments in r5 and r6.
+ * @param entry User address the thread starts at.
+ * @param arg0 Value for r5.
+ * @param arg1 Value for r6.
+ * @param stack_top Exclusive top of the thread's kernel stack.
+ * @return Saved kernel SP pointing at the frame.
+ */
+export i32 build_user(i32 entry, i32 arg0, i32 arg1, i32 stack_top) {
+    return build_frame(stack_top, entry, SR_USER | SR_IE, 0, arg0, arg1);
+}
+
+/**
+ * @param sp Frame saved by the syscall trap.
+ * @return Syscall number the caller put in r1.
+ */
+export i32 syscall_number(i32 sp) { return mem.read_word(sp + SAVED_R1); }
+
+/**
+ * @param sp Frame saved by the syscall trap.
+ * @return First syscall argument, from r5.
+ */
+export i32 syscall_arg1(i32 sp) { return mem.read_word(sp + SAVED_R5); }
+
+/**
+ * @param sp Frame saved by the syscall trap.
+ * @return Second syscall argument, from r6.
+ */
+export i32 syscall_arg2(i32 sp) { return mem.read_word(sp + SAVED_R6); }
+
+/**
+ * @param sp Frame saved by the syscall trap.
+ * @return Third syscall argument, from r7.
+ */
+export i32 syscall_arg3(i32 sp) { return mem.read_word(sp + SAVED_R7); }
+
+/**
+ * Sets what a syscall returns once its frame is resumed: the status in r1,
+ * the value or error detail in r2.
+ * @param sp Frame saved by the syscall trap.
+ * @param status Status for r1.
+ * @param value Value or error detail for r2.
+ */
+export void set_syscall_return(i32 sp, SyscallStatus status, i32 value) {
+    mem.write_word(sp + SAVED_R1, (i32)status);
+    mem.write_word(sp + SAVED_R2, value);
+}

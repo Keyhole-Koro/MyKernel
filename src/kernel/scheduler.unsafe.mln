@@ -7,6 +7,7 @@ import process from "process.mln";
 import thread from "thread.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import irq from "@kernel/arch/irq.mln";
+import irq_frame from "@kernel/arch/irq_frame.mln";
 import { wfi_cpu } from "@kernel/arch/wfi.masm";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
@@ -254,34 +255,6 @@ export void sleep(i32 ticks_to_sleep) {
     while (thread.blocked(current)) { wfi_cpu(); }
 }
 
-/** Constructs the interrupt-style frame consumed by irq_trampoline. */
-/**
- * Builds the interrupt-style initial frame for a kernel thread.
- * @param entry Initial kernel PC.
- * @param stack_top Exclusive top of the allocated kernel stack.
- * @return Saved SP pointing at the completed register frame.
- */
-i32 build_context(fn() -> void entry, i32 stack_top) {
-    i32 sp = stack_top;
-    sp = sp - 4; mem.write_word(sp, (i32)entry);
-    sp = sp - 4; mem.write_word(sp, 1);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, stack_top);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    sp = sp - 4; mem.write_word(sp, 0);
-    return sp;
-}
-
 /**
  * Allocates a stack, builds an initial frame, and publishes a kernel TCB.
  * @param entry Non-returning kernel-thread entry function.
@@ -297,7 +270,7 @@ export Result<i32, SchedulerError> spawn_kernel_thread(fn() -> void entry, i32 s
         Ok(value) -> value;
         Err(_) -> ({ return Err(SchedulerError::OutOfMemory); });
     };
-    i32 sp = build_context(entry, stack + stack_bytes);
+    i32 sp = irq_frame.build_kernel(entry, stack + stack_bytes);
     thread.publish_kernel(slot, sp, stack, stack_bytes);
     return Ok(slot);
 }
@@ -313,7 +286,7 @@ export void init() {
         Ok(value) -> value;
         Err(_) -> ({ debug.panic("scheduler: no memory for idle stack"); 0; });
     };
-    idle_sp = build_context(idle_main, idle_stack + idle_bytes);
+    idle_sp = irq_frame.build_kernel(idle_main, idle_stack + idle_bytes);
 
     thread.publish_boot(0);
     thread.set_current_slot(0);

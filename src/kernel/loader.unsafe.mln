@@ -1,6 +1,7 @@
 package loader;
 
 import irq from "@kernel/arch/irq.mln";
+import irq_frame from "@kernel/arch/irq_frame.mln";
 import mem from "@kernel/mm/mem.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import heap from "@kernel/mm/heap.mln";
@@ -306,23 +307,7 @@ export Result<Pid, LoaderError> spawn_from_buffer(Option<Pid> parent, i32 code_p
     HeapBlock kstack_block = HeapBlock { addr: kstack };
     i32 kstack_top = kstack + KSTACK_BYTES;
     // 5. Build the main thread's initial interrupt frame for iret.
-    i32 sp = kstack_top;
-    sp = sp - 4; mem.write_word(sp, entry_point);     // PC
-    sp = sp - 4; mem.write_word(sp, 0x21);            // SR (SR_USER=0x20 | SR_IE=0x01)
-    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry PC slot
-    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry SR slot
-    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry lr slot
-    sp = sp - 4; mem.write_word(sp, 0);               // IRQ entry bp slot
-    sp = sp - 4; mem.write_word(sp, 0);               // lr
-    sp = sp - 4; mem.write_word(sp, 0);               // bp
-    sp = sp - 4; mem.write_word(sp, 0);               // r0
-    sp = sp - 4; mem.write_word(sp, 0);               // r1
-    sp = sp - 4; mem.write_word(sp, 0);               // r2
-    sp = sp - 4; mem.write_word(sp, 0);               // r3
-    sp = sp - 4; mem.write_word(sp, 0);               // r4
-    sp = sp - 4; mem.write_word(sp, 0);               // r5
-    sp = sp - 4; mem.write_word(sp, 0);               // r6
-    sp = sp - 4; mem.write_word(sp, 0);               // r7
+    i32 sp = irq_frame.build_user(entry_point, 0, 0, kstack_top);
 
     // 6. Publish the fully constructed TCB, then atomically make its Process
     // Alive. Before publication all resources above are rollback guards.

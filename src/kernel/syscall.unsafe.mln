@@ -2,6 +2,7 @@ package syscall;
 
 import mem from "@kernel/mm/mem.mln";
 import mmu from "@kernel/mm/mmu.mln";
+import irq_frame from "@kernel/arch/irq_frame.mln";
 import serial from "@kernel/io/serial.mln";
 import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
@@ -419,23 +420,10 @@ Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, S
  * @return Ok(DispatchOutcome) describing next SP and return value, or Err(SyscallError).
  */
 export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
-    // Stack frame layout (from irq_trampoline.masm):
-    // [sp+0]:  r7 (arg3)
-    // [sp+4]:  r6 (arg2)
-    // [sp+8]:  r5 (arg1)
-    // [sp+12]: r4
-    // [sp+16]: r3
-    // [sp+20]: r2
-    // [sp+24]: r1 (sys_nr / ret)
-    // [sp+28]: r0
-    // [sp+32]: bp
-    // [sp+36]: lr
-    // [sp+40]: SR
-    // [sp+44]: PC
-    i32 sys_nr = mem.read_word(sp + 24);
-    i32 arg1   = mem.read_word(sp + 8);
-    i32 arg2   = mem.read_word(sp + 4);
-    i32 arg3   = mem.read_word(sp + 0);
+    i32 sys_nr = irq_frame.syscall_number(sp);
+    i32 arg1   = irq_frame.syscall_arg1(sp);
+    i32 arg2   = irq_frame.syscall_arg2(sp);
+    i32 arg3   = irq_frame.syscall_arg3(sp);
     if (sys_nr == Syscall::EXIT) {
         sys_exit(arg1);
         DispatchOutcome outcome;

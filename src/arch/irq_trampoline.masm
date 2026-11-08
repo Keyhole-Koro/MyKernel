@@ -4,13 +4,14 @@
 ;
 ; irq_trampoline returns an interrupt-frame pointer in r1. irq_resume accepts
 ; such a pointer in r5 and resumes it with iret. Neither helper contains
-; dispatch policy or Result handling.
+; dispatch policy or Result handling. irq_frame.unsafe.mln describes the
+; frame's layout and holds the MyLang code that reads and writes it.
 export irq_trampoline
 export irq_resume
 
 irq_trampoline:
   ; Reserve the frame tail (bp, lr, SR, PC), then save r0-r7. MyLang fills
-  ; the tail from its entry frame before dispatching.
+  ; the tail from its entry frame before dispatching (irq_frame.complete).
   addis sp, -16
   push r0
   push r1
