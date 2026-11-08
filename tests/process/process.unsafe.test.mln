@@ -12,7 +12,6 @@ import { ProcessState, ProcessError } from "@kernel/kernel/process.mln";
 import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import loader from "@kernel/kernel/loader.mln";
 import { Result } from "@std/core/result.mln";
-import { result_take_err } from "@std/core/result_take.mln";
 import { Option } from "@std/core/option.mln";
 import { assert_eq } from "@std/testing/assert.mln";
 import { LoaderError, MmuError } from "@contracts/process/loader.contract.mln";
@@ -178,15 +177,12 @@ void fail(str message) {
 }
 
 void assert_invalid_pid(Result<_, ProcessError> *result, Pid expected_pid) {
-    ProcessError error;
-    if (!result_take_err<_, ProcessError>(result, &error)) {
-        fail("expected ProcessError::InvalidPid");
-    }
-    case error of {
-        ProcessError::InvalidPid(actual_pid) -> ({
+    case *result of {
+        Err(ProcessError::InvalidPid(actual_pid)) -> ({
             assert_eq<i32>((i32)actual_pid, (i32)expected_pid, "InvalidPid payload mismatch");
         });
-        ProcessError::NoFreeSlot -> ({ fail("expected InvalidPid, got NoFreeSlot"); });
+        Ok(_) -> ({ fail("expected InvalidPid, got Ok"); });
+        Err(ProcessError::NoFreeSlot) -> ({ fail("expected InvalidPid, got NoFreeSlot"); });
     };
 }
 

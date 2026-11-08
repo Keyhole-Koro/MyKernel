@@ -9,12 +9,10 @@ import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
 import thread from "thread.mln";
 import syscall from "syscall.mln";
-import { SyscallError, DispatchOutcome } from "syscall.mln";
 import irq from "@kernel/arch/irq.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import { irq_trampoline, irq_resume } from "@kernel/arch/irq_trampoline.masm";
 import { Result } from "@std/core/result.mln";
-import { result_take_ok, result_take_err } from "@std/core/result_take.mln";
 import { Option } from "@std/core/option.mln";
 import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 
@@ -151,21 +149,17 @@ export void dispatch(i32 sp) {
     }
 
     if (cause & IRQ_CAUSE_SYSCALL) {
-        Result<DispatchOutcome, SyscallError> result = syscall.dispatch(sp);
-        DispatchOutcome outcome;
-        if (result_take_ok<DispatchOutcome, SyscallError>(&result, &outcome)) {
-            i32 status = (i32)syscall.outcome_status(&outcome);
-            i32 value = syscall.outcome_value(&outcome);
-            i32 next_sp = syscall.outcome_next_sp(&outcome);
-            mem.write_word(sp + 24, status);
-            mem.write_word(sp + 20, value);
-            sp = next_sp;
-        } else {
-            SyscallError error;
-            result_take_err<DispatchOutcome, SyscallError>(&result, &error);
-            mem.write_word(sp + 24, (i32)syscall.error_status(error));
-            mem.write_word(sp + 20, 0);
-        }
+        case syscall.dispatch(sp) of {
+            Ok(outcome) -> ({
+                mem.write_word(sp + 24, (i32)outcome.status);
+                mem.write_word(sp + 20, outcome.value);
+                sp = outcome.next_sp;
+            });
+            Err(error) -> ({
+                mem.write_word(sp + 24, (i32)syscall.error_status(error));
+                mem.write_word(sp + 20, 0);
+            });
+        };
     }
 
     if (cause & IRQ_CAUSE_TIMER) {

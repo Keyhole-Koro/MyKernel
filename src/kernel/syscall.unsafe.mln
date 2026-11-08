@@ -11,7 +11,6 @@ import { JoinOutcome } from "thread.mln";
 import scheduler from "scheduler.mln";
 import loader from "loader.mln";
 import { Result } from "@std/core/result.mln";
-import { result_take_ok, result_take_err } from "@std/core/result_take.mln";
 import { Option } from "@std/core/option.mln";
 import { UserAddress } from "@std/core/address.mln";
 import { MmuError } from "@contracts/process/loader.contract.mln";
@@ -51,33 +50,6 @@ export struct DispatchOutcome {
     SyscallStatus status;
     i32 value;
 };
-
-/**
- * Extracts the next stack pointer from a syscall dispatch outcome.
- * @param outcome Pointer to dispatch outcome structure.
- * @return Stack pointer to resume.
- */
-export i32 outcome_next_sp(DispatchOutcome *outcome) {
-    return outcome->next_sp;
-}
-
-/**
- * Extracts the user-visible transport status from a syscall dispatch outcome.
- * @param outcome Pointer to dispatch outcome structure.
- * @return SyscallStatus written to r1.
- */
-export SyscallStatus outcome_status(DispatchOutcome *outcome) {
-    return outcome->status;
-}
-
-/**
- * Extracts the success value or failure detail from a dispatch outcome.
- * @param outcome Pointer to dispatch outcome structure.
- * @return Value written to r2.
- */
-export i32 outcome_value(DispatchOutcome *outcome) {
-    return outcome->value;
-}
 
 /**
  * Converts a typed kernel syscall error into its stable positive status.
@@ -419,26 +391,24 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
 /**
  * Packages a syscall result into a typed DispatchOutcome for IRQ dispatch.
  * @param sp Stack pointer to restore upon syscall return.
- * @param result Pointer to typed syscall outcome result.
- * @return Ok(DispatchOutcome) containing next SP and return value, or Err(SyscallError).
+ * @param result Typed syscall result.
+ * @return Ok(DispatchOutcome) that resumes sp with the status in r1 and the
+ *         value in r2; an error becomes its SyscallStatus with r2 zero.
  */
-Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, SyscallError> *result) {
-    i32 ret = 0;
-    if (result_take_ok<i32, SyscallError>(result, &ret)) {
-        DispatchOutcome outcome;
-        outcome.next_sp = sp;
-        outcome.status = SyscallStatus::Ok;
-        outcome.value = ret;
-        return Ok(outcome);
-    }
-
-    SyscallError error;
-    result_take_err<i32, SyscallError>(result, &error);
-    DispatchOutcome failure;
-    failure.next_sp = sp;
-    failure.status = error_status(error);
-    failure.value = 0;
-    return Ok(failure);
+Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, SyscallError> result) {
+    DispatchOutcome outcome;
+    outcome.next_sp = sp;
+    case result of {
+        Ok(value) -> ({
+            outcome.status = SyscallStatus::Ok;
+            outcome.value = value;
+        });
+        Err(error) -> ({
+            outcome.status = error_status(error);
+            outcome.value = 0;
+        });
+    };
+    return Ok(outcome);
 }
 
 /**
@@ -476,15 +446,15 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     }
     if (sys_nr == Syscall::READ) {
         Result<i32, SyscallError> result = sys_read(arg1, UserAddress(arg2), arg3);
-        return resume_after_syscall(sp, &result);
+        return resume_after_syscall(sp, result);
     }
     if (sys_nr == Syscall::WRITE) {
         Result<i32, SyscallError> result = sys_write(arg1, UserAddress(arg2), arg3);
-        return resume_after_syscall(sp, &result);
+        return resume_after_syscall(sp, result);
     }
     if (sys_nr == Syscall::SBRK) {
         Result<i32, SyscallError> result = sys_sbrk(arg1);
-        return resume_after_syscall(sp, &result);
+        return resume_after_syscall(sp, result);
     }
     if (sys_nr == Syscall::YIELD) {
         DispatchOutcome outcome;
@@ -495,7 +465,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     }
     if (sys_nr == Syscall::SPAWN) {
         Result<i32, SyscallError> result = sys_spawn(UserAddress(arg1));
-        return resume_after_syscall(sp, &result);
+        return resume_after_syscall(sp, result);
     }
     if (sys_nr == Syscall::OS_CALL) {
         Pid pid = case thread.current_pid() of {
