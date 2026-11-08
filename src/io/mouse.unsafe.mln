@@ -23,6 +23,7 @@ i32 MOUSE_EVT_WHEEL_ADDR  = 0x240000B4; // signed wheel steps on the head event
  * Reads the current mouse cursor X coordinate from hardware register.
  * @return Current X coordinate in pixels.
  */
+@safe
 export i32 x() {
     return mem.read_word(MOUSE_X_ADDR);
 }
@@ -31,6 +32,7 @@ export i32 x() {
  * Reads the current mouse cursor Y coordinate from hardware register.
  * @return Current Y coordinate in pixels.
  */
+@safe
 export i32 y() {
     return mem.read_word(MOUSE_Y_ADDR);
 }
@@ -76,6 +78,7 @@ export void drain_hw() {
  * Checks whether the mouse event queue contains unread events.
  * @return True if at least one event is pending, false otherwise.
  */
+@safe
 export bool has_event() {
     if (q_head == q_tail) { return false; }
     return true;
@@ -85,18 +88,21 @@ export bool has_event() {
  * Returns the X coordinate of the current head event.
  * @return Event X coordinate in pixels.
  */
+@safe
 export i32 event_x() { return queue[q_head].x; }
 
 /**
  * Returns the Y coordinate of the current head event.
  * @return Event Y coordinate in pixels.
  */
+@safe
 export i32 event_y() { return queue[q_head].y; }
 
 /**
  * Returns the button bitmask of the current head event.
  * @return Event button bitmask.
  */
+@safe
 export i32 event_btn() { return queue[q_head].btn; }
 
 /**
@@ -105,11 +111,13 @@ export i32 event_btn() { return queue[q_head].btn; }
  * Positive values indicate scrolling up, negative scrolling down, 0 none.
  * @return Wheel scroll delta.
  */
+@safe
 export i32 event_wheel() { return queue[q_head].wheel; }
 
 /**
  * Consumes and pops the head event from the queue.
  */
+@safe
 export void pop_event() {
     if (q_head != q_tail) {
         q_head = (q_head + 1) % QUEUE_SIZE;

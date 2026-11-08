@@ -44,6 +44,7 @@ export void drain_hw() {
  * Checks whether the keyboard event queue contains unread events.
  * @return True if at least one event is pending, false otherwise.
  */
+@safe
 export bool has_event() {
     if (q_head == q_tail) { return false; }
     return true;
@@ -53,23 +54,27 @@ export bool has_event() {
  * Returns the event type of the current head event.
  * @return A KeyEventType value from the shared keyboard contract.
  */
+@safe
 export i32 event_type() { return queue[q_head].type; }
 
 /**
  * Returns the key code or character code of the current head event.
  * @return Key code or ASCII value.
  */
+@safe
 export i32 event_code() { return queue[q_head].code; }
 
 /**
  * Returns the modifier bitmask of the current head event.
  * @return KeyModifier flags combined as a bitmask.
  */
+@safe
 export i32 event_mods() { return queue[q_head].mods; }
 
 /**
  * Consumes and pops the head event from the queue.
  */
+@safe
 export void pop_event() {
     if (q_head != q_tail) {
         q_head = (q_head + 1) % QUEUE_SIZE;
