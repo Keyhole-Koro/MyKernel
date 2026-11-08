@@ -69,10 +69,7 @@ i32 FRAME_MASK        = 0xFFFFF000;
  * @return Some(frame_addr) on success, or None on out of memory.
  */
 export Option<i32> alloc_page() {
-    i32 page = case alloc_page_uninitialized() of {
-        Some(p) -> p;
-        None -> ({ return None; });
-    };
+    i32 page = alloc_page_uninitialized()?;
     // Zero out the page
     i32 i = 0;
     while (i < PAGE_SIZE) {
@@ -280,10 +277,7 @@ export bool user_range_has_flags(i32 pd_addr, i32 addr, i32 bytes, i32 required)
  */
 export Option<i32> read_user_word(i32 pd_addr, i32 addr) {
     if (addr & 3) { return None; }
-    i32 pte = case user_mapping(pd_addr, addr) of {
-        Some(value) -> value;
-        None -> ({ return None; });
-    };
+    i32 pte = user_mapping(pd_addr, addr)?;
     i32 physical = (pte & FRAME_MASK) + (addr & (PAGE_SIZE - 1));
     return Some(mem.read_word(physical));
 }
