@@ -219,6 +219,12 @@ bool g_locking = false;
  */
 export void enable_locking() { g_locking = true; }
 
+/** @return The first address past the heap: where the physical frames begin (frames.mln). */
+export i32 end() {
+    if (g_heap_base == 0) { return align_up(heap_image_end()) + kernel_config.HEAP_SIZE; }
+    return g_heap_base + kernel_config.HEAP_SIZE;
+}
+
 /**
  * Allocates a block from the kernel heap.
  *

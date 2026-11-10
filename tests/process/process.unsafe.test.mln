@@ -265,6 +265,10 @@ void process_lifecycle_and_protection() {
             fail("setup identity mapping: unaligned address");
             0;
         });
+        Err(KernelRange(a)) -> ({
+            fail("setup identity mapping: kernel range");
+            0;
+        });
     };
     mmu.enable_paging(kpd);
 

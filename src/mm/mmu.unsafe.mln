@@ -1,6 +1,6 @@
 package mmu;
 
-import heap from "heap.mln";
+import frames from "frames.mln";
 import mem from "mem.mln";
 import debug from "@kernel/debug/debug.mln";
 import { Result } from "@std/core/result.mln";
@@ -51,9 +51,10 @@ export enum MmuFaultStatus {
 
 // Global constants for memory regions (> 21-bit immediate)
 i32 KERNEL_RAM_BASE   = 0x00000000;
-i32 KERNEL_RAM_SIZE   = 0x01000000; // 16 MB
+i32 KERNEL_RAM_SIZE   = 0x01000000; // 16 MB: the kernel image and heap, executable
+// From there to KERNEL_STACK_BASE: the physical frames (frames.mln).
 
-i32 KERNEL_STACK_BASE = 0x1F000000;
+i32 KERNEL_STACK_BASE = 0x1F000000; // frames.POOL_END
 i32 KERNEL_STACK_SIZE = 0x01000000; // 16 MB (covers up to 0x20000000 RAM_END)
 
 i32 MMIO_BASE         = 0x24000000;
@@ -65,8 +66,8 @@ i32 VRAM_SIZE         = 0x01000000; // Full 16 MiB board VRAM aperture; geometry
 i32 FRAME_MASK        = 0xFFFFF000;
 
 /**
- * Allocates a 4 KiB-aligned, zero-filled physical frame from the heap.
- * @return Some(frame_addr) on success, or None on out of memory.
+ * Allocates a zero-filled 4 KiB physical frame (frames.mln).
+ * @return Some(frame_addr) on success, or None when every frame is in use.
  */
 export Option<i32> alloc_page() {
     i32 page = alloc_page_uninitialized()?;
@@ -80,39 +81,28 @@ export Option<i32> alloc_page() {
 }
 
 /**
- * Allocates a 4 KiB-aligned frame without clearing it: for a caller that
- * fills the whole page anyway (the loader copying a segment).
- * @return Some(frame_addr) on success, or None on out of memory.
+ * Allocates a 4 KiB frame without clearing it: for a caller that fills the
+ * whole page anyway (the loader copying a segment).
+ * @return Some(frame_addr) on success, or None when every frame is in use.
  */
 export Option<i32> alloc_page_uninitialized() {
-    // Keep the original heap pointer in the word immediately before the
-    // aligned frame.  A frame cannot be returned directly to heap.free()
-    // because alignment may have advanced the address into the allocation.
-    // The extra word guarantees that the bookkeeping word never overlaps the
-    // heap allocator's own header, even when `raw` was already page-aligned.
-    i32 raw = case heap.alloc(PAGE_SIZE * 2 + 4) of {
-        Ok(p) -> p;
-        Err(_) -> ({
-            debug.println("mmu: out of memory for page allocation");
-            return None;
-        });
+    Option<i32> frame = frames.alloc();
+    case frame of {
+        Some(_) -> _;
+        None -> ({ debug.println("mmu: out of physical frames"); });
     };
-    i32 aligned = (raw + 4 + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
-    mem.write_word(aligned - 4, raw);
-    return Some(aligned);
+    return frame;
 }
 
 /**
  * Releases a frame returned by alloc_page or alloc_page_uninitialized.
- * @param frame Page-aligned frame address containing allocator bookkeeping at frame - 4.
- * @return Ok(_) after returning the raw block, or Err(UnalignedAddress).
+ * @param frame The frame.
+ * @return Ok(_), or Err(UnalignedAddress) for an address that is no frame.
  */
 export Result<_, MmuError> free_frame(i32 frame) {
-    if (frame == 0 || (frame & (PAGE_SIZE - 1))) {
+    if (!frames.free(frame)) {
         return Err(MmuError::UnalignedAddress(frame));
     }
-    i32 raw = mem.read_word(frame - 4);
-    heap.free(raw);
     return Ok(_);
 }
 
@@ -160,9 +150,10 @@ Result<i32, MmuError> get_or_create_page_table(i32 pd_addr, i32 pdi, i32 flags) 
         return Ok(pt_base);
     }
 
-    // Page table already exists: if user mapping, ensure PDE also has User flag
-    if (flags & PTE_USER) {
-        mem.write_word(pde_addr, pde | PTE_USER);
+    // A table without the user flag is one of the kernel's, which every
+    // process shares: a user page there would appear in all of them.
+    if ((flags & PTE_USER) && !(pde & PTE_USER)) {
+        return Err(MmuError::KernelRange(pdi << 22));
     }
     return Ok(pde & FRAME_MASK);
 }
@@ -331,33 +322,66 @@ bool g_shared_ready = false;
 i32 g_shared_pd = 0;      // kernel-only directory holding the shared tables
 
 /**
- * Populates a page directory with kernel RAM, stack, MMIO, and VRAM mappings.
+ * Maps a range to itself a whole page table at a time, writing each table's
+ * entries in one pass rather than looking the table up for every page.
+ * @param pd_addr Page directory.
+ * @param base Start of the range, a multiple of 4 MiB (the span of a table).
+ * @param size Its length, a multiple of 4 MiB.
+ * @param flags Entry flags, PTE_VALID included.
+ * @return Ok(_), or Err(AllocFailed) when no frame is left for a table.
+ */
+Result<_, MmuError> map_identity_tables(i32 pd_addr, i32 base, i32 size, i32 flags) {
+    i32 span = ENTRIES_PER_TABLE * PAGE_SIZE;
+    i32 offset = 0;
+    while (offset < size) {
+        i32 addr = base + offset;
+        i32 pt = case alloc_page_uninitialized() of {
+            Some(page) -> page;
+            None -> ({ return Err(MmuError::AllocFailed); });
+        };
+        i32 entry = addr | flags;
+        i32 i = 0;
+        while (i < ENTRIES_PER_TABLE) {
+            mem.write_word(pt + i * 4, entry);
+            entry = entry + PAGE_SIZE;
+            i++;
+        }
+        set_pde(pd_addr + ((addr >> 22) & 0x3FF) * 4, pt, flags);
+        offset = offset + span;
+    }
+    return Ok(_);
+}
+
+/**
+ * Populates a page directory with the kernel's identity mappings: all of RAM,
+ * MMIO and VRAM, none of it reachable from user mode.
  * @param pd_addr Empty physical page-directory base.
  * @return Ok(_) when every identity range is mapped, or the first MmuError.
  */
 Result<_, MmuError> build_identity_tables(i32 pd_addr) {
-    // 1. Map lower 16 MB of physical RAM (Kernel image, heaps)
-    // Read/Write/Execute, Kernel Mode only
-    map_range(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC)?;
+    // 1. The kernel image and heap: read, write, execute.
+    map_identity_tables(pd_addr, KERNEL_RAM_BASE, KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE | PTE_EXEC)?;
 
-    // 2. Map high RAM stack region (0x1F000000 .. 0x20000000)
-    // Read/Write, Kernel Mode only
-    map_range(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE)?;
+    // 2. The physical frames up to the boot stack's region: read, write. The
+    //    kernel fills and reads them here (page tables, segments it loads).
+    map_identity_tables(pd_addr, KERNEL_RAM_SIZE, frames.POOL_END - KERNEL_RAM_SIZE, PTE_VALID | PTE_WRITABLE)?;
 
-    // 3. Map MMIO peripheral space (0x24000000 .. 0x24002000)
-    // Read/Write, Kernel Mode only
+    // 3. The boot stack's region at the top of RAM (0x1F000000 .. 0x20000000).
+    map_identity_tables(pd_addr, KERNEL_STACK_BASE, KERNEL_STACK_SIZE, PTE_VALID | PTE_WRITABLE)?;
+
+    // 4. MMIO peripheral space (0x24000000 .. 0x24002000).
     map_range(pd_addr, MMIO_BASE, MMIO_BASE, MMIO_SIZE, PTE_VALID | PTE_WRITABLE)?;
 
-    // 4. Map VRAM framebuffer space (0x30000000 .. 0x30300000)
-    // Read/Write, Kernel Mode only
-    map_range(pd_addr, VRAM_BASE, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE)?;
+    // 5. The VRAM framebuffer aperture.
+    map_identity_tables(pd_addr, VRAM_BASE, VRAM_SIZE, PTE_VALID | PTE_WRITABLE)?;
 
     return Ok(_);
 }
 
 /**
- * Shares the kernel identity mappings with a page directory, while giving it
- * a private low-memory table that user mappings may safely modify.
+ * Shares the kernel identity mappings with a page directory. The tables are
+ * the kernel's: a process's own pages lie above them (from 0x40000000), in
+ * tables of their own, and map_page refuses a user page in a kernel table.
  * @param pd_addr Physical address of the page directory to initialize.
  * @return Ok(_) on success, or Err(MmuError) on allocation failure.
  */
@@ -375,28 +399,11 @@ export Result<_, MmuError> setup_identity_kernel_mapping(i32 pd_addr) {
         g_shared_pd = template;
         g_shared_ready = true;
     }
-    // Share every kernel table; give this directory its own copy of the
-    // first one, the only one a process overwrites entries in.
+    // Share every kernel table.
     i32 pdi = 0;
     while (pdi < 1024) {
         i32 pde = mem.read_word(g_shared_pd + pdi * 4);
-        if (pde & PTE_VALID) {
-            if (pdi == 0) {
-                i32 copy = case alloc_page() of {
-                    Some(p) -> p;
-                    None -> ({ return Err(MmuError::AllocFailed); });
-                };
-                i32 src = pde & FRAME_MASK;
-                i32 k = 0;
-                while (k < PAGE_SIZE) {
-                    mem.write_word(copy + k, mem.read_word(src + k));
-                    k = k + 4;
-                }
-                mem.write_word(pd_addr + pdi * 4, (copy & FRAME_MASK) | (pde & 0xFFF));
-            } else {
-                mem.write_word(pd_addr + pdi * 4, pde);
-            }
-        }
+        if (pde & PTE_VALID) { mem.write_word(pd_addr + pdi * 4, pde); }
         pdi++;
     }
     return Ok(_);
@@ -438,9 +445,7 @@ export Result<_, MmuError> destroy_user_address_space(i32 pd_addr) {
                 i32 pti = 0;
                 while (pti < ENTRIES_PER_TABLE) {
                     i32 pte = mem.read_word(pt + pti * 4);
-                    // Only user mappings own their physical frames. The
-                    // private pdi-0 table also contains copied kernel identity
-                    // entries, whose physical RAM must not be freed.
+                    // Only user mappings own their physical frames.
                     if ((pte & PTE_VALID) && (pte & PTE_USER)) {
                         free_frame(pte & FRAME_MASK)?;
                     }
@@ -455,6 +460,33 @@ export Result<_, MmuError> destroy_user_address_space(i32 pd_addr) {
 
     free_frame(pd_addr)?;
     return Ok(_);
+}
+
+/**
+ * Counts the pages a process's own mappings hold: its program, heap and
+ * stacks. Only user page tables are walked; the shared kernel ones have no
+ * user entries.
+ * @param pd_addr Process page-directory base; zero counts nothing.
+ * @return Number of 4 KiB user pages mapped.
+ */
+export i32 count_user_pages(i32 pd_addr) {
+    if (pd_addr == 0) { return 0; }
+    i32 pages = 0;
+    i32 pdi = 0;
+    while (pdi < ENTRIES_PER_TABLE) {
+        i32 pde = mem.read_word(pd_addr + pdi * 4);
+        if ((pde & PTE_VALID) && (pde & PTE_USER)) {
+            i32 pt = pde & FRAME_MASK;
+            i32 pti = 0;
+            while (pti < ENTRIES_PER_TABLE) {
+                i32 pte = mem.read_word(pt + pti * 4);
+                if ((pte & PTE_VALID) && (pte & PTE_USER)) { pages++; }
+                pti++;
+            }
+        }
+        pdi++;
+    }
+    return pages;
 }
 
 export void enable_paging(i32 pd_addr) {

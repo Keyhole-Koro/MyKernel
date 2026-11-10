@@ -1,0 +1,80 @@
+package frames;
+
+import mem from "mem.mln";
+import heap from "heap.mln";
+import irq from "@kernel/arch/irq.mln";
+import { Option } from "@std/core/option.mln";
+
+// Physical page frames: page tables, and every page a process maps. They are
+// the RAM above the kernel heap, up to the region the boot stack lives in at
+// the top, a 4 KiB page at a time. The kernel reaches them through its identity
+// mapping of the same range (mmu.mln).
+//
+// A free frame's first word names the next free one, so the free list needs no
+// memory of its own. Frames never handed out yet come from `g_next` upward.
+
+const i32 FRAME_BYTES = 4096;
+/** Where the frames end: mmu's boot-stack region starts here. */
+export const i32 POOL_END = 0x1F000000;
+
+i32 g_first = 0;       // the first frame
+i32 g_next = 0;        // the first frame never handed out
+i32 g_free = 0;        // the first free frame handed back, or zero
+i32 g_free_count = 0;  // how many are on that list
+
+/** Places the pool after the heap, the first time a frame is wanted. */
+void ensure_ready() {
+    if (g_first != 0) { return; }
+    g_first = (heap.end() + FRAME_BYTES - 1) & ~(FRAME_BYTES - 1);
+    g_next = g_first;
+    g_free = 0;
+    g_free_count = 0;
+}
+
+/**
+ * Takes a frame. Its contents are whatever was there.
+ * @return Some(physical address, 4 KiB aligned), or None when every frame is in use.
+ */
+export Option<i32> alloc() {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
+    ensure_ready();
+    if (g_free != 0) {
+        i32 frame = g_free;
+        g_free = mem.read_word(frame);
+        g_free_count--;
+        return Some(frame);
+    }
+    if (g_next >= POOL_END) { return None; }
+    i32 frame = g_next;
+    g_next = g_next + FRAME_BYTES;
+    return Some(frame);
+}
+
+/**
+ * Hands a frame back.
+ * @param frame A frame alloc returned and nobody uses any more.
+ * @return Whether it was one: aligned and inside the pool.
+ */
+export bool free(i32 frame) {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
+    ensure_ready();
+    if ((frame & (FRAME_BYTES - 1)) != 0 || frame < g_first || frame >= g_next) { return false; }
+    mem.write_word(frame, g_free);
+    g_free = frame;
+    g_free_count++;
+    return true;
+}
+
+/** @return Frames in the pool. */
+export i32 total() {
+    ensure_ready();
+    return (POOL_END - g_first) / FRAME_BYTES;
+}
+
+/** @return Frames free now: never handed out, or handed back. */
+export i32 available() {
+    ensure_ready();
+    return (POOL_END - g_next) / FRAME_BYTES + g_free_count;
+}

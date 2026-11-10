@@ -256,12 +256,9 @@ export Result<Pid, LoaderError> spawn_from_buffer(Option<Pid> parent, i32 code_p
     debug.printf("loader: loading MBIN v%d (entry=0x%x, text_sz=%d, data_sz=%d, bss_sz=%d)\n",
                  version, entry_point, text_size, data_size, bss_size);
     // The text segment is mapped at the address it was linked at (the page
-    // holding its entry point). MyLang loads symbol addresses with a 21-bit
-    // immediate, so compiled programs must be linked below 2 MB
-    // (qa/runners/build_user_apps.py uses 0x20000, unused RAM below the
-    // kernel image). Their pages replace the kernel identity mapping of that
-    // range in the process's own page directory only, so isolation is
-    // unchanged.
+    // holding its entry point): 0x40000000 (qa/runners/build_user_apps.py),
+    // above the kernel's identity mapping of RAM. map_page refuses a user
+    // page in the kernel's range (MmuError::KernelRange).
     i32 code_base = entry_point & 0xFFFFF000;
 
     // Map Text segment as RX (Read + Execute, No Write). Globals live

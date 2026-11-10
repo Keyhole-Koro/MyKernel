@@ -49,6 +49,10 @@ void mmu_virtual_memory() {
             assert_eq<i32>(1, 0, "unexpected UnalignedAddress for identity mapping");
             0;
         });
+        Err(KernelRange(a)) -> ({
+            assert_eq<i32>(1, 0, "unexpected KernelRange for identity mapping");
+            0;
+        });
     };
 
     // 2. Allocate a physical frame and map high virtual address 0x40000000 (1 GB) to it
@@ -78,6 +82,10 @@ void mmu_virtual_memory() {
         });
         Err(UnalignedAddress(a)) -> ({
             assert_eq<i32>(1, 0, "unexpected UnalignedAddress for map_page");
+            0;
+        });
+        Err(KernelRange(a)) -> ({
+            assert_eq<i32>(1, 0, "unexpected KernelRange for map_page");
             0;
         });
     };
@@ -119,6 +127,7 @@ void mmu_virtual_memory() {
         Err(InvalidDirectory) -> 1;
         Err(AllocFailed) -> 0;
         Err(UnalignedAddress(a)) -> 0;
+        Err(KernelRange(a)) -> 0;
     };
     assert_eq<i32>(got_inv_pd, 1, "expected Err(InvalidDirectory) for null pd");
     debug.println("mmu: InvalidDirectory reported correctly");
@@ -130,8 +139,19 @@ void mmu_virtual_memory() {
         Err(UnalignedAddress(a)) -> a;
         Err(AllocFailed) -> 0;
         Err(InvalidDirectory) -> 0;
+        Err(KernelRange(a)) -> 0;
     };
     assert_eq<i32>(got_unaligned, va + 123, "expected Err(UnalignedAddress(va+123)) for unaligned vaddr");
     debug.println("mmu: UnalignedAddress reported correctly");
+
+    // A user page in the kernel's identity mapping would appear in every
+    // process, which shares those tables: it is refused.
+    i32 kernel_va = 0x00100000;
+    i32 refused = case mmu.map_page(pd, kernel_va, pa, PTE_VALID | mmu.PTE_USER) of {
+        Ok(_) -> -1;
+        Err(KernelRange(a)) -> a;
+        Err(_) -> -2;
+    };
+    assert_eq<i32>(refused, 0, "expected Err(KernelRange(0)) for a user page at 1 MB");
 
 }
