@@ -20,6 +20,8 @@ export enum SchedulerError {
 }
 
 i32 g_irq_count = 0;
+i32 g_idle_ticks = 0;
+i32 g_kernel_ticks = 0;
 bool g_initialized = false;
 i32 idle_sp = 0;
 Option<i32> deferred_cleanup_slot;
@@ -34,6 +36,36 @@ void idle_main() {
 /** @return Scheduler timer-tick count used by sleep and futex deadlines. */
 @safe
 export i32 ticks() { return g_irq_count; }
+
+/** @return Ticks that found no thread to run: the CPU waited in the idle context. */
+@safe
+export i32 idle_ticks() { return g_idle_ticks; }
+
+/** @return Ticks that found a kernel thread running: the OS's own work. */
+@safe
+export i32 kernel_ticks() { return g_kernel_ticks; }
+
+/**
+ * Charges the tick that just arrived to whatever it interrupted: the process
+ * of a user thread, the kernel, or idle. A blocked thread was waiting in WFI
+ * for its wake-up (`sleep` waits on its own stack), so its tick is idle. This
+ * samples CPU time, so a thread that keeps blocking just before each tick is
+ * never charged.
+ */
+export void account_tick() {
+    i32 slot = case thread.current_slot() of {
+        Some(value) -> value;
+        None -> ({ g_idle_ticks++; return; });
+    };
+    if (thread.blocked(slot)) {
+        g_idle_ticks++;
+        return;
+    }
+    case thread.owner_pid_at(slot) of {
+        Some(pid) -> ({ process.charge_tick(pid); });
+        None -> ({ g_kernel_ticks++; });
+    };
+}
 
 /**
  * Exposes a stable nonzero execution-context index to the mocking runtime.
@@ -68,6 +100,7 @@ Option<i32> find_next_runnable(i32 start, i32 count) {
  */
 export i32 tick(i32 sp) {
     g_irq_count++;
+    account_tick();
     return reschedule(sp);
 }
 
@@ -279,6 +312,8 @@ export Result<i32, SchedulerError> spawn_kernel_thread(fn() -> void entry, i32 s
 export void init() {
     thread.init();
     g_irq_count = 0;
+    g_idle_ticks = 0;
+    g_kernel_ticks = 0;
     deferred_cleanup_slot = None;
 
     i32 idle_bytes = 8192;
