@@ -124,12 +124,7 @@ export i32 reschedule(i32 sp) {
     };
 
     i32 count = thread.high_water();
-    i32 i = 0;
-    while (i < count) {
-        if (thread.sleeping_until(i, g_irq_count)) { thread.make_runnable(i); }
-        thread.wake_futex_timeout(i, g_irq_count);
-        i++;
-    }
+    thread.wake_due(g_irq_count);
 
     i32 start = 0;
     case thread.current_slot() of {

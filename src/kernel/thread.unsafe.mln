@@ -192,6 +192,16 @@ export Option<i32> current_slot() {
  */
 export void set_current_slot(i32 slot) { g_current_thread_slot = slot; }
 
+// The earliest tick at which a sleep or a futex timeout falls due, or 0 when no
+// thread waits on one. A wait that ends sooner (a notification, a futex wake)
+// leaves it standing; the scan it brings about only finds nothing to do.
+i32 g_next_due = 0;
+
+// Keeps `tick` if it comes before every deadline noted so far.
+void note_due(i32 tick) {
+    if (g_next_due == 0 || tick < g_next_due) { g_next_due = tick; }
+}
+
 /** Records that the idle fallback context is executing. */
 export void set_idle() { g_current_thread_slot = -1; }
 
@@ -390,38 +400,6 @@ export bool blocked(i32 slot) {
 }
 
 /**
- * Tests whether a sleeping TCB's deadline has passed.
- * @param slot Global TCB table index.
- * @param now Current scheduler tick.
- * @return true only for an expired Sleep wait.
- */
-export bool sleeping_until(i32 slot, i32 now) {
-    if (!occupied(slot)) { return false; }
-    return case g_threads[slot] of {
-        Some(t) -> case t.state of {
-            Blocked(reason) -> case reason of {
-                Sleep(wait) -> wait.deadline_tick <= now;
-                _ -> false;
-            };
-            _ -> false;
-        };
-        None -> false;
-    };
-}
-
-/**
- * Transitions an occupied TCB to Runnable.
- * @param slot Global TCB table index; empty or invalid slots are ignored.
- */
-export void make_runnable(i32 slot) {
-    if (!occupied(slot)) { return; }
-    case g_threads[slot] of {
-        Some(t) -> ({ t.state = ThreadState::Runnable; });
-        None -> _;
-    };
-}
-
-/**
  * Marks the selected TCB as the CPU's Running context.
  * @param slot Occupied global TCB table index selected by the scheduler.
  */
@@ -482,8 +460,9 @@ export Option<ThreadState> state_at(i32 slot) {
  * @return true only when the TCB is in ThreadState::Exiting(_).
  */
 export bool exiting(i32 slot) {
-    return case state_at(slot) of {
-        Some(state) -> case state of { ThreadState::Exiting(_) -> true; _ -> false; };
+    if (!occupied(slot)) { return false; }
+    return case g_threads[slot] of {
+        Some(t) -> case t.state of { ThreadState::Exiting(_) -> true; _ -> false; };
         None -> false;
     };
 }
@@ -495,6 +474,7 @@ export bool exiting(i32 slot) {
  */
 export void sleep_until(i32 slot, i32 deadline) {
     if (!occupied(slot)) { return; }
+    note_due(deadline);
     SleepWait wait = SleepWait { deadline_tick: deadline };
     case g_threads[slot] of {
         Some(t) -> ({ t.state = ThreadState::Blocked(WaitReason::Sleep(wait)); });
@@ -1034,7 +1014,10 @@ export Result<bool, ThreadError> futex_wait(i32 addr, i32 expected, i32 timeout_
     };
     if (value != expected) { return Err(ThreadError::WouldBlock); }
     i32 deadline = 0;
-    if (timeout_ticks > 0) { deadline = now + timeout_ticks; }
+    if (timeout_ticks > 0) {
+        deadline = now + timeout_ticks;
+        note_due(deadline);
+    }
     i32 sequence = g_next_wait_sequence;
     g_next_wait_sequence++;
     if (g_next_wait_sequence <= 0) { g_next_wait_sequence = 1; }
@@ -1112,32 +1095,45 @@ export Result<i32, ThreadError> futex_wake(i32 addr, i32 count) {
 }
 
 /**
- * Applies one futex timeout during the scheduler's tick scan.
- * @param slot Global TCB table index to inspect.
+ * Wakes the TCBs whose sleep or futex timeout falls due by `now`: a sleeper
+ * becomes Runnable, a futex waiter Runnable with TimedOut. Most calls find
+ * nothing due and return before looking at a slot; the others look at each
+ * slot once, and note the next deadline still to come.
  * @param now Current scheduler tick.
  */
-export void wake_futex_timeout(i32 slot, i32 now) {
-    if (!occupied(slot)) { return; }
-    case g_threads[slot] of {
-        Some(t) -> ({
-            case t.state of {
-                Blocked(reason) -> ({
-                    case reason of {
-                        Futex(wait) -> ({
-                            if (wait.deadline_tick != 0 && wait.deadline_tick <= now) {
-                                t.wake_result = wait.addr;
-                                if (t.saved_kernel_sp != 0) {
-                                    irq_frame.set_syscall_return(t.saved_kernel_sp, SyscallStatus::TimedOut, wait.addr);
+export void wake_due(i32 now) {
+    if (g_next_due == 0 || now < g_next_due) { return; }
+    g_next_due = 0;
+    i32 slot = 0;
+    while (slot < g_thread_slot_high_water) {
+        case g_threads[slot] of {
+            Some(t) -> ({
+                case t.state of {
+                    Blocked(reason) -> ({
+                        case reason of {
+                            Sleep(wait) -> ({
+                                if (wait.deadline_tick <= now) { t.state = ThreadState::Runnable; }
+                                else { note_due(wait.deadline_tick); }
+                            });
+                            Futex(wait) -> ({
+                                if (wait.deadline_tick != 0 && wait.deadline_tick <= now) {
+                                    t.wake_result = wait.addr;
+                                    if (t.saved_kernel_sp != 0) {
+                                        irq_frame.set_syscall_return(t.saved_kernel_sp, SyscallStatus::TimedOut, wait.addr);
+                                    }
+                                    t.state = ThreadState::Runnable;
+                                } else if (wait.deadline_tick != 0) {
+                                    note_due(wait.deadline_tick);
                                 }
-                                t.state = ThreadState::Runnable;
-                            }
-                        });
-                        _ -> _;
-                    };
-                });
-                _ -> _;
-            };
-        });
-        None -> _;
-    };
+                            });
+                            _ -> _;
+                        };
+                    });
+                    _ -> _;
+                };
+            });
+            None -> _;
+        };
+        slot++;
+    }
 }
