@@ -1,4 +1,4 @@
-package mouse;
+namespace mouse;
 
 import mem from "@kernel/mm/mem.mln";
 

@@ -1,4 +1,4 @@
-package user_prog;
+namespace user_prog;
 
 import { sys_write, sys_exit, sys_yield } from "syscall_user.masm";
 

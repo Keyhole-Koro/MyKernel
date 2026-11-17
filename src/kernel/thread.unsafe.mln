@@ -1,4 +1,4 @@
-package thread;
+namespace thread;
 
 import { Option } from "@std/core/option.mln";
 import { Result } from "@std/core/result.mln";

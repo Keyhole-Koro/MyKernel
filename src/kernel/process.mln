@@ -1,4 +1,4 @@
-package process;
+namespace process;
 
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";

@@ -1,4 +1,4 @@
-package irq;
+namespace irq;
 
 import { hw_irq_enable, hw_irq_disable, hw_irq_vector_target } from "interrupt.masm";
 import mem from "@kernel/mm/mem.mln";

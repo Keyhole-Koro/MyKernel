@@ -1,4 +1,4 @@
-package kernel_config;
+namespace kernel_config;
 
 // ============================================================================
 // MyKernel System Configuration & Limits

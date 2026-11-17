@@ -1,4 +1,4 @@
-package frames;
+namespace frames;
 
 import mem from "mem.mln";
 import heap from "heap.mln";

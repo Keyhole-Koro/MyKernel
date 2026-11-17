@@ -1,4 +1,4 @@
-package serial;
+namespace serial;
 
 import mem from "@kernel/mm/mem.mln";
 import { RingBuffer } from "@std/collections/ringbuf.mln";

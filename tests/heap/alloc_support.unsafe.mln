@@ -1,4 +1,4 @@
-package heap_alloc_support;
+namespace heap_alloc_support;
 
 import heap from "@kernel/mm/heap.mln";
 import { Result } from "@std/core/result.mln";

@@ -1,4 +1,4 @@
-package loader;
+namespace loader;
 
 import irq from "@kernel/arch/irq.mln";
 import irq_frame from "@kernel/arch/irq_frame.mln";

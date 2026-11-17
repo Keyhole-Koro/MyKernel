@@ -1,4 +1,4 @@
-package test_scheduler;
+namespace test_scheduler;
 
 import heap from "@kernel/mm/heap.mln";
 import irq from "@kernel/arch/irq.mln";

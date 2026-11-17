@@ -1,4 +1,4 @@
-package keyboard;
+namespace keyboard;
 
 import mem from "@kernel/mm/mem.mln";
 // Memory-mapped keyboard registers (must match constants.rs in the emulator).

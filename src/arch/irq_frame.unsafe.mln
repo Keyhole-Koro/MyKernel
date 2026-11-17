@@ -1,4 +1,4 @@
-package irq_frame;
+namespace irq_frame;
 
 import mem from "@kernel/mm/mem.mln";
 import { SyscallStatus } from "@contracts/myos/syscall.contract.mln";

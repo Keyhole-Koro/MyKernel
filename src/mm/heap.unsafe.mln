@@ -1,4 +1,4 @@
-package heap;
+namespace heap;
 
 import { heap_image_end } from "heap_sym.masm";
 import debug from "@kernel/debug/debug.mln";

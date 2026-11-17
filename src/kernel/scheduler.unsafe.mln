@@ -1,4 +1,4 @@
-package scheduler;
+namespace scheduler;
 
 import debug from "@kernel/debug/debug.mln";
 import mem from "@kernel/mm/mem.mln";

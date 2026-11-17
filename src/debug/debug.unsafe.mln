@@ -1,4 +1,4 @@
-package debug;
+namespace debug;
 
 import serial from "@kernel/io/serial.mln";
 import { halt_cpu } from "@kernel/arch/halt.masm";

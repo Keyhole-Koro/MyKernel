@@ -1,4 +1,4 @@
-package ipc;
+namespace ipc;
 
 /**
  * Fixed-capacity message channels shared by kernel tasks and user processes.

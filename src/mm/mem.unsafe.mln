@@ -1,4 +1,4 @@
-package mem;
+namespace mem;
 
 // Generic word access to an absolute address. Works for RAM (e.g. building task
 // stack frames) and memory-mapped I/O alike; the bus routes by address.

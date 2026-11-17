@@ -1,4 +1,4 @@
-package test_process;
+namespace test_process;
 
 import debug from "@kernel/debug/debug.mln";
 import heap from "@kernel/mm/heap.mln";

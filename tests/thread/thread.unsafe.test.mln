@@ -1,4 +1,4 @@
-package test_thread;
+namespace test_thread;
 
 import heap from "@kernel/mm/heap.mln";
 import mem from "@kernel/mm/mem.mln";
