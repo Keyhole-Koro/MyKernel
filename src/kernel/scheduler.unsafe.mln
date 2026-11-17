@@ -8,6 +8,7 @@ import thread from "thread.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import irq from "@kernel/arch/irq.mln";
 import irq_frame from "@kernel/arch/irq_frame.mln";
+import { SyscallStatus } from "@contracts/myos/syscall.contract.mln";
 import { wfi_cpu } from "@kernel/arch/wfi.masm";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
@@ -25,6 +26,9 @@ i32 g_kernel_ticks = 0;
 bool g_initialized = false;
 i32 idle_sp = 0;
 Option<i32> deferred_cleanup_slot;
+// thread.ready_epoch() when the scheduler last found nothing to run; None
+// until it first does.
+Option<i32> g_idle_epoch;
 i32 MMU_PDBR_ADDR = 0x24000104;
 i32 KERNEL_SP_ADDR = 0x24000110;
 
@@ -93,6 +97,15 @@ Option<i32> find_next_runnable(i32 start, i32 count) {
     return None;
 }
 
+/** Switches to the kernel's page directory, for a kernel thread or idle. */
+void install_kernel_space() {
+    case mmu.kernel_page_directory() of {
+        Some(kernel_pdbr) -> ({ mem.write_word(MMU_PDBR_ADDR, kernel_pdbr); });
+        None -> _;
+    };
+    mem.write_word(KERNEL_SP_ADDR, 0);
+}
+
 /**
  * Advances scheduler time and chooses the context to resume after a timer IRQ.
  * @param sp Saved interrupt-frame SP of the interrupted context.
@@ -113,8 +126,19 @@ export i32 tick(i32 sp) {
 export i32 reschedule(i32 sp) {
     if (!g_initialized) { return sp; }
 
+    // Save the context being left before anything can wake a thread: a wake
+    // writes its result into the waiter's saved frame, and when the waiter is
+    // the thread leaving now (it just blocked in a syscall), that frame is the
+    // one saved here.
+    Option<i32> leaving = thread.current_slot();
+    case leaving of {
+        Some(current) -> ({ thread.switch_out(current, sp, mem.read_word(KERNEL_SP_ADDR)); });
+        None -> ({ idle_sp = sp; });
+    };
+
     // This invocation runs on a different stack from the TCB retired by the
-    // preceding switch, so its stack can finally be released safely.
+    // preceding switch, so its stack can finally be released safely. Its
+    // joiner may be the thread leaving now.
     case deferred_cleanup_slot of {
         Some(retired) -> ({
             deferred_cleanup_slot = None;
@@ -122,18 +146,21 @@ export i32 reschedule(i32 sp) {
         });
         None -> _;
     };
-
-    i32 count = thread.high_water();
     thread.wake_due(g_irq_count);
 
+    i32 count = thread.high_water();
     i32 start = 0;
-    case thread.current_slot() of {
+    case leaving of {
         Some(current) -> ({
-            thread.switch_out(current, sp, mem.read_word(KERNEL_SP_ADDR));
             if (thread.exiting(current)) { deferred_cleanup_slot = Some(current); }
             if (count > 0) { start = (current + 1) % count; }
         });
-        None -> ({ idle_sp = sp; });
+        None -> ({
+            // Idle, and nothing was woken or published since it found nothing
+            // to run: it still has nothing. Most ticks of an idle machine end here.
+            bool unchanged = case g_idle_epoch of { Some(epoch) -> epoch == thread.ready_epoch(); None -> false; };
+            if (unchanged) { return sp; }
+        });
     };
     Option<i32> next = find_next_runnable(start, count);
     return case next of {
@@ -148,19 +175,18 @@ export i32 reschedule(i32 sp) {
                     };
                     mem.write_word(KERNEL_SP_ADDR, thread.saved_user_sp(slot));
                 });
-                None -> ({
-                    case mmu.kernel_page_directory() of {
-                        Some(kernel_pdbr) -> ({ mem.write_word(MMU_PDBR_ADDR, kernel_pdbr); });
-                        None -> _;
-                    };
-                    mem.write_word(KERNEL_SP_ADDR, 0);
-                });
+                None -> ({ install_kernel_space(); });
             };
             thread.make_running(slot);
             thread.saved_kernel_sp(slot);
         });
         None -> ({
+            // Idle runs in the kernel's address space. The thread that just
+            // stopped may be the last of a process whose page tables the next
+            // reschedule frees, and idle can now wait for a long time.
+            install_kernel_space();
             thread.set_idle();
+            g_idle_epoch = Some(thread.ready_epoch());
             idle_sp;
         });
     };
@@ -180,6 +206,7 @@ export i32 yield_until_tick(i32 sp) {
 }
 
 /** @param mask Nonzero notification bits to arm on the current TCB. */
+@safe
 export void arm_notification(i32 mask) {
     case thread.current_slot() of {
         Some(current) -> ({ thread.arm_notification(current, mask); });
@@ -214,6 +241,9 @@ export i32 wait_notification(i32 sp, i32 mask, i32 *notification_out) {
         *notification_out = ready;
         return sp;
     }
+    // The frame gets its result before anything can wake it; the wake's
+    // replaces it (syscall.DispatchOutcome.parked).
+    irq_frame.set_syscall_return(sp, SyscallStatus::Ok, 0);
     thread.block_notification(current, mask);
     return reschedule(sp);
 }
@@ -235,12 +265,33 @@ export void notify_pid(Pid pid, i32 mask) {
 }
 
 /** @param mask Notification bits broadcast to every TCB that armed them. */
-export void notify_armed(i32 mask) {
-    i32 i = 0;
-    while (i < thread.high_water()) {
-        thread.notify(i, mask);
-        i++;
+export void notify_armed(i32 mask) { thread.notify_all(mask); }
+
+/**
+ * Waits, on the current kernel thread's own stack, until one of the bits
+ * arrives or the deadline passes. Bits that arrived since the thread armed
+ * them (arm_notification) return at once, so a loop that arms before it looks
+ * at its queues loses nothing raised while it looked.
+ * @param mask Notification bits to wait for.
+ * @param deadline Absolute tick at which to give up, or zero for none.
+ * @return The bits that arrived, or zero when the deadline came first.
+ */
+@safe
+export i32 await_notification(i32 mask, i32 deadline) {
+    i32 current = case thread.current_slot() of {
+        Some(slot) -> slot;
+        None -> ({ return 0; });
+    };
+    {
+        bool was_enabled = irq.save_disable();
+        defer irq.restore(was_enabled);
+        i32 ready = thread.take_notification(current, mask);
+        if (ready) { return ready; }
+        if (deadline != 0 && deadline <= g_irq_count) { return 0; }
+        thread.block_notification_until(current, mask, deadline);
     }
+    while (thread.blocked(current)) { wfi_cpu(); }
+    return thread.take_wake_result(current);
 }
 
 /**
@@ -310,6 +361,7 @@ export void init() {
     g_idle_ticks = 0;
     g_kernel_ticks = 0;
     deferred_cleanup_slot = None;
+    g_idle_epoch = None;
 
     i32 idle_bytes = 8192;
     i32 idle_stack = case heap.alloc(idle_bytes) of {

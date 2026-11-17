@@ -59,10 +59,28 @@ export struct SleepWait {
 /**
  * Notification wait registration stored in a Blocked TCB.
  * @property mask Bit set accepted by the waiter.
+ * @property deadline_tick Tick at which the wait gives up with no bits, or zero for none.
+ * @property syscall The waiter is in a syscall, so its result goes to the saved frame;
+ *   a kernel thread waits on its own stack and reads it with take_wake_result.
  */
 export struct NotificationWait {
     i32 mask;
+    i32 deadline_tick;
+    bool syscall;
 };
+
+/**
+ * Notification bits raised by the kernel for kernel threads. A thread's bits
+ * are shared with the app transport's TransportSignal (1, 2, 4) and the OS's
+ * ProcessSignal (8, 16), so these start above them.
+ */
+export enum KernelSignal {
+    INPUT = 32,          // the keyboard or mouse queue got an event
+    PROCESS_ENDED = 64,  // a process became a Zombie
+    SERIAL = 128,        // the serial input queue got a character
+    SERVICE = 256,       // the OS queued work for a kernel thread's own loop
+    AUTOMATION = 512,    // the host posted a request on the automation bridge
+}
 
 /**
  * Join registration stored in the waiting TCB.
@@ -197,6 +215,14 @@ export void set_current_slot(i32 slot) { g_current_thread_slot = slot; }
 // leaves it standing; the scan it brings about only finds nothing to do.
 i32 g_next_due = 0;
 
+// Counts the times a TCB became Runnable from outside the scheduler's own
+// switch-out: published, woken, timed out. While it holds still, a scheduler
+// that found nothing to run need not look again.
+i32 g_ready_epoch = 0;
+
+/** @return How many times a TCB has been made Runnable by a wake or a publish. */
+export i32 ready_epoch() { return g_ready_epoch; }
+
 // Keeps `tick` if it comes before every deadline noted so far.
 void note_due(i32 tick) {
     if (g_next_due == 0 || tick < g_next_due) { g_next_due = tick; }
@@ -232,6 +258,7 @@ export Option<i32> find_free_slot() {
  * @param value Complete TCB value whose resources are ready for scheduling.
  */
 void publish_at(i32 slot, Thread value) {
+    g_ready_epoch++;
     Option<Thread> entry = Some(value);
     g_threads[slot] = entry;
     if (slot >= g_thread_slot_high_water) {
@@ -540,7 +567,25 @@ export i32 take_notification(i32 slot, i32 mask) {
  */
 export void block_notification(i32 slot, i32 mask) {
     if (!occupied(slot)) { return; }
-    NotificationWait wait = NotificationWait { mask: mask };
+    NotificationWait wait = NotificationWait { mask: mask, deadline_tick: 0, syscall: true };
+    case g_threads[slot] of {
+        Some(t) -> ({ t.state = ThreadState::Blocked(WaitReason::Notification(wait)); });
+        None -> _;
+    };
+}
+
+/**
+ * Blocks a kernel thread, waiting on its own stack, until a requested bit is
+ * delivered or the deadline passes. take_wake_result tells which: the bits,
+ * or zero for the deadline.
+ * @param slot Occupied global TCB table index.
+ * @param mask Notification bits accepted by the waiter.
+ * @param deadline Absolute tick at which to give up, or zero for none.
+ */
+export void block_notification_until(i32 slot, i32 mask, i32 deadline) {
+    if (!occupied(slot)) { return; }
+    if (deadline != 0) { note_due(deadline); }
+    NotificationWait wait = NotificationWait { mask: mask, deadline_tick: deadline, syscall: false };
     case g_threads[slot] of {
         Some(t) -> ({ t.state = ThreadState::Blocked(WaitReason::Notification(wait)); });
         None -> _;
@@ -568,8 +613,9 @@ export void notify(i32 slot, i32 mask) {
                                     t.notification_pending = t.notification_pending & (~reason);
                                     t.notification_armed = t.notification_armed & (~wait.mask);
                                     t.state = ThreadState::Runnable;
+                                    g_ready_epoch++;
                                     t.wake_result = reason;
-                                    if (t.saved_kernel_sp != 0) {
+                                    if (wait.syscall && t.saved_kernel_sp != 0) {
                                         irq_frame.set_syscall_return(t.saved_kernel_sp, SyscallStatus::Ok, reason);
                                     }
                                 }
@@ -582,6 +628,35 @@ export void notify(i32 slot, i32 mask) {
             }
         });
         None -> _;
+    };
+}
+
+/**
+ * Delivers notification bits to every TCB that armed them.
+ * @param mask Notification bits produced by the event source.
+ */
+export void notify_all(i32 mask) {
+    i32 slot = 0;
+    while (slot < g_thread_slot_high_water) {
+        notify(slot, mask);
+        slot++;
+    }
+}
+
+/**
+ * Reads and clears what woke a kernel thread from block_notification_until.
+ * @param slot Occupied global TCB table index.
+ * @return The delivered bits, or zero when the deadline passed first.
+ */
+export i32 take_wake_result(i32 slot) {
+    if (!occupied(slot)) { return 0; }
+    return case g_threads[slot] of {
+        Some(t) -> ({
+            i32 result = t.wake_result;
+            t.wake_result = 0;
+            result;
+        });
+        None -> 0;
     };
 }
 
@@ -848,6 +923,7 @@ void wake_joiner(i32 target_slot, i32 code) {
                                             irq_frame.set_syscall_return(waiter.saved_kernel_sp, SyscallStatus::Ok, code);
                                         }
                                         waiter.state = ThreadState::Runnable;
+                                        g_ready_epoch++;
                                     });
                                     _ -> _;
                                     };
@@ -887,6 +963,7 @@ export void finish_process_exit(Pid pid) {
     }
     process.clear_owned_resources(pid);
     process.finish_exit(pid);
+    notify_all(KernelSignal::PROCESS_ENDED);
 }
 
 /**
@@ -1086,6 +1163,7 @@ export Result<i32, ThreadError> futex_wake(i32 addr, i32 count) {
                     irq_frame.set_syscall_return(t.saved_kernel_sp, SyscallStatus::Ok, 0);
                 }
                 t.state = ThreadState::Runnable;
+                g_ready_epoch++;
             });
             None -> _;
         };
@@ -1095,8 +1173,9 @@ export Result<i32, ThreadError> futex_wake(i32 addr, i32 count) {
 }
 
 /**
- * Wakes the TCBs whose sleep or futex timeout falls due by `now`: a sleeper
- * becomes Runnable, a futex waiter Runnable with TimedOut. Most calls find
+ * Wakes the TCBs whose sleep, futex or notification deadline falls due by
+ * `now`: a sleeper becomes Runnable, a futex waiter Runnable with TimedOut,
+ * a notification waiter Runnable with no bits. Most calls find
  * nothing due and return before looking at a slot; the others look at each
  * slot once, and note the next deadline still to come.
  * @param now Current scheduler tick.
@@ -1112,7 +1191,10 @@ export void wake_due(i32 now) {
                     Blocked(reason) -> ({
                         case reason of {
                             Sleep(wait) -> ({
-                                if (wait.deadline_tick <= now) { t.state = ThreadState::Runnable; }
+                                if (wait.deadline_tick <= now) {
+                                    t.state = ThreadState::Runnable;
+                                    g_ready_epoch++;
+                                }
                                 else { note_due(wait.deadline_tick); }
                             });
                             Futex(wait) -> ({
@@ -1122,6 +1204,20 @@ export void wake_due(i32 now) {
                                         irq_frame.set_syscall_return(t.saved_kernel_sp, SyscallStatus::TimedOut, wait.addr);
                                     }
                                     t.state = ThreadState::Runnable;
+                                    g_ready_epoch++;
+                                } else if (wait.deadline_tick != 0) {
+                                    note_due(wait.deadline_tick);
+                                }
+                            });
+                            Notification(wait) -> ({
+                                if (wait.deadline_tick != 0 && wait.deadline_tick <= now) {
+                                    t.notification_armed = t.notification_armed & (~wait.mask);
+                                    t.wake_result = 0;
+                                    if (wait.syscall && t.saved_kernel_sp != 0) {
+                                        irq_frame.set_syscall_return(t.saved_kernel_sp, SyscallStatus::Ok, 0);
+                                    }
+                                    t.state = ThreadState::Runnable;
+                                    g_ready_epoch++;
                                 } else if (wait.deadline_tick != 0) {
                                     note_due(wait.deadline_tick);
                                 }

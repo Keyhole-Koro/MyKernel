@@ -45,12 +45,33 @@ export enum SyscallError {
  * @property next_sp Stack pointer of the context IRQ dispatch should resume.
  * @property status SyscallStatus written to the user's r1 register.
  * @property value Success value or error payload written to the user's r2 register.
+ * @property parked The caller blocked. Its frame got a result before it did,
+ *   and whatever wakes it writes the real one there, maybe before dispatch
+ *   returns: IRQ dispatch must not write status and value over it.
  */
 export struct DispatchOutcome {
     i32 next_sp;
     SyscallStatus status;
     i32 value;
+    bool parked;
 };
+
+/**
+ * Blocks the caller, which has just been put in a waiting state: its frame
+ * gets Ok and zero first, then the scheduler runs, and a wake -- even one in
+ * this very reschedule, such as a joined thread's cleanup -- replaces them.
+ * @param sp Caller's saved syscall frame.
+ * @return The outcome to resume with.
+ */
+DispatchOutcome parked(i32 sp) {
+    irq_frame.set_syscall_return(sp, SyscallStatus::Ok, 0);
+    DispatchOutcome outcome;
+    outcome.status = SyscallStatus::Ok;
+    outcome.value = 0;
+    outcome.parked = true;
+    outcome.next_sp = scheduler.reschedule(sp);
+    return outcome;
+}
 
 /**
  * Converts a typed kernel syscall error into its stable positive status.
@@ -77,6 +98,7 @@ export SyscallStatus error_status(SyscallError error) {
  */
 DispatchOutcome thread_error_outcome(i32 sp, ThreadError error) {
     DispatchOutcome outcome;
+    outcome.parked = false;
     outcome.next_sp = sp;
     case error of {
         ThreadError::NoFreeSlot -> ({ outcome.status = SyscallStatus::NoFreeThreadSlot; outcome.value = 0; });
@@ -103,6 +125,7 @@ DispatchOutcome thread_error_outcome(i32 sp, ThreadError error) {
  */
 DispatchOutcome thread_result(i32 sp, Result<i32, ThreadError> result) {
     DispatchOutcome outcome;
+    outcome.parked = false;
     outcome.next_sp = sp;
     case result of {
         Ok(value) -> ({
@@ -398,6 +421,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
  */
 Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, SyscallError> result) {
     DispatchOutcome outcome;
+    outcome.parked = false;
     outcome.next_sp = sp;
     case result of {
         Ok(value) -> ({
@@ -427,6 +451,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::EXIT) {
         sys_exit(arg1);
         DispatchOutcome outcome;
+        outcome.parked = false;
         outcome.next_sp = scheduler.reschedule(sp);
         outcome.status = SyscallStatus::Ok;
         outcome.value = 0;
@@ -446,6 +471,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     }
     if (sys_nr == Syscall::YIELD) {
         DispatchOutcome outcome;
+        outcome.parked = false;
         outcome.next_sp = scheduler.yield_until_tick(sp);
         outcome.status = SyscallStatus::Ok;
         outcome.value = 0;
@@ -462,6 +488,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         };
         Result<i32, OsServiceError> result = g_os_handler(pid, arg1, UserAddress(arg2));
         DispatchOutcome outcome;
+        outcome.parked = false;
         outcome.next_sp = sp;
         case result of {
             Ok(value) -> ({
@@ -481,6 +508,8 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
         outcome.next_sp = scheduler.wait_notification(sp, arg1, &notification);
         outcome.status = SyscallStatus::Ok;
         outcome.value = notification;
+        // Nothing was ready, so it blocked (wait_notification parked the frame).
+        outcome.parked = arg1 != 0 && notification == 0;
         return Ok(outcome);
     }
     if (sys_nr == Syscall::THREAD_SPAWN) {
@@ -490,6 +519,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::THREAD_EXIT) {
         thread.exit_current_thread(arg1);
         DispatchOutcome outcome;
+        outcome.parked = false;
         outcome.next_sp = scheduler.reschedule(sp);
         outcome.status = SyscallStatus::Ok;
         outcome.value = 0;
@@ -498,6 +528,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::THREAD_JOIN) {
         Result<JoinOutcome, ThreadError> joined = thread.join_thread(arg1);
         DispatchOutcome outcome;
+        outcome.parked = false;
         outcome.next_sp = sp;
         outcome.status = SyscallStatus::Ok;
         outcome.value = 0;
@@ -505,7 +536,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
             Ok(join_outcome) -> ({
                 case join_outcome of {
                     JoinOutcome::Completed(code) -> ({ outcome.value = code; });
-                    JoinOutcome::Waiting -> ({ outcome.next_sp = scheduler.reschedule(sp); });
+                    JoinOutcome::Waiting -> ({ return Ok(parked(sp)); });
                 };
             });
             Err(error) -> ({ return Ok(thread_error_outcome(sp, error)); });
@@ -522,11 +553,12 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     if (sys_nr == Syscall::FUTEX_WAIT) {
         Result<bool, ThreadError> waited = thread.futex_wait(arg1, arg2, arg3, scheduler.ticks());
         DispatchOutcome outcome;
+        outcome.parked = false;
         outcome.next_sp = sp;
         outcome.status = SyscallStatus::Ok;
         outcome.value = 0;
         case waited of {
-            Ok(immediate) -> ({ if (!immediate) { outcome.next_sp = scheduler.reschedule(sp); } });
+            Ok(immediate) -> ({ if (!immediate) { return Ok(parked(sp)); } });
             Err(error) -> ({ return Ok(thread_error_outcome(sp, error)); });
         };
         return Ok(outcome);

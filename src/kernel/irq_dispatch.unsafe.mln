@@ -8,6 +8,7 @@ import keyboard from "@kernel/io/keyboard.mln";
 import debug from "@kernel/debug/debug.mln";
 import process from "process.mln";
 import thread from "thread.mln";
+import { KernelSignal } from "thread.mln";
 import syscall from "syscall.mln";
 import irq from "@kernel/arch/irq.mln";
 import irq_frame from "@kernel/arch/irq_frame.mln";
@@ -37,6 +38,8 @@ i32 IRQ_CAUSE_PRIVILEGE_VIOLATION = 64;
 i32 IRQ_CAUSE_KEYBOARD = 128;
 /** Bit mask for illegal-instruction traps raised from user mode. */
 i32 IRQ_CAUSE_ILLEGAL_INSTRUCTION = 256;
+/** Bit mask for a request the host posted on the automation bridge. */
+i32 IRQ_CAUSE_AUTOMATION = 512;
 
 /**
  * Top-level hardware interrupt entry point called from the vector table.
@@ -68,6 +71,7 @@ export void dispatch(i32 sp) {
             i32 c = serial.read_rx();
             serial.input_push(c);
         }
+        thread.notify_all(KernelSignal::SERIAL);
     }
 
     if (cause & IRQ_CAUSE_MOUSE) {
@@ -76,6 +80,14 @@ export void dispatch(i32 sp) {
 
     if (cause & IRQ_CAUSE_KEYBOARD) {
         keyboard.drain_hw();
+    }
+
+    if (cause & (IRQ_CAUSE_MOUSE | IRQ_CAUSE_KEYBOARD)) {
+        thread.notify_all(KernelSignal::INPUT);
+    }
+
+    if (cause & IRQ_CAUSE_AUTOMATION) {
+        thread.notify_all(KernelSignal::AUTOMATION);
     }
 
     // Handle synchronous traps first
@@ -131,7 +143,7 @@ export void dispatch(i32 sp) {
     if (cause & IRQ_CAUSE_SYSCALL) {
         case syscall.dispatch(sp) of {
             Ok(outcome) -> ({
-                irq_frame.set_syscall_return(sp, outcome.status, outcome.value);
+                if (!outcome.parked) { irq_frame.set_syscall_return(sp, outcome.status, outcome.value); }
                 sp = outcome.next_sp;
             });
             Err(error) -> ({ irq_frame.set_syscall_return(sp, syscall.error_status(error), 0); });
