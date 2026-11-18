@@ -181,6 +181,12 @@ i32 allocate_tid() {
     return 0;
 }
 
+// The earliest tick at which a sleep, a futex timeout or a notification
+// deadline falls due, or None when no thread waits on one. A wait that ends
+// sooner (a notification, a futex wake) leaves it standing; the scan it brings
+// about only finds nothing to do.
+Option<i32> g_next_due;
+
 /** Clears the TCB table and resets thread, scheduler-slot, and wait IDs. */
 export void init() {
     i32 i = 0;
@@ -193,6 +199,7 @@ export void init() {
     g_next_tid = 1;
     g_current_thread_slot = -1;
     g_next_wait_sequence = 1;
+    g_next_due = None;
 }
 
 /** @return One past the highest TCB slot that may currently be occupied. */
@@ -210,11 +217,6 @@ export Option<i32> current_slot() {
  */
 export void set_current_slot(i32 slot) { g_current_thread_slot = slot; }
 
-// The earliest tick at which a sleep or a futex timeout falls due, or 0 when no
-// thread waits on one. A wait that ends sooner (a notification, a futex wake)
-// leaves it standing; the scan it brings about only finds nothing to do.
-i32 g_next_due = 0;
-
 // Counts the times a TCB became Runnable from outside the scheduler's own
 // switch-out: published, woken, timed out. While it holds still, a scheduler
 // that found nothing to run need not look again.
@@ -225,8 +227,14 @@ export i32 ready_epoch() { return g_ready_epoch; }
 
 // Keeps `tick` if it comes before every deadline noted so far.
 void note_due(i32 tick) {
-    if (g_next_due == 0 || tick < g_next_due) { g_next_due = tick; }
+    bool sooner = case g_next_due of { Some(due) -> tick < due; None -> true; };
+    if (sooner) { g_next_due = Some(tick); }
 }
+
+/** @return The earliest tick a sleep, futex timeout or notification deadline
+ * may fall due at, or None when no thread waits on one. It may come and wake
+ * nobody, when the wait ended sooner. */
+export Option<i32> next_due() { return g_next_due; }
 
 /** Records that the idle fallback context is executing. */
 export void set_idle() { g_current_thread_slot = -1; }
@@ -1181,8 +1189,9 @@ export Result<i32, ThreadError> futex_wake(i32 addr, i32 count) {
  * @param now Current scheduler tick.
  */
 export void wake_due(i32 now) {
-    if (g_next_due == 0 || now < g_next_due) { return; }
-    g_next_due = 0;
+    bool due = case g_next_due of { Some(tick) -> tick <= now; None -> false; };
+    if (!due) { return; }
+    g_next_due = None;
     i32 slot = 0;
     while (slot < g_thread_slot_high_water) {
         case g_threads[slot] of {

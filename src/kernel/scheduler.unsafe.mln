@@ -20,6 +20,8 @@ export enum SchedulerError {
     TaskSlotFull,
 }
 
+// Scheduler ticks since init: the timer's count less its count then. Each
+// timer interrupt brings it up to the count, and so does the end of a hold.
 i32 g_irq_count = 0;
 i32 g_idle_ticks = 0;
 i32 g_kernel_ticks = 0;
@@ -31,10 +33,72 @@ Option<i32> deferred_cleanup_slot;
 Option<i32> g_idle_epoch;
 i32 MMU_PDBR_ADDR = 0x24000104;
 i32 KERNEL_SP_ADDR = 0x24000110;
+// The timer. Read: its ticks so far. Write: the tick to interrupt next at, the
+// ticks before it passing without an interrupt; 0 for every tick.
+i32 TIMER_ADDR = 0x24000088;
+// The timer's count when the scheduler started.
+i32 g_timer_base = 0;
+// The timer holds its interrupts back until a wake tick: idle set one, having
+// nothing to do before it (hold_until_due).
+bool g_held = false;
+// A wake tick for a hold with no deadline to wake for: 2^30 ticks, 12 days at
+// the usual 1 ms tick.
+i32 HOLD_LONGEST = 0x40000000;
 
-/** Runs the non-returning WFI fallback context while no TCB is runnable. */
+/**
+ * Runs the non-returning WFI fallback context while no TCB is runnable. Each
+ * time it is about to wait, it holds the timer's interrupts back until the next
+ * deadline: no tick before it has anything to do.
+ */
 void idle_main() {
-    while (1) { wfi_cpu(); }
+    while (1) {
+        hold_until_due();
+        wfi_cpu();
+    }
+}
+
+/** @return The timer's count, as scheduler ticks since init. */
+i32 timer_ticks() { return mem.read_word(TIMER_ADDR) - g_timer_base; }
+
+/**
+ * Ends a hold, if one is set: the timer interrupts at every tick again, and
+ * the ticks it held back are counted. Nothing ran during them, so they are idle.
+ */
+void release_hold() {
+    if (!g_held) { return; }
+    g_held = false;
+    mem.write_word(TIMER_ADDR, 0);
+    i32 now = timer_ticks();
+    i32 passed = now - g_irq_count;
+    if (passed > 0) {
+        g_idle_ticks = g_idle_ticks + passed;
+        g_irq_count = now;
+    }
+}
+
+/**
+ * Called by idle before it waits: holds the timer's interrupts back until the
+ * earliest deadline a sleep, a futex timeout or a notification wait has, or
+ * for good when none has one. An interrupt that wakes a thread before then
+ * ends the hold (resume_after_interrupt), and so does the wake tick (tick).
+ */
+void hold_until_due() {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
+    release_hold();
+    // The thread the last switch retired is cleaned up, and its joiner woken,
+    // by the next reschedule: that has to come at the next tick.
+    case deferred_cleanup_slot of {
+        Some(_) -> ({ return; });
+        None -> _;
+    };
+    i32 wake = case thread.next_due() of {
+        Some(due) -> due;
+        None -> g_irq_count + HOLD_LONGEST;
+    };
+    if (wake - g_irq_count <= 1) { return; }
+    mem.write_word(TIMER_ADDR, wake + g_timer_base);
+    g_held = true;
 }
 
 /** @return Scheduler timer-tick count used by sleep and futex deadlines. */
@@ -108,12 +172,43 @@ void install_kernel_space() {
 
 /**
  * Advances scheduler time and chooses the context to resume after a timer IRQ.
+ * Each tick is charged to what it interrupted; the ticks a hold kept back, to
+ * idle. More than one tick can pass between two interrupts when interrupts
+ * were off across a tick.
  * @param sp Saved interrupt-frame SP of the interrupted context.
  * @return Saved kernel SP of the next TCB, or the idle frame when none is runnable.
  */
 export i32 tick(i32 sp) {
-    g_irq_count++;
-    account_tick();
+    i32 now = timer_ticks();
+    i32 passed = now - g_irq_count;
+    g_irq_count = now;
+    if (g_held) {
+        // The wake tick: it ended the hold. Every tick interrupts again.
+        g_held = false;
+        mem.write_word(TIMER_ADDR, 0);
+        if (passed > 1) { g_idle_ticks = g_idle_ticks + passed - 1; }
+        if (passed > 0) { account_tick(); }
+    } else {
+        i32 i = 0;
+        while (i < passed) {
+            account_tick();
+            i++;
+        }
+    }
+    return reschedule(sp);
+}
+
+/**
+ * After an interrupt other than the timer's: one that found the CPU idle with
+ * the timer held, and woke a thread, switches to that thread now. Without a
+ * hold the next tick, at most one period away, does it.
+ * @param sp Saved interrupt-frame SP of the interrupted context.
+ * @return Saved kernel SP of the context to resume.
+ */
+export i32 resume_after_interrupt(i32 sp) {
+    if (!g_held) { return sp; }
+    bool unchanged = case g_idle_epoch of { Some(epoch) -> epoch == thread.ready_epoch(); None -> false; };
+    if (unchanged) { return sp; }
     return reschedule(sp);
 }
 
@@ -125,6 +220,8 @@ export i32 tick(i32 sp) {
  */
 export i32 reschedule(i32 sp) {
     if (!g_initialized) { return sp; }
+    // The clock first: the deadlines below are compared with it.
+    release_hold();
 
     // Save the context being left before anything can wake a thread: a wake
     // writes its result into the waiter's saved frame, and when the waiter is
@@ -357,6 +454,9 @@ export Result<i32, SchedulerError> spawn_kernel_thread(fn() -> void entry, i32 s
 /** Initializes the TCB table and creates the scheduler's boot and idle contexts. */
 export void init() {
     thread.init();
+    mem.write_word(TIMER_ADDR, 0);
+    g_held = false;
+    g_timer_base = mem.read_word(TIMER_ADDR);
     g_irq_count = 0;
     g_idle_ticks = 0;
     g_kernel_ticks = 0;

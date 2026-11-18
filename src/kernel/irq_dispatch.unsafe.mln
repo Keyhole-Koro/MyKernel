@@ -152,6 +152,8 @@ export void dispatch(i32 sp) {
 
     if (cause & IRQ_CAUSE_TIMER) {
         sp = scheduler.tick(sp);
+    } else {
+        sp = scheduler.resume_after_interrupt(sp);
     }
 
     irq.leave_handler(was_enabled);
