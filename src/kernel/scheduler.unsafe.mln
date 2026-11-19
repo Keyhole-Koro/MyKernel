@@ -20,11 +20,9 @@ export enum SchedulerError {
     TaskSlotFull,
 }
 
-// Scheduler ticks since init: the timer's count less its count then. Each
-// timer interrupt brings it up to the count, and so does the end of a hold.
+// Scheduler ticks since init: the ticks the timer's clock has passed. Each
+// timer interrupt brings it up to the clock, and so does the end of a hold.
 i32 g_irq_count = 0;
-i32 g_idle_ticks = 0;
-i32 g_kernel_ticks = 0;
 bool g_initialized = false;
 i32 idle_sp = 0;
 Option<i32> deferred_cleanup_slot;
@@ -33,17 +31,31 @@ Option<i32> deferred_cleanup_slot;
 Option<i32> g_idle_epoch;
 i32 MMU_PDBR_ADDR = 0x24000104;
 i32 KERNEL_SP_ADDR = 0x24000110;
-// The timer. Read: its ticks so far. Write: the tick to interrupt next at, the
-// ticks before it passing without an interrupt; 0 for every tick.
+// The timer, a clock of 256 units a tick. Read: the ticks so far in the high
+// 24 bits, how far the current tick has got in the low 8; it wraps at 2^24
+// ticks. Write: a clock value to interrupt next at, the ticks before it
+// passing without an interrupt; 0 for every tick.
 i32 TIMER_ADDR = 0x24000088;
-// The timer's count when the scheduler started.
-i32 g_timer_base = 0;
+i32 CLOCK_SHIFT = 8;
+i32 CLOCK_TICK_MASK = 0xFFFFFF;
+// The clock's ticks when g_irq_count last caught up with them.
+i32 g_clock_ticks = 0;
 // The timer holds its interrupts back until a wake tick: idle set one, having
 // nothing to do before it (hold_until_due).
 bool g_held = false;
-// A wake tick for a hold with no deadline to wake for: 2^30 ticks, 12 days at
-// the usual 1 ms tick.
-i32 HOLD_LONGEST = 0x40000000;
+// The furthest a hold reaches, and the wake tick of one with no deadline to
+// wake for: 2^22 ticks, 70 minutes at the usual 1 ms tick. The clock's 2^24
+// ticks tell a tick ahead from one behind only within half of them.
+i32 HOLD_LONGEST = 0x400000;
+
+// Where the CPU's time went, in clock units: the clock when the scheduler
+// started, the clock up to which time has been charged, and what the time
+// since then belongs to -- a thread's slot, or None for idle.
+i32 g_clock_base = 0;
+i32 g_clock_charged = 0;
+Option<i32> g_charge_to;
+i32 g_idle_time = 0;
+i32 g_kernel_time = 0;
 
 /**
  * Runs the non-returning WFI fallback context while no TCB is runnable. Each
@@ -57,23 +69,67 @@ void idle_main() {
     }
 }
 
-/** @return The timer's count, as scheduler ticks since init. */
-i32 timer_ticks() { return mem.read_word(TIMER_ADDR) - g_timer_base; }
+/** Brings g_irq_count up to the ticks the timer's clock has passed. */
+void catch_up_ticks() {
+    i32 now = (mem.read_word(TIMER_ADDR) >> CLOCK_SHIFT) & CLOCK_TICK_MASK;
+    g_irq_count = g_irq_count + ((now - g_clock_ticks) & CLOCK_TICK_MASK);
+    g_clock_ticks = now;
+}
 
 /**
  * Ends a hold, if one is set: the timer interrupts at every tick again, and
- * the ticks it held back are counted. Nothing ran during them, so they are idle.
+ * the ticks it held back are counted. Their time was idle's, which charge_elapsed
+ * gives it, idle being what it is charged to.
  */
 void release_hold() {
     if (!g_held) { return; }
     g_held = false;
     mem.write_word(TIMER_ADDR, 0);
-    i32 now = timer_ticks();
-    i32 passed = now - g_irq_count;
-    if (passed > 0) {
-        g_idle_ticks = g_idle_ticks + passed;
-        g_irq_count = now;
-    }
+    catch_up_ticks();
+}
+
+/**
+ * Charges `spent` to what the time since the last charge belongs to: the
+ * process of a user thread, the kernel for a kernel thread, idle for none.
+ * @param spent Timer clock units.
+ */
+export void charge(i32 spent) {
+    case g_charge_to of {
+        Some(slot) -> ({
+            case thread.owner_pid_at(slot) of {
+                Some(pid) -> ({ process.charge_time(pid, spent); });
+                None -> ({ g_kernel_time = g_kernel_time + spent; });
+            };
+        });
+        None -> ({ g_idle_time = g_idle_time + spent; });
+    };
+}
+
+/** Charges the time up to the clock to what it belongs to. */
+export void charge_elapsed() {
+    i32 now = mem.read_word(TIMER_ADDR);
+    charge(now - g_clock_charged);
+    g_clock_charged = now;
+}
+
+/**
+ * Says what the time from the last charge on belongs to: the scheduler sets
+ * it when it switches, and a kernel thread hands its time to idle while it
+ * waits in WFI.
+ * @param context A thread's slot, or None for idle.
+ */
+export void charge_to(Option<i32> context) { g_charge_to = context; }
+
+/**
+ * A kernel thread that waited in WFI runs again: the wait was idle's, unless
+ * a switch away and back already says otherwise, and its time is its own.
+ * @param slot The thread.
+ */
+void charge_resumed(i32 slot) {
+    bool was_enabled = irq.save_disable();
+    defer irq.restore(was_enabled);
+    charge_elapsed();
+    charge_to(Some(slot));
 }
 
 /**
@@ -92,12 +148,15 @@ void hold_until_due() {
         Some(_) -> ({ return; });
         None -> _;
     };
-    i32 wake = case thread.next_due() of {
-        Some(due) -> due;
-        None -> g_irq_count + HOLD_LONGEST;
+    catch_up_ticks();
+    i32 ahead = case thread.next_due() of {
+        Some(due) -> due - g_irq_count;
+        None -> HOLD_LONGEST;
     };
-    if (wake - g_irq_count <= 1) { return; }
-    mem.write_word(TIMER_ADDR, wake + g_timer_base);
+    if (ahead <= 1) { return; }
+    if (ahead > HOLD_LONGEST) { ahead = HOLD_LONGEST; }
+    // The clock at the wake tick; the tick wraps with the clock.
+    mem.write_word(TIMER_ADDR, (g_clock_ticks + ahead) << CLOCK_SHIFT);
     g_held = true;
 }
 
@@ -105,35 +164,20 @@ void hold_until_due() {
 @safe
 export i32 ticks() { return g_irq_count; }
 
-/** @return Ticks that found no thread to run: the CPU waited in the idle context. */
-@safe
-export i32 idle_ticks() { return g_idle_ticks; }
-
-/** @return Ticks that found a kernel thread running: the OS's own work. */
-@safe
-export i32 kernel_ticks() { return g_kernel_ticks; }
-
 /**
- * Charges the tick that just arrived to whatever it interrupted: the process
- * of a user thread, the kernel, or idle. A blocked thread was waiting in WFI
- * for its wake-up (`sleep` waits on its own stack), so its tick is idle. This
- * samples CPU time, so a thread that keeps blocking just before each tick is
- * never charged.
+ * @return Time since the scheduler started, up to the last charge, in timer
+ *         clock units (256 a tick). It wraps, so read differences.
  */
-export void account_tick() {
-    i32 slot = case thread.current_slot() of {
-        Some(value) -> value;
-        None -> ({ g_idle_ticks++; return; });
-    };
-    if (thread.blocked(slot)) {
-        g_idle_ticks++;
-        return;
-    }
-    case thread.owner_pid_at(slot) of {
-        Some(pid) -> ({ process.charge_tick(pid); });
-        None -> ({ g_kernel_ticks++; });
-    };
-}
+@safe
+export i32 cpu_total() { return g_clock_charged - g_clock_base; }
+
+/** @return Clock units with no thread to run, or only a kernel thread waiting in WFI. */
+@safe
+export i32 idle_time() { return g_idle_time; }
+
+/** @return Clock units kernel threads ran: the OS's own work. */
+@safe
+export i32 kernel_time() { return g_kernel_time; }
 
 /**
  * Exposes a stable nonzero execution-context index to the mocking runtime.
@@ -172,28 +216,17 @@ void install_kernel_space() {
 
 /**
  * Advances scheduler time and chooses the context to resume after a timer IRQ.
- * Each tick is charged to what it interrupted; the ticks a hold kept back, to
- * idle. More than one tick can pass between two interrupts when interrupts
- * were off across a tick.
+ * More than one tick can pass between two interrupts: a hold kept them back,
+ * or interrupts were off across a tick.
  * @param sp Saved interrupt-frame SP of the interrupted context.
  * @return Saved kernel SP of the next TCB, or the idle frame when none is runnable.
  */
 export i32 tick(i32 sp) {
-    i32 now = timer_ticks();
-    i32 passed = now - g_irq_count;
-    g_irq_count = now;
+    catch_up_ticks();
     if (g_held) {
         // The wake tick: it ended the hold. Every tick interrupts again.
         g_held = false;
         mem.write_word(TIMER_ADDR, 0);
-        if (passed > 1) { g_idle_ticks = g_idle_ticks + passed - 1; }
-        if (passed > 0) { account_tick(); }
-    } else {
-        i32 i = 0;
-        while (i < passed) {
-            account_tick();
-            i++;
-        }
     }
     return reschedule(sp);
 }
@@ -220,8 +253,10 @@ export i32 resume_after_interrupt(i32 sp) {
  */
 export i32 reschedule(i32 sp) {
     if (!g_initialized) { return sp; }
-    // The clock first: the deadlines below are compared with it.
+    // The clock first: the deadlines below are compared with it, and the time
+    // up to now is what was running's.
     release_hold();
+    charge_elapsed();
 
     // Save the context being left before anything can wake a thread: a wake
     // writes its result into the waiter's saved frame, and when the waiter is
@@ -275,6 +310,7 @@ export i32 reschedule(i32 sp) {
                 None -> ({ install_kernel_space(); });
             };
             thread.make_running(slot);
+            charge_to(Some(slot));
             thread.saved_kernel_sp(slot);
         });
         None -> ({
@@ -283,6 +319,7 @@ export i32 reschedule(i32 sp) {
             // reschedule frees, and idle can now wait for a long time.
             install_kernel_space();
             thread.set_idle();
+            charge_to(None);
             g_idle_epoch = Some(thread.ready_epoch());
             idle_sp;
         });
@@ -386,8 +423,12 @@ export i32 await_notification(i32 mask, i32 deadline) {
         if (ready) { return ready; }
         if (deadline != 0 && deadline <= g_irq_count) { return 0; }
         thread.block_notification_until(current, mask, deadline);
+        // Its time ends here: the wait in WFI is idle's.
+        charge_elapsed();
+        charge_to(None);
     }
     while (thread.blocked(current)) { wfi_cpu(); }
+    charge_resumed(current);
     return thread.take_wake_result(current);
 }
 
@@ -427,8 +468,16 @@ export void sleep(i32 ticks_to_sleep) {
         Some(slot) -> slot;
         None -> ({ return; });
     };
-    thread.sleep_until(current, g_irq_count + ticks_to_sleep);
+    {
+        bool was_enabled = irq.save_disable();
+        defer irq.restore(was_enabled);
+        thread.sleep_until(current, g_irq_count + ticks_to_sleep);
+        // Its time ends here: the wait in WFI is idle's.
+        charge_elapsed();
+        charge_to(None);
+    }
     while (thread.blocked(current)) { wfi_cpu(); }
+    charge_resumed(current);
 }
 
 /**
@@ -456,10 +505,14 @@ export void init() {
     thread.init();
     mem.write_word(TIMER_ADDR, 0);
     g_held = false;
-    g_timer_base = mem.read_word(TIMER_ADDR);
+    i32 clock = mem.read_word(TIMER_ADDR);
+    g_clock_ticks = (clock >> CLOCK_SHIFT) & CLOCK_TICK_MASK;
+    g_clock_base = clock;
+    g_clock_charged = clock;
+    g_charge_to = Some(0); // the boot thread, below
     g_irq_count = 0;
-    g_idle_ticks = 0;
-    g_kernel_ticks = 0;
+    g_idle_time = 0;
+    g_kernel_time = 0;
     deferred_cleanup_slot = None;
     g_idle_epoch = None;
 

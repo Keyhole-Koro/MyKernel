@@ -252,14 +252,14 @@ void terminating_a_process_drops_its_parked_thread() {
 }
 
 /**
- * Each tick goes to what it interrupted: the process of a user thread, the
- * kernel for a kernel thread, idle when nothing ran. A process's pages are
- * its program and its main stack.
+ * Time goes to what was running: the process of a user thread, the kernel for
+ * a kernel thread, idle when nothing ran. A process's pages are its program
+ * and its main stack.
  */
-/*@Test "ticks are charged to what was running" {
+/*@Test "time is charged to what was running" {
     step: 50000000;
 }*/
-void ticks_are_charged_to_what_was_running() {
+void time_is_charged_to_what_was_running() {
     boot();
     i32 image = halt_image();
     Pid pid = case loader.spawn_from_buffer(None, image, 40) of {
@@ -268,28 +268,25 @@ void ticks_are_charged_to_what_was_running() {
     };
     i32 kernel_slot = 0;
     i32 main_slot = 1;
-    assert_eq<i32>(process.cpu_ticks(pid).unwrap_or(-1), 0, "a new process has used no time");
+    assert_eq<i32>(process.cpu_time(pid).unwrap_or(-1), 0, "a new process has used no time");
 
-    thread.set_current_slot(main_slot);
-    scheduler.account_tick();
-    scheduler.account_tick();
-    thread.set_current_slot(kernel_slot);
-    scheduler.account_tick();
-    thread.set_idle();
-    scheduler.account_tick();
-    // A thread waiting for its wake-up in WFI is not running.
-    thread.set_current_slot(kernel_slot);
-    thread.sleep_until(kernel_slot, scheduler.ticks() + 5);
-    scheduler.account_tick();
+    i32 kernel_before = scheduler.kernel_time();
+    i32 idle_before = scheduler.idle_time();
+    scheduler.charge_to(Some(main_slot));
+    scheduler.charge(512);
+    scheduler.charge_to(Some(kernel_slot));
+    scheduler.charge(256);
+    scheduler.charge_to(None);
+    scheduler.charge(300);
 
-    assert_eq<i32>(process.cpu_ticks(pid).unwrap_or(-1), 2, "the process's thread ran for two ticks");
-    assert_eq<i32>(scheduler.kernel_ticks(), 1, "a kernel thread's tick is the kernel's");
-    assert_eq<i32>(scheduler.idle_ticks(), 2, "a tick with nothing running, or a thread waiting, is idle");
+    assert_eq<i32>(process.cpu_time(pid).unwrap_or(-1), 512, "the process's thread ran for two ticks");
+    assert_eq<i32>(scheduler.kernel_time() - kernel_before, 256, "a kernel thread's time is the kernel's");
+    assert_eq<i32>(scheduler.idle_time() - idle_before, 300, "time with nothing running is idle");
 
     i32 pdbr = process.get_pdbr(pid).unwrap_or(0);
     assert_eq<i32>(mmu.count_user_pages(pdbr), 5, "one page of program and four of stack");
     assert_eq<i32>(mmu.count_user_pages(0), 0, "no directory, no pages");
 
     heap.free(image);
-    testkit.pass("ticks are charged to what was running");
+    testkit.pass("time is charged to what was running");
 }
