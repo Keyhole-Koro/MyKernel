@@ -11,6 +11,8 @@ import { ThreadState, JoinOutcome } from "@kernel/kernel/thread.mln";
 import loader from "@kernel/kernel/loader.mln";
 import syscall from "@kernel/kernel/syscall.mln";
 import { SyscallError } from "@kernel/kernel/syscall.mln";
+import serial from "@kernel/io/serial.mln";
+import { UserAddress } from "@std/core/address.mln";
 import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
 import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import { SyscallStatus, SyscallFailure } from "@contracts/myos/syscall.contract.mln";
@@ -340,4 +342,45 @@ void sbrk_stays_below_the_stack_region() {
 
     heap.free(image);
     testkit.pass("sbrk stays below the stack region");
+}
+
+/** @return The byte count a console syscall handed back, or -1 when it failed. */
+i32 console_count(Result<i32, SyscallError> result) {
+    return case result of { Ok(value) -> value; Err(_) -> -1; };
+}
+
+/**
+ * The serial console the kernel starts with reads and writes only the
+ * caller's own user pages: a kernel address moves no bytes either way.
+ */
+/*@Test "the serial console refuses kernel buffers" {
+    step: 50000000;
+}*/
+void the_serial_console_refuses_kernel_buffers() {
+    boot();
+    i32 image = halt_image();
+    Pid pid = case loader.spawn_from_buffer(None, image, 40) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "process creation"); return; });
+    };
+    thread.set_current_slot(1);
+    thread.make_running(1);
+
+    i32 kernel_buf = case heap.alloc(8) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "kernel buffer allocation"); 0; });
+    };
+    mem.write_word(kernel_buf, 0);
+    assert_eq<i32>(console_count(syscall.sys_write(1, UserAddress(kernel_buf), 4)), 0,
+                   "write from a kernel address sends nothing");
+
+    serial.input_push('A');
+    assert_eq<i32>(console_count(syscall.sys_read(0, UserAddress(kernel_buf), 1)), 0,
+                   "read into a kernel address takes nothing");
+    assert_eq<i32>(mem.read_word(kernel_buf), 0, "the kernel buffer is unchanged");
+    serial.read_input();
+
+    heap.free(kernel_buf);
+    heap.free(image);
+    testkit.pass("the serial console refuses kernel buffers");
 }

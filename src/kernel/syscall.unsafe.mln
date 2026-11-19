@@ -171,8 +171,27 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 // MyOS decisions. MyOS replaces these at boot. Until then the console is the
 // serial port, and nothing can be spawned or served.
 
+/**
+ * Whether a whole user buffer lies in pages the process may use as asked.
+ * The kernel's identity mapping is reachable during a syscall, so an
+ * unchecked address could name kernel memory.
+ * @param pid Process that passed the buffer.
+ * @param buf First byte of the buffer.
+ * @param count Buffer length in bytes.
+ * @param required PTE flags every page must carry.
+ * @return true when every page is mapped for the user with required.
+ */
+bool user_buffer_ok(Pid pid, UserAddress buf, i32 count, i32 required) {
+    i32 pdbr = case process.get_pdbr(pid) of {
+        Some(value) -> value;
+        None -> ({ return false; });
+    };
+    return mmu.user_range_has_flags(pdbr, (i32)buf, count, required);
+}
+
 /** The console until MyOS installs its own: every byte goes to the serial port. */
 i32 serial_write(Pid pid, UserAddress buf, i32 count) {
+    if (!user_buffer_ok(pid, buf, count, mmu.PTE_USER)) { return 0; }
     i32 i = 0;
     while (i < count) {
         serial.putc(mem.read_byte((i32)buf.plus(i)));
@@ -183,6 +202,7 @@ i32 serial_write(Pid pid, UserAddress buf, i32 count) {
 
 /** The console until MyOS installs its own: whatever the serial port has waiting. */
 i32 serial_read(Pid pid, UserAddress buf, i32 count) {
+    if (!user_buffer_ok(pid, buf, count, mmu.PTE_USER | mmu.PTE_WRITABLE)) { return 0; }
     i32 i = 0;
     while (i < count) {
         Option<i32> input = serial.read_input();
