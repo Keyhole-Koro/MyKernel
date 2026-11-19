@@ -303,6 +303,31 @@ void process_lifecycle_and_protection() {
     assert_invalid_bounds_error(&bad_size_res, 172);
     debug.println("SUCCESS: InvalidBounds(172) reported correctly!");
 
+    // 2b. A negative offset whose sum with the size still fits would copy
+    // the kernel memory in front of the image into the process.
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf + 12, -4096); // text_offset
+    write_be32_mem(bad_buf + 16, 4096 + 76); // text_size
+    Result<Pid, LoaderError> neg_text_res = loader.spawn_from_buffer(None, bad_buf, 172);
+    assert_invalid_bounds_error(&neg_text_res, 172);
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf + 20, -4096); // data_offset
+    write_be32_mem(bad_buf + 24, 4096 + 64); // data_size
+    Result<Pid, LoaderError> neg_data_res = loader.spawn_from_buffer(None, bad_buf, 172);
+    assert_invalid_bounds_error(&neg_data_res, 172);
+    // 2c. An offset and size whose sum wraps past i32 are refused too, and
+    // so is a negative bss size.
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf + 12, 0x7FFFFFF0); // text_offset
+    write_be32_mem(bad_buf + 16, 0x20); // text_size
+    Result<Pid, LoaderError> wrap_text_res = loader.spawn_from_buffer(None, bad_buf, 172);
+    assert_invalid_bounds_error(&wrap_text_res, 172);
+    init_mbin_user_binary(bad_buf);
+    write_be32_mem(bad_buf + 28, -4096); // bss_size
+    Result<Pid, LoaderError> neg_bss_res = loader.spawn_from_buffer(None, bad_buf, 172);
+    assert_invalid_bounds_error(&neg_bss_res, 172);
+    debug.println("SUCCESS: negative and wrapping segment bounds refused!");
+
     // Prepare MBIN v2 user program binary buffer
     i32 user_code = alloc_or_zero(256);
     debug.printf("user_code buffer: 0x%x\n", user_code);
