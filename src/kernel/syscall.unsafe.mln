@@ -348,6 +348,21 @@ export Result<i32, SyscallError> sys_spawn(UserAddress path) {
 }
 
 /**
+ * Unmaps the heap pages a failed sys_sbrk had mapped and frees their frames.
+ * @param pd Page directory of the process.
+ * @param from First page sys_sbrk mapped.
+ * @param to Page past the last one it mapped.
+ */
+void release_heap_pages(i32 pd, i32 from, i32 to) {
+    i32 rollback = from;
+    while (rollback < to) {
+        i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
+        if (old_frame != 0) { mmu.free_frame(old_frame); }
+        rollback = rollback + 4096;
+    }
+}
+
+/**
  * Adjusts the process's data segment break, allocating and mapping new pages as needed.
  * @param increment Number of bytes to expand the heap by (0 queries current break).
  * @return Ok(prev_brk) with previous heap break on success, or Err(SyscallError) on error.
@@ -397,22 +412,12 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
             Ok(_) -> _;
             Err(MmuError::AllocFailed) -> ({
                 mmu.free_frame(frame);
-                i32 rollback = first_new_page;
-                while (rollback < cur_page) {
-                    i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
-                    if (old_frame != 0) { mmu.free_frame(old_frame); }
-                    rollback = rollback + 4096;
-                }
+                release_heap_pages(pd, first_new_page, cur_page);
                 return Err(SyscallError::OutOfMemory);
             });
             Err(e) -> ({
                 mmu.free_frame(frame);
-                i32 rollback = first_new_page;
-                while (rollback < cur_page) {
-                    i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
-                    if (old_frame != 0) { mmu.free_frame(old_frame); }
-                    rollback = rollback + 4096;
-                }
+                release_heap_pages(pd, first_new_page, cur_page);
                 // InvalidDirectory/UnalignedAddress here mean a kernel
                 // invariant broke: `pd` comes from a live process's pdbr
                 // (always set from a real create_page_directory() success),
