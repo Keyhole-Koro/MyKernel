@@ -121,11 +121,22 @@ export void charge_elapsed() {
 export void charge_to(Option<i32> context) { g_charge_to = context; }
 
 /**
- * A kernel thread that waited in WFI runs again: the wait was idle's, unless
- * a switch away and back already says otherwise, and its time is its own.
- * @param slot The thread.
+ * A kernel thread blocked itself, with interrupts off, to wait in WFI on its
+ * own stack: its time ends here, and the wait is idle's.
  */
-void charge_resumed(i32 slot) {
+void charge_wait() {
+    charge_elapsed();
+    charge_to(None);
+}
+
+/**
+ * Waits in WFI on the current kernel thread's own stack until it is no longer
+ * blocked, then takes its time back: the wait was idle's, unless a switch away
+ * and back already says otherwise.
+ * @param slot The thread, which has blocked itself and called charge_wait.
+ */
+void wait_in_wfi(i32 slot) {
+    while (thread.blocked(slot)) { wfi_cpu(); }
     bool was_enabled = irq.save_disable();
     defer irq.restore(was_enabled);
     charge_elapsed();
@@ -423,12 +434,9 @@ export i32 await_notification(i32 mask, i32 deadline) {
         if (ready) { return ready; }
         if (deadline != 0 && deadline <= g_irq_count) { return 0; }
         thread.block_notification_until(current, mask, deadline);
-        // Its time ends here: the wait in WFI is idle's.
-        charge_elapsed();
-        charge_to(None);
+        charge_wait();
     }
-    while (thread.blocked(current)) { wfi_cpu(); }
-    charge_resumed(current);
+    wait_in_wfi(current);
     return thread.take_wake_result(current);
 }
 
@@ -472,12 +480,9 @@ export void sleep(i32 ticks_to_sleep) {
         bool was_enabled = irq.save_disable();
         defer irq.restore(was_enabled);
         thread.sleep_until(current, g_irq_count + ticks_to_sleep);
-        // Its time ends here: the wait in WFI is idle's.
-        charge_elapsed();
-        charge_to(None);
+        charge_wait();
     }
-    while (thread.blocked(current)) { wfi_cpu(); }
-    charge_resumed(current);
+    wait_in_wfi(current);
 }
 
 /**
