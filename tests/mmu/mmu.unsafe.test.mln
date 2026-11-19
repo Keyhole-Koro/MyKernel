@@ -2,6 +2,7 @@ import debug from "@kernel/debug/debug.mln";
 import heap from "@kernel/mm/heap.mln";
 import mem from "@kernel/mm/mem.mln";
 import mmu from "@kernel/mm/mmu.mln";
+import frames from "@kernel/mm/frames.mln";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { assert_eq } from "@std/testing/assert.mln";
@@ -154,4 +155,44 @@ void mmu_virtual_memory() {
     };
     assert_eq<i32>(refused, 0, "expected Err(KernelRange(0)) for a user page at 1 MB");
 
+}
+
+/** @return The frame frames.alloc handed out; the test fails on None. */
+i32 take_frame(str what) {
+    return case frames.alloc() of {
+        Some(frame) -> frame;
+        None -> ({ assert_eq<i32>(1, 0, what); 0; });
+    };
+}
+
+/*@Test "frame pool hands frames out and back" {
+    step: 50000000;
+}*/
+void frame_pool_hands_frames_out_and_back() {
+    heap.init();
+    i32 before = frames.available();
+    assert_eq<bool>(before > 0 && before <= frames.total(), true, "the pool has free frames");
+
+    i32 a = take_frame("first frame");
+    i32 b = take_frame("second frame");
+    assert_eq<i32>(a & 4095, 0, "frames are page aligned");
+    assert_eq<i32>(b & 4095, 0, "every frame is page aligned");
+    assert_eq<bool>(a != b, true, "two allocations give two frames");
+    assert_eq<i32>(frames.available(), before - 2, "allocations leave fewer free");
+
+    // Anything that was not handed out is refused and changes nothing.
+    assert_eq<bool>(frames.free(a + 4), false, "an unaligned address is refused");
+    assert_eq<bool>(frames.free(0), false, "an address below the pool is refused");
+    assert_eq<bool>(frames.free(frames.POOL_END - 4096), false, "a frame never handed out is refused");
+    assert_eq<bool>(frames.free(frames.POOL_END), false, "the end of the pool is refused");
+    assert_eq<i32>(frames.available(), before - 2, "refused frees change nothing");
+
+    assert_eq<bool>(frames.free(a), true, "a frame handed out is taken back");
+    assert_eq<i32>(frames.available(), before - 1, "a freed frame is free again");
+    assert_eq<i32>(take_frame("reused frame"), a, "the freed frame is handed out next");
+    assert_eq<i32>(frames.available(), before - 2, "reuse takes it off the free list");
+
+    assert_eq<bool>(frames.free(a), true, "first frame back");
+    assert_eq<bool>(frames.free(b), true, "second frame back");
+    assert_eq<i32>(frames.available(), before, "every frame is back");
 }
