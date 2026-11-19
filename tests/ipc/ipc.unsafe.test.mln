@@ -1,0 +1,106 @@
+namespace test_ipc;
+
+import ipc from "@kernel/kernel/ipc.mln";
+import { ChannelId } from "@kernel/kernel/ipc.mln";
+import { Option } from "@std/core/option.mln";
+import { assert_eq } from "@std/testing/assert.mln";
+import testkit from "../../../../toolchain/MyLangTestKit/runtime/testkit.mln";
+
+// The message channels behind the UI protocol: 1-based IDs, a FIFO ring per
+// channel that holds SLOTS - 1 messages, and has() matching words 1 and 2.
+
+i32 g_msg[24];  // ipc.MSG_WORDS
+i32 g_out[24];
+
+/** Fills the outgoing message: word 0 is `tag`, words 1 and 2 the keys. */
+void compose(i32 tag, i32 key1, i32 key2) {
+    i32 i = 0;
+    while (i < ipc.MSG_WORDS) { g_msg[i] = 0; i++; }
+    g_msg[0] = tag;
+    g_msg[1] = key1;
+    g_msg[2] = key2;
+    g_msg[ipc.MSG_WORDS - 1] = tag + 1000;
+}
+
+/** @return The channel ipc.create handed out; the test fails on None. */
+ChannelId new_channel(str what) {
+    return case ipc.create() of {
+        Some(id) -> id;
+        None -> ({ assert_eq<i32>(1, 0, what); return ChannelId(0); });
+    };
+}
+
+/** @return Word 0 of the next message on `ch`, or -1 when none was received. */
+i32 receive_tag(ChannelId ch) {
+    g_out[0] = -1;
+    if (!ipc.recv(ch, &g_out[0])) { return -1; }
+    assert_eq<i32>(g_out[ipc.MSG_WORDS - 1], g_out[0] + 1000, "every word of the message is copied");
+    return g_out[0];
+}
+
+/*@Test "ipc channels queue messages in order" {
+    step: 50000000;
+}*/
+void ipc_channels_queue_messages_in_order() {
+    ChannelId first = new_channel("first channel");
+    ChannelId second = new_channel("second channel");
+    assert_eq<i32>((i32)first, 1, "channel IDs start at 1");
+    assert_eq<i32>((i32)second, 2, "the next channel gets the next ID");
+
+    compose(10, 0, 0);
+    assert_eq<bool>(ipc.send(first, &g_msg[0]), true, "send to a new channel");
+    compose(11, 0, 0);
+    assert_eq<bool>(ipc.send(first, &g_msg[0]), true, "second send");
+    assert_eq<i32>(receive_tag(second), -1, "channels do not share messages");
+    assert_eq<i32>(receive_tag(first), 10, "the oldest message comes first");
+    assert_eq<i32>(receive_tag(first), 11, "then the next one");
+    assert_eq<i32>(receive_tag(first), -1, "an empty channel gives nothing");
+
+    // One slot stays free to tell a full ring from an empty one. The ring
+    // has moved on two slots, so filling it also wraps around its end.
+    i32 i = 0;
+    while (i < 31) {
+        compose(100 + i, 0, 0);
+        assert_eq<bool>(ipc.send(first, &g_msg[0]), true, "a channel holds 31 messages");
+        i++;
+    }
+    compose(999, 0, 0);
+    assert_eq<bool>(ipc.send(first, &g_msg[0]), false, "a full channel refuses the next one");
+    i = 0;
+    while (i < 31) {
+        assert_eq<i32>(receive_tag(first), 100 + i, "a full ring drains in order");
+        i++;
+    }
+    assert_eq<i32>(receive_tag(first), -1, "the refused message was not queued");
+
+    testkit.pass("ipc channels queue messages in order");
+}
+
+/*@Test "ipc refuses unknown channel IDs and matches keys" {
+    step: 50000000;
+}*/
+void ipc_refuses_unknown_channel_ids_and_matches_keys() {
+    ChannelId ch = new_channel("channel");
+    compose(1, 7, 8);
+
+    assert_eq<bool>(ipc.send(ChannelId(0), &g_msg[0]), false, "ID 0 is refused by send");
+    assert_eq<bool>(ipc.send(ChannelId(41), &g_msg[0]), false, "an ID past the table is refused by send");
+    assert_eq<bool>(ipc.send(ChannelId(-1), &g_msg[0]), false, "a negative ID is refused by send");
+    assert_eq<bool>(ipc.recv(ChannelId(0), &g_out[0]), false, "ID 0 is refused by recv");
+    assert_eq<bool>(ipc.recv(ChannelId(41), &g_out[0]), false, "an ID past the table is refused by recv");
+    assert_eq<bool>(ipc.recv(ChannelId(-1), &g_out[0]), false, "a negative ID is refused by recv");
+    assert_eq<bool>(ipc.has(ChannelId(0), 7, 8), false, "ID 0 is refused by has");
+    assert_eq<bool>(ipc.has(ChannelId(41), 7, 8), false, "an ID past the table is refused by has");
+    assert_eq<bool>(ipc.has(ChannelId(-1), 7, 8), false, "a negative ID is refused by has");
+
+    assert_eq<bool>(ipc.has(ch, 7, 8), false, "an empty channel matches nothing");
+    assert_eq<bool>(ipc.send(ch, &g_msg[0]), true, "send the keyed message");
+    assert_eq<bool>(ipc.has(ch, 7, 8), true, "words 1 and 2 match");
+    assert_eq<bool>(ipc.has(ch, 7, 9), false, "word 2 must match too");
+    assert_eq<bool>(ipc.has(ch, 8, 7), false, "the keys are not interchangeable");
+    assert_eq<bool>(ipc.has(ch, 1, 7), false, "word 0 is not a key");
+    assert_eq<i32>(receive_tag(ch), 1, "receive the keyed message");
+    assert_eq<bool>(ipc.has(ch, 7, 8), false, "a received message no longer matches");
+
+    testkit.pass("ipc refuses unknown channel IDs and matches keys");
+}
