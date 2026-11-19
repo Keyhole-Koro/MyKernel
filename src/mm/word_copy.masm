@@ -1,0 +1,21 @@
+; The kernel's bulk word copy: a file's blocks into a buffer, a program's
+; segments into their pages. Moving a word through mem.read_word and
+; mem.write_word costs two calls, about a hundred instructions; this loop
+; takes six.
+export word_copy
+
+; r5: destination, r6: source, r7: words to copy. Both addresses are
+; word-aligned. Each word is read before it is written, lowest address first,
+; so a destination below the source may overlap it.
+word_copy:
+  cmp r7, r0
+  jg word_copy_loop
+  mov pc, lr
+word_copy_loop:
+  load r1, r6
+  store r5, r1
+  addis r5, 4
+  addis r6, 4
+  addis r7, -1
+  jnz word_copy_loop
+  mov pc, lr

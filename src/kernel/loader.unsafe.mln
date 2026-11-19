@@ -101,10 +101,8 @@ Result<_, LoaderError> map_segment(i32 pd, i32 vaddr_base, i32 src_ptr, i32 size
             if (((src_ptr + offset) & 3) == 0) {
                 // Word copies where the source allows: a byte loop over a
                 // 60 KB image is a visible part of an app's start-up time.
-                while (b + 4 <= chunk) {
-                    mem.write_word(frame + b, mem.read_word(src_ptr + offset + b));
-                    b = b + 4;
-                }
+                mem.copy_words(frame, src_ptr + offset, chunk / 4);
+                b = chunk & ~3;
             }
             while (b < chunk) {
                 i32 byte_val = mem.read_byte(src_ptr + offset + b);

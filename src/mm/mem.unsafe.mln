@@ -1,5 +1,7 @@
 namespace mem;
 
+import { word_copy } from "word_copy.masm";
+
 // Generic word access to an absolute address. Works for RAM (e.g. building task
 // stack frames) and memory-mapped I/O alike; the bus routes by address.
 
@@ -41,4 +43,15 @@ export void write_byte(i32 addr, i32 value) {
 export i32 read_byte(i32 addr) {
     char *p = (char *)addr;
     return (i32)(*p) & 0xFF;
+}
+
+/**
+ * Copies whole words, lowest address first: what a loop of read_word and
+ * write_word does, without two calls a word.
+ * @param dst Word-aligned destination address.
+ * @param src Word-aligned source address; a destination below it may overlap it.
+ * @param words How many words; nothing is copied for zero or less.
+ */
+export void copy_words(i32 dst, i32 src, i32 words) {
+    word_copy(dst, src, words);
 }
