@@ -9,6 +9,8 @@ import scheduler from "@kernel/kernel/scheduler.mln";
 import thread from "@kernel/kernel/thread.mln";
 import { ThreadState, JoinOutcome } from "@kernel/kernel/thread.mln";
 import loader from "@kernel/kernel/loader.mln";
+import syscall from "@kernel/kernel/syscall.mln";
+import { SyscallError } from "@kernel/kernel/syscall.mln";
 import { ThreadSpawnArgs, ThreadError } from "@contracts/process/thread.contract.mln";
 import { Pid, ProcessExitStatus } from "@contracts/process/control.contract.mln";
 import { SyscallStatus, SyscallFailure } from "@contracts/myos/syscall.contract.mln";
@@ -289,4 +291,53 @@ void time_is_charged_to_what_was_running() {
 
     heap.free(image);
     testkit.pass("time is charged to what was running");
+}
+
+/** @return The break sys_sbrk handed back, or -1 when it failed. */
+i32 sbrk_value(Result<i32, SyscallError> result) {
+    return case result of { Ok(value) -> value; Err(_) -> -1; };
+}
+
+/** @return Whether sys_sbrk refused with HeapOverflow. */
+bool sbrk_overflowed(Result<i32, SyscallError> result) {
+    return case result of { Err(SyscallError::HeapOverflow) -> true; _ -> false; };
+}
+
+/**
+ * sys_sbrk grows the heap a page at a time and never past the stack region,
+ * however large the increment: a sum that wraps past i32 is refused too.
+ */
+/*@Test "sbrk stays below the stack region" {
+    step: 50000000;
+}*/
+void sbrk_stays_below_the_stack_region() {
+    boot();
+    i32 image = halt_image();
+    Pid pid = case loader.spawn_from_buffer(None, image, 40) of {
+        Ok(value) -> value;
+        Err(_) -> ({ assert_eq<i32>(1, 0, "process creation"); return; });
+    };
+    thread.set_current_slot(1);
+    thread.make_running(1);
+    i32 pdbr = process.get_pdbr(pid).unwrap_or(0);
+    i32 start = process.get_heap_break(pid).unwrap_or(0);
+
+    assert_eq<i32>(sbrk_value(syscall.sys_sbrk(0)), start, "sbrk(0) returns the break");
+    assert_eq<i32>(sbrk_value(syscall.sys_sbrk(4096)), start, "sbrk returns the old break");
+    i32 grown = process.get_heap_break(pid).unwrap_or(0);
+    assert_eq<i32>(grown, start + 4096, "the break moved by the increment");
+    assert_eq<bool>(mmu.user_range_has_flags(pdbr, start, 4096, mmu.PTE_USER | mmu.PTE_WRITABLE), true,
+                    "the new heap page is mapped for the user");
+
+    assert_eq<i32>(sbrk_value(syscall.sys_sbrk(-4096)), grown, "a negative increment returns the break");
+    assert_eq<i32>(process.get_heap_break(pid).unwrap_or(0), grown, "a negative increment does not move it");
+
+    assert_eq<bool>(sbrk_overflowed(syscall.sys_sbrk(thread.USER_STACK_REGION_BASE - grown)), true,
+                    "reaching the stack region is refused");
+    assert_eq<bool>(sbrk_overflowed(syscall.sys_sbrk(0x7FFFFFFF)), true,
+                    "an increment that wraps is refused");
+    assert_eq<i32>(process.get_heap_break(pid).unwrap_or(0), grown, "refusals leave the break alone");
+
+    heap.free(image);
+    testkit.pass("sbrk stays below the stack region");
 }

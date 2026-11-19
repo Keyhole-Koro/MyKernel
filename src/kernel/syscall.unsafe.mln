@@ -349,10 +349,12 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         return Ok(cur_brk);
     }
 
-    i32 new_brk = cur_brk + increment;
-    if (new_brk >= thread.USER_STACK_REGION_BASE) {
+    // Compared against the room left, not as cur_brk + increment: a large
+    // increment would wrap that sum negative and slip under the limit.
+    if (increment >= thread.USER_STACK_REGION_BASE - cur_brk) {
         return Err(SyscallError::HeapOverflow);
     }
+    i32 new_brk = cur_brk + increment;
 
     // Map pages if new_brk crosses page boundaries
     i32 cur_page = (cur_brk + 4095) & ~4095;
