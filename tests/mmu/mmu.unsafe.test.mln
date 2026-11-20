@@ -196,3 +196,67 @@ void frame_pool_hands_frames_out_and_back() {
     assert_eq<bool>(frames.free(b), true, "second frame back");
     assert_eq<i32>(frames.available(), before, "every frame is back");
 }
+
+/** Maps one fresh page at `va` in `pd` with `flags`; the test fails if it cannot. */
+void map_test_page(i32 pd, i32 va, i32 flags, str what) {
+    i32 frame = take_frame(what);
+    bool mapped = case mmu.map_page(pd, va, frame, flags) of { Ok(_) -> true; Err(_) -> false; };
+    assert_eq<bool>(mapped, true, what);
+}
+
+/** @return Whether the whole range is mapped for the user with `required`. */
+bool user_range(i32 pd, i32 addr, i32 bytes, i32 required) {
+    return mmu.user_range_has_flags(pd, addr, bytes, required);
+}
+
+/**
+ * user_range_has_flags is the check every address a process hands a syscall
+ * goes through (user_access): a range passes only when every page it touches
+ * is the process's, with the flags asked for, and it never wraps. Here a
+ * user page sits right below MMIO and another right above the kernel's own
+ * RAM, where a range can start on one side and end on the other.
+ */
+/*@Test "a user range is checked whole, page by page" {
+    step: 50000000;
+}*/
+void a_user_range_is_checked_whole_page_by_page() {
+    heap.init();
+    i32 pd = case mmu.create_page_directory() of {
+        Some(p) -> p;
+        None -> ({ assert_eq<i32>(1, 0, "page directory"); 0; });
+    };
+    bool shared = case mmu.setup_identity_kernel_mapping(pd) of { Ok(_) -> true; Err(_) -> false; };
+    assert_eq<bool>(shared, true, "the kernel's identity mapping");
+    i32 rw = PTE_VALID | PTE_WRITABLE | mmu.PTE_USER;
+    i32 ro = PTE_VALID | mmu.PTE_USER;
+    i32 read = mmu.PTE_USER;
+    i32 write = mmu.PTE_USER | mmu.PTE_WRITABLE;
+    map_test_page(pd, 0x40000000, rw, "a read-write user page");
+    map_test_page(pd, 0x40001000, ro, "a read-only user page after it");
+    map_test_page(pd, 0x23FFF000, rw, "a user page right below MMIO");
+    map_test_page(pd, 0x20000000, rw, "a user page right above the kernel's RAM");
+    map_test_page(pd, 0x7FFFF000, rw, "the last user page");
+
+    assert_eq<bool>(user_range(pd, 0x40000000, 4096, write), true, "a whole writable page passes");
+    assert_eq<bool>(user_range(pd, 0x40000FF0, 32, read), true, "a range across two user pages passes for reading");
+    assert_eq<bool>(user_range(pd, 0x40000FF0, 32, write), false, "but not for writing: the second is read-only");
+    assert_eq<bool>(user_range(pd, 0x40001FF0, 32, read), false, "a range that runs past the mapped pages is refused");
+
+    assert_eq<bool>(user_range(pd, 0x00100000, 16, read), false, "the kernel's image is refused");
+    assert_eq<bool>(user_range(pd, mmu.MMU_PDBR_ADDR, 4, read), false, "the MMU's registers are refused");
+    assert_eq<bool>(user_range(pd, 0x30000000, 16, read), false, "VRAM is refused");
+    assert_eq<bool>(user_range(pd, 0x23FFFFF0, 16, write), true, "a range that ends at the MMIO boundary passes");
+    assert_eq<bool>(user_range(pd, 0x23FFFFF0, 32, read), false, "one that runs on into MMIO is refused");
+    assert_eq<bool>(user_range(pd, 0x20000000, 16, write), true, "a range that starts at the kernel's boundary passes");
+    assert_eq<bool>(user_range(pd, 0x1FFFFFF0, 32, read), false, "one that starts in the kernel's RAM is refused");
+
+    assert_eq<bool>(user_range(pd, 0x7FFFF000, 4096, write), true, "a range that ends at the top of the user half passes");
+    assert_eq<bool>(user_range(pd, 0x7FFFFFFC, 4, write), true, "and so does its last word");
+    assert_eq<bool>(user_range(pd, 0x7FFFFFFC, 8, read), false, "a range past the top of the user half is refused");
+    assert_eq<bool>(user_range(pd, 0x7FFFFFF0, 0x7FFFFFFF, read), false, "a length that wraps the sum is refused");
+    assert_eq<bool>(user_range(pd, 0x7FFFFFF0, 0x40000020, read), false, "even when the sum wraps back into user pages");
+    assert_eq<bool>(user_range(pd, 0xFFFFF000, 16, read), false, "an address in the top half is refused");
+    assert_eq<bool>(user_range(pd, 0x40000000, 0, read), false, "an empty range is refused");
+    assert_eq<bool>(user_range(pd, 0x40000000, -16, read), false, "a negative length is refused");
+    assert_eq<bool>(user_range(0, 0x40000000, 16, read), false, "no page directory has no user pages");
+}

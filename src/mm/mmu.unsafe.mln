@@ -235,6 +235,12 @@ export Option<i32> user_mapping(i32 pd_addr, i32 vaddr) {
 
 /**
  * Validates every page touched by a user range against required PTE flags.
+ *
+ * A process's memory lies below 0x80000000 (its first stack ends there), so
+ * an address with the top bit set -- negative as an i32 -- is never user
+ * memory. The range is walked by its last byte, which fits in an i32 for
+ * every range that stays below 0x80000000, the one that ends right there
+ * included; its end, one past, would wrap.
  * @param pd_addr Physical page-directory base.
  * @param addr First user virtual byte.
  * @param bytes Positive range length.
@@ -242,20 +248,21 @@ export Option<i32> user_mapping(i32 pd_addr, i32 vaddr) {
  * @return true when the full non-overflowing range is valid and satisfies required.
  */
 export bool user_range_has_flags(i32 pd_addr, i32 addr, i32 bytes, i32 required) {
-    if (bytes <= 0 || addr < 0 || addr + bytes < addr) { return false; }
-    i32 current = addr;
-    i32 end = addr + bytes;
-    while (current < end) {
-        i32 pte = case user_mapping(pd_addr, current) of {
+    if (bytes <= 0 || addr < 0) { return false; }
+    i32 last = addr + (bytes - 1);
+    // Past 0x7FFFFFFF the sum wraps negative: the range leaves the user half.
+    if (last < addr) { return false; }
+    i32 page = addr & FRAME_MASK;
+    i32 last_page = last & FRAME_MASK;
+    bool more = true;
+    while (more) {
+        i32 pte = case user_mapping(pd_addr, page) of {
             Some(value) -> value;
             None -> ({ return false; });
         };
         if ((pte & required) != required) { return false; }
-        i32 next = (current & FRAME_MASK) + PAGE_SIZE;
-        // Past the top of the address space: the range ended in this page,
-        // where a process's first stack is.
-        if (next <= current) { return true; }
-        current = next;
+        more = page != last_page;
+        page = page + PAGE_SIZE;
     }
     return true;
 }
