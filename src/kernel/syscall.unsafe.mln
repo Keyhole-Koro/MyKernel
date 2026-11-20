@@ -1,6 +1,5 @@
 namespace syscall;
 
-import mem from "@kernel/mm/mem.mln";
 import mmu from "@kernel/mm/mmu.mln";
 import irq_frame from "@kernel/arch/irq_frame.mln";
 import serial from "@kernel/io/serial.mln";
@@ -11,6 +10,8 @@ import thread from "thread.mln";
 import { JoinOutcome } from "thread.mln";
 import scheduler from "scheduler.mln";
 import loader from "loader.mln";
+import user_access from "user_access.mln";
+import { UserAccess } from "user_access.mln";
 import { Result } from "@std/core/result.mln";
 import { Option } from "@std/core/option.mln";
 import { UserAddress } from "@std/core/address.mln";
@@ -36,6 +37,7 @@ export enum SyscallError {
     BadFd,          // Unsupported file descriptor
     UnknownSyscall, // sys_nr doesn't match any dispatched syscall
     SpawnFailed,    // Process launch failed; detailed reason is in SpawnError APIs
+    BadAddress,     // A buffer the caller named is not its memory (see user_access)
 }
 
 /**
@@ -86,6 +88,7 @@ export SyscallStatus error_status(SyscallError error) {
         BadFd -> SyscallStatus::BadFileDescriptor;
         UnknownSyscall -> SyscallStatus::UnknownSyscall;
         SpawnFailed -> SyscallStatus::SpawnFailed;
+        BadAddress -> SyscallStatus::BadAddress;
     };
 }
 
@@ -171,24 +174,40 @@ i32 PTE_USER_RW = 0x0B; // VALID | WRITABLE | USER
 // MyOS decisions. MyOS replaces these at boot. Until then the console is the
 // serial port, and nothing can be spawned or served.
 
-/** The console until MyOS installs its own: every byte goes to the serial port. */
+/**
+ * The console until MyOS installs its own: every byte goes to the serial port.
+ * Like every hook, it reads the buffer through user_access, and moves nothing
+ * unless the whole buffer is the caller's.
+ */
 i32 serial_write(Pid pid, UserAddress buf, i32 count) {
-    i32 i = 0;
-    while (i < count) {
-        serial.putc(mem.read_byte((i32)buf.plus(i)));
-        i++;
+    if (!user_access.check(pid, buf, count, UserAccess::READ)) { return 0; }
+    char chunk[64];
+    i32 done = 0;
+    while (done < count) {
+        i32 n = count - done;
+        if (n > 64) { n = 64; }
+        if (!user_access.copy_from(pid, buf.plus(done), &chunk[0], n)) { return done; }
+        i32 k = 0;
+        while (k < n) {
+            serial.putc((i32)chunk[k] & 0xFF);
+            k++;
+        }
+        done = done + n;
     }
     return count;
 }
 
 /** The console until MyOS installs its own: whatever the serial port has waiting. */
 i32 serial_read(Pid pid, UserAddress buf, i32 count) {
+    if (!user_access.check(pid, buf, count, UserAccess::WRITE)) { return 0; }
+    char byte[1];
     i32 i = 0;
     while (i < count) {
         Option<i32> input = serial.read_input();
         bool has_input = case input of {
             Some(c) -> ({
-                mem.write_byte((i32)buf.plus(i), c);
+                byte[0] = (char)c;
+                user_access.copy_to(pid, buf.plus(i), &byte[0], 1);
                 i++;
                 true;
             });
@@ -217,8 +236,9 @@ fn(Pid pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> g_os_h
  * beyond the kernel's own syscalls -- the UI protocol, the filesystem,
  * process control -- goes through one syscall, OS_CALL(service, args).
  * `service` is the wire value as the process sent it, known or not. The
- * handler reads and writes `args` through the process's page tables, which
- * are active for the syscall's duration.
+ * handler reads and writes `args`, and every address in it, only through
+ * user_access, which checks each range against the process's page tables:
+ * a range it refuses makes the call answer BadAddress.
  * @param handler Function taking (pid, service, args).
  */
 export void set_os_handler(fn(Pid pid, i32 service, UserAddress args) -> Result<i32, OsServiceError> handler) {
@@ -227,6 +247,8 @@ export void set_os_handler(fn(Pid pid, i32 service, UserAddress args) -> Result<
 
 /**
  * Registers OS-level console I/O hook functions for stdout/stdin redirection.
+ * The kernel has checked the whole buffer before it calls one (readable for
+ * write, writable for read); the hook still moves its bytes through user_access.
  * @param write_handler Function taking (pid, buf, count) and returning bytes written.
  * @param read_handler Function taking (pid, buf, count) and returning bytes read.
  */
@@ -237,7 +259,9 @@ export void set_console(fn(Pid pid, UserAddress buf, i32 count) -> i32 write_han
 }
 
 /**
- * Registers the OS-level process spawning hook for SYS_SPAWN.
+ * Registers the OS-level process spawning hook for SYS_SPAWN. Only the hook
+ * knows how long a path may be, so it reads the path itself, through
+ * user_access.
  * @param handler Function taking the path and returning the new process ID.
  */
 export void set_spawn_handler(fn(UserAddress path) -> Result<Pid, SpawnError> handler) {
@@ -270,7 +294,8 @@ export void sys_exit_status(ProcessExitStatus status) {
  * @param fd File descriptor index (1 = stdout, 2 = stderr).
  * @param buf Virtual memory address of source buffer.
  * @param count Number of bytes to write.
- * @return Ok(written), Err(BadFd) for an unsupported fd, or Err(NoProcess) outside a process.
+ * @return Ok(written), Err(BadFd) for an unsupported fd, Err(BadAddress) when
+ *         the buffer is not all the caller's to read, or Err(NoProcess) outside a process.
  */
 export Result<i32, SyscallError> sys_write(i32 fd, UserAddress buf, i32 count) {
     if (count <= 0) {
@@ -281,6 +306,8 @@ export Result<i32, SyscallError> sys_write(i32 fd, UserAddress buf, i32 count) {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };
+        // The whole buffer, before any of it reaches the console.
+        if (!user_access.check(pid, buf, count, UserAccess::READ)) { return Err(SyscallError::BadAddress); }
         return Ok(g_console_write(pid, buf, count));
     }
     SyscallError cause = BadFd;
@@ -292,7 +319,8 @@ export Result<i32, SyscallError> sys_write(i32 fd, UserAddress buf, i32 count) {
  * @param fd File descriptor index (0 = stdin).
  * @param buf Virtual memory address of destination buffer.
  * @param count Maximum number of bytes to read.
- * @return Ok(read_bytes), Err(BadFd) for an unsupported fd, or Err(NoProcess) outside a process.
+ * @return Ok(read_bytes), Err(BadFd) for an unsupported fd, Err(BadAddress) when
+ *         the buffer is not all the caller's to write, or Err(NoProcess) outside a process.
  */
 export Result<i32, SyscallError> sys_read(i32 fd, UserAddress buf, i32 count) {
     if (count <= 0) {
@@ -303,6 +331,8 @@ export Result<i32, SyscallError> sys_read(i32 fd, UserAddress buf, i32 count) {
             Some(value) -> value;
             None -> ({ return Err(SyscallError::NoProcess); });
         };
+        // The whole buffer, before any input is taken for it.
+        if (!user_access.check(pid, buf, count, UserAccess::WRITE)) { return Err(SyscallError::BadAddress); }
         return Ok(g_console_read(pid, buf, count));
     }
     SyscallError cause = BadFd;
@@ -311,7 +341,9 @@ export Result<i32, SyscallError> sys_read(i32 fd, UserAddress buf, i32 count) {
 
 /**
  * Starts a new process from the executable file at the specified path.
- * @param path Pointer to null-terminated file path string.
+ * @param path Pointer to null-terminated file path string. The spawn hook
+ *        reads it through user_access; a byte it may not read makes dispatch
+ *        answer BadAddress.
  * @return Ok(pid) on success, or Err(NoProcess), Err(UnknownSyscall), or Err(SpawnFailed).
  */
 export Result<i32, SyscallError> sys_spawn(UserAddress path) {
@@ -325,6 +357,21 @@ export Result<i32, SyscallError> sys_spawn(UserAddress path) {
         Ok(pid) -> Ok((i32)pid);
         Err(_) -> Err(SyscallError::SpawnFailed);
     };
+}
+
+/**
+ * Unmaps the heap pages a failed sys_sbrk had mapped and frees their frames.
+ * @param pd Page directory of the process.
+ * @param from First page sys_sbrk mapped.
+ * @param to Page past the last one it mapped.
+ */
+void release_heap_pages(i32 pd, i32 from, i32 to) {
+    i32 rollback = from;
+    while (rollback < to) {
+        i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
+        if (old_frame != 0) { mmu.free_frame(old_frame); }
+        rollback = rollback + 4096;
+    }
 }
 
 /**
@@ -349,10 +396,12 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         return Ok(cur_brk);
     }
 
-    i32 new_brk = cur_brk + increment;
-    if (new_brk >= thread.USER_STACK_REGION_BASE) {
+    // Compared against the room left, not as cur_brk + increment: a large
+    // increment would wrap that sum negative and slip under the limit.
+    if (increment >= thread.USER_STACK_REGION_BASE - cur_brk) {
         return Err(SyscallError::HeapOverflow);
     }
+    i32 new_brk = cur_brk + increment;
 
     // Map pages if new_brk crosses page boundaries
     i32 cur_page = (cur_brk + 4095) & ~4095;
@@ -375,22 +424,12 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
             Ok(_) -> _;
             Err(MmuError::AllocFailed) -> ({
                 mmu.free_frame(frame);
-                i32 rollback = first_new_page;
-                while (rollback < cur_page) {
-                    i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
-                    if (old_frame != 0) { mmu.free_frame(old_frame); }
-                    rollback = rollback + 4096;
-                }
+                release_heap_pages(pd, first_new_page, cur_page);
                 return Err(SyscallError::OutOfMemory);
             });
             Err(e) -> ({
                 mmu.free_frame(frame);
-                i32 rollback = first_new_page;
-                while (rollback < cur_page) {
-                    i32 old_frame = case mmu.unmap_page(pd, rollback) of { Ok(value) -> value; Err(_) -> 0; };
-                    if (old_frame != 0) { mmu.free_frame(old_frame); }
-                    rollback = rollback + 4096;
-                }
+                release_heap_pages(pd, first_new_page, cur_page);
                 // InvalidDirectory/UnalignedAddress here mean a kernel
                 // invariant broke: `pd` comes from a live process's pdbr
                 // (always set from a real create_page_directory() success),
@@ -437,6 +476,38 @@ Result<DispatchOutcome, SyscallError> resume_after_syscall(i32 sp, Result<i32, S
 }
 
 /**
+ * The answer to a syscall that named memory it may not use.
+ * @param sp Saved syscall interrupt-frame SP.
+ * @param address First address user_access refused.
+ * @return An outcome that resumes sp with BadAddress in r1 and address in r2.
+ */
+DispatchOutcome bad_address(i32 sp, UserAddress address) {
+    DispatchOutcome outcome;
+    outcome.parked = false;
+    outcome.next_sp = sp;
+    outcome.status = SyscallStatus::BadAddress;
+    outcome.value = (i32)address;
+    return outcome;
+}
+
+/**
+ * Packages the result of a syscall whose hook read or wrote user memory. A
+ * range user_access refused while it ran fails it with BadAddress, whatever
+ * it returned: a console or spawn hook can stop at a refusal, but has no
+ * result of its own to say so.
+ * @param sp Saved syscall interrupt-frame SP.
+ * @param result What the syscall returned.
+ * @return Ok(DispatchOutcome) for resume_after_syscall, or the BadAddress one.
+ */
+Result<DispatchOutcome, SyscallError> resume_after_user_access(i32 sp, Result<i32, SyscallError> result) {
+    case user_access.refused() of {
+        Some(address) -> ({ return Ok(bad_address(sp, address)); });
+        None -> _;
+    };
+    return resume_after_syscall(sp, result);
+}
+
+/**
  * Top-level system call dispatcher called from irq_dispatch.
  *
  * Decodes the syscall number and arguments from the saved stack frame and executes the corresponding service.
@@ -448,6 +519,8 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     i32 arg1   = irq_frame.syscall_arg1(sp);
     i32 arg2   = irq_frame.syscall_arg2(sp);
     i32 arg3   = irq_frame.syscall_arg3(sp);
+    // Nothing is refused yet: a refusal belongs to the syscall it happened in.
+    user_access.begin();
     if (sys_nr == Syscall::EXIT) {
         sys_exit(arg1);
         DispatchOutcome outcome;
@@ -459,11 +532,11 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     }
     if (sys_nr == Syscall::READ) {
         Result<i32, SyscallError> result = sys_read(arg1, UserAddress(arg2), arg3);
-        return resume_after_syscall(sp, result);
+        return resume_after_user_access(sp, result);
     }
     if (sys_nr == Syscall::WRITE) {
         Result<i32, SyscallError> result = sys_write(arg1, UserAddress(arg2), arg3);
-        return resume_after_syscall(sp, result);
+        return resume_after_user_access(sp, result);
     }
     if (sys_nr == Syscall::SBRK) {
         Result<i32, SyscallError> result = sys_sbrk(arg1);
@@ -479,7 +552,7 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
     }
     if (sys_nr == Syscall::SPAWN) {
         Result<i32, SyscallError> result = sys_spawn(UserAddress(arg1));
-        return resume_after_syscall(sp, result);
+        return resume_after_user_access(sp, result);
     }
     if (sys_nr == Syscall::OS_CALL) {
         Pid pid = case thread.current_pid() of {
@@ -487,6 +560,12 @@ export Result<DispatchOutcome, SyscallError> dispatch(i32 sp) {
             None -> ({ return Err(SyscallError::NoProcess); });
         };
         Result<i32, OsServiceError> result = g_os_handler(pid, arg1, UserAddress(arg2));
+        // The handler checked every range the call names through user_access;
+        // one it refused fails the call, whatever the handler returned.
+        case user_access.refused() of {
+            Some(address) -> ({ return Ok(bad_address(sp, address)); });
+            None -> _;
+        };
         DispatchOutcome outcome;
         outcome.parked = false;
         outcome.next_sp = sp;

@@ -242,12 +242,19 @@ export Result<Pid, LoaderError> spawn_from_buffer(Option<Pid> parent, i32 code_p
         debug.println("loader: unsupported MBIN version");
         return Err(LoaderError::InvalidHeader(version));
     }
-    if (text_offset + text_size > code_size) {
+    // Compared as offset > code_size - size, not offset + size > code_size:
+    // with both non-negative and code_size >= 32 nothing here can wrap, so a
+    // crafted header cannot reach memory before or past the image.
+    if (text_offset < 0 || text_size < 0 || text_offset > code_size - text_size) {
         debug.println("loader: invalid text section bounds");
         return Err(LoaderError::InvalidBounds(code_size));
     }
-    if (data_offset + data_size > code_size) {
+    if (data_offset < 0 || data_size < 0 || data_offset > code_size - data_size) {
         debug.println("loader: invalid data section bounds");
+        return Err(LoaderError::InvalidBounds(code_size));
+    }
+    if (bss_size < 0) {
+        debug.println("loader: invalid bss size");
         return Err(LoaderError::InvalidBounds(code_size));
     }
 
