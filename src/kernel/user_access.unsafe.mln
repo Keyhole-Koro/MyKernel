@@ -1,0 +1,139 @@
+namespace user_access;
+
+import mmu from "@kernel/mm/mmu.mln";
+import process from "process.mln";
+import { Option } from "@std/core/option.mln";
+import { UserAddress } from "@std/core/address.mln";
+import { Pid } from "@contracts/process/control.contract.mln";
+
+// A process names its memory to a syscall by address: the buffer of a read
+// or a write, a path, an OS_CALL record and the pointers in it. Every page
+// directory also maps the kernel's RAM, MMIO and VRAM, for the kernel only,
+// and a syscall runs in the kernel, so an address used as it is can reach
+// any of them. The kernel and the OS read and write a process's memory only
+// through here: the range is checked against the process's own page tables
+// first, and copied through the frames they map it to, whichever page
+// directory is installed.
+//
+// A refused range fails the syscall being served. A handler can only stop
+// there -- an OS_CALL handler or a console hook has no error of its own to
+// say why -- so dispatch answers BadAddress, with the first refused address
+// in r2, whatever the handler returned. That is what THREAD_SPAWN and the
+// futexes answer for an address of theirs. Syscalls run with interrupts off,
+// one at a time, so one refusal is pending at most.
+
+/** What a syscall does with a range of a process's memory. */
+export enum UserAccess {
+    READ,   // the kernel reads it: every page must be the process's
+    WRITE,  // the kernel writes it: every page must also be writable
+}
+
+bool g_refused = false;
+i32 g_refused_at = 0;
+
+/** Starts a syscall with nothing refused. syscall.dispatch calls it first. */
+export void begin() {
+    g_refused = false;
+    g_refused_at = 0;
+}
+
+/** @return The first address refused since begin(), or None. */
+export Option<UserAddress> refused() {
+    if (!g_refused) { return None; }
+    return Some(UserAddress(g_refused_at));
+}
+
+/** Fails the syscall being served at `at`, unless it already failed. */
+void refuse(UserAddress at) {
+    if (g_refused) { return; }
+    g_refused = true;
+    g_refused_at = (i32)at;
+}
+
+/**
+ * Checks a range of a process's memory before the kernel or the OS reads or
+ * writes it for the process: the one check every address a process passes
+ * goes through. A refused range fails the syscall being served (BadAddress).
+ * @param pid Process that named the range.
+ * @param addr Its first byte.
+ * @param length Its length in bytes. An empty or negative range names no
+ *        memory, so it is refused: a caller with nothing to move skips the check.
+ * @param access READ, or WRITE for a range the kernel will write.
+ * @return true when every byte of [addr, addr + length) lies in a page the
+ *         process maps for user access (and writable, for WRITE), with no
+ *         wrap past the top of the user half.
+ */
+export bool check(Pid pid, UserAddress addr, i32 length, UserAccess access) {
+    i32 required = mmu.PTE_USER;
+    if (access == UserAccess::WRITE) { required = required | mmu.PTE_WRITABLE; }
+    bool allowed = case process.get_pdbr(pid) of {
+        Some(pdbr) -> mmu.user_range_has_flags(pdbr, (i32)addr, length, required);
+        None -> false;
+    };
+    if (!allowed) { refuse(addr); }
+    return allowed;
+}
+
+/**
+ * Moves bytes between a process's memory and the kernel's, a page at a time
+ * through the frame each page is mapped to. The whole range is checked
+ * first, so a refused copy moves nothing.
+ * @param pid Process whose memory it is.
+ * @param user First byte in the process.
+ * @param kernel First byte in the kernel.
+ * @param length Bytes to move; zero or negative moves nothing and checks nothing.
+ * @param access READ copies to `kernel`, WRITE from it.
+ * @return false when check() refused the range.
+ */
+bool copy(Pid pid, UserAddress user, char *kernel, i32 length, UserAccess access) {
+    if (length <= 0) { return true; }
+    if (!check(pid, user, length, access)) { return false; }
+    i32 pdbr = process.get_pdbr(pid).unwrap_or(0);
+    i32 at = (i32)user;
+    i32 done = 0;
+    while (done < length) {
+        i32 pte = case mmu.user_mapping(pdbr, at) of {
+            Some(value) -> value;
+            None -> ({ refuse(UserAddress(at)); return false; });
+        };
+        i32 offset = at & (mmu.PAGE_SIZE - 1);
+        i32 chunk = mmu.PAGE_SIZE - offset;
+        if (chunk > length - done) { chunk = length - done; }
+        // The frame is in the kernel's identity mapping, so its physical
+        // address is also where the kernel reaches it.
+        char *frame = (char*)((pte & ~(mmu.PAGE_SIZE - 1)) + offset);
+        i32 k = 0;
+        if (access == UserAccess::READ) {
+            while (k < chunk) { kernel[done + k] = frame[k]; k++; }
+        } else {
+            while (k < chunk) { frame[k] = kernel[done + k]; k++; }
+        }
+        done = done + chunk;
+        at = at + chunk;
+    }
+    return true;
+}
+
+/**
+ * Copies bytes from a process's memory into the kernel.
+ * @param pid Process whose memory it is.
+ * @param src First byte in the process.
+ * @param dst Kernel buffer of at least `length` bytes.
+ * @param length Bytes to copy; zero or negative copies nothing.
+ * @return false, with nothing copied, when the process may not have the range read.
+ */
+export bool copy_from(Pid pid, UserAddress src, char *dst, i32 length) {
+    return copy(pid, src, dst, length, UserAccess::READ);
+}
+
+/**
+ * Copies bytes from the kernel into a process's memory.
+ * @param pid Process whose memory it is.
+ * @param dst First byte in the process.
+ * @param src Kernel buffer of at least `length` bytes.
+ * @param length Bytes to copy; zero or negative copies nothing.
+ * @return false, with nothing copied, when the process may not have the range written.
+ */
+export bool copy_to(Pid pid, UserAddress dst, char *src, i32 length) {
+    return copy(pid, dst, src, length, UserAccess::WRITE);
+}
