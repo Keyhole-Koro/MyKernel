@@ -53,8 +53,41 @@ MouseEvent queue[64];
 i32 q_head = 0;
 i32 q_tail = 0;
 
+// --- the cursor follows the pointer here ---
+// Whoever draws the cursor (MyOS's graphics.set_cursor) is told the new
+// position from the IRQ itself, as soon as the pointer moves. The UI task
+// moving it once a pass would hold the cursor still for as long as a frame
+// takes to paint.
+void no_cursor(i32 x, i32 y) {}
+fn(i32 x, i32 y) -> void g_follow = no_cursor;
+i32 g_followed_x = -1;
+i32 g_followed_y = -1;
+
 /**
- * Drains all pending hardware mouse events into the software event ring buffer.
+ * Sets who moves the cursor to the pointer, and moves it there now. The
+ * follower runs in the mouse IRQ: two register writes, nothing that sleeps.
+ * @param follow Called with the pointer's position whenever it changes.
+ */
+export void set_cursor_follower(fn(i32 x, i32 y) -> void follow) {
+    g_follow = follow;
+    g_followed_x = x();
+    g_followed_y = y();
+    g_follow(g_followed_x, g_followed_y);
+}
+
+/** Tells the cursor follower where the pointer is, if it moved. */
+void follow_pointer() {
+    i32 px = x();
+    i32 py = y();
+    if (px == g_followed_x && py == g_followed_y) { return; }
+    g_followed_x = px;
+    g_followed_y = py;
+    g_follow(px, py);
+}
+
+/**
+ * Drains all pending hardware mouse events into the software event ring
+ * buffer, then moves the cursor to where the pointer is now.
  *
  * Called by the mouse IRQ handler. Drops incoming events if the queue is full.
  */
@@ -72,6 +105,8 @@ export void drain_hw() {
             q_tail = next;
         }
     }
+    // The live registers, not the last event: they are the newest position.
+    follow_pointer();
 }
 
 /**

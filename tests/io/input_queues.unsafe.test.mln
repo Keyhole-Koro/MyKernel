@@ -46,6 +46,27 @@ void keyboard_queue() {
     assert.assert_true(n == 63, "overflowing injects are dropped, not wrapped");
 }
 
+i32 g_follow_calls = 0;
+i32 g_follow_x = -1;
+i32 g_follow_y = -1;
+
+void record_cursor(i32 x, i32 y) {
+    g_follow_calls = g_follow_calls + 1;
+    g_follow_x = x;
+    g_follow_y = y;
+}
+
+/*@Test "the cursor follower hears where the pointer is, then only its moves" {
+    step: 2000000;
+}*/
+void cursor_follower() {
+    mouse.set_cursor_follower(record_cursor);
+    assert.assert_true(g_follow_calls == 1, "installing it moves the cursor to the pointer");
+    assert.assert_true(g_follow_x == mouse.x() && g_follow_y == mouse.y(), "to where the pointer is");
+    mouse.drain_hw();
+    assert.assert_true(g_follow_calls == 1, "a drain with the pointer still does not move it again");
+}
+
 /*@Test "key codes are stable" {
     step: 1000000;
 }*/
