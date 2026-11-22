@@ -360,7 +360,8 @@ export Result<i32, SyscallError> sys_spawn(UserAddress path) {
 }
 
 /**
- * Unmaps the heap pages a failed sys_sbrk had mapped and frees their frames.
+ * Unmaps the heap pages a failed sys_sbrk had mapped and frees their frames:
+ * the break stays where it was, so nothing else would ever give them back.
  * @param pd Page directory of the process.
  * @param from First page sys_sbrk mapped.
  * @param to Page past the last one it mapped.
@@ -416,6 +417,7 @@ export Result<i32, SyscallError> sys_sbrk(i32 increment) {
         i32 frame = case mmu.alloc_page() of {
             Some(f) -> f;
             None -> ({
+                release_heap_pages(pd, first_new_page, cur_page);
                 return Err(SyscallError::OutOfMemory);
             });
         };
